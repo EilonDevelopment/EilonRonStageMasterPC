@@ -1,0 +1,10 @@
+.dark ion-toggle {
+    padding: 12px;
+    --track-background: #aaa;
+    --handle-box-shadow: none;
+  }
+  
+  .dark li::marker {
+    color: white;
+  }
+  

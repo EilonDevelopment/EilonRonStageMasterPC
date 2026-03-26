@@ -1,0 +1,23 @@
+.MuiTypography-root {
+  font-size: 14px !important;
+}
+
+.MuiTablePagination-root,
+.MuiTablePagination-root svg {
+  color: #999 !important;
+}
+
+.MuiDataGrid-menuIcon,
+.MuiDataGrid-iconButtonContainer {
+  display: none !important;
+}
+
+.MuiDataGrid-columnHeaderTitle {
+  color: #222428;
+}
+.dark .MuiDataGrid-columnHeaderTitle {
+  color: #f4f5f8;
+}
+.dark .MuiDataGrid-overlay {
+  color: white !important;
+}

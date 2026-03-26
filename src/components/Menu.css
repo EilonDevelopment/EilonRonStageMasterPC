@@ -1,0 +1,167 @@
+ion-item,
+ion-toolbar,
+ion-content {
+  --background: #f4f5f8;
+}
+.dark ion-item,
+.dark ion-toolbar,
+.dark ion-content {
+  --background: #222428;
+}
+
+/* Language select: readable on device dark mode and app dark mode */
+@media (prefers-color-scheme: dark) {
+  .ion-select-language-label,
+  ion-select.ion-select-language {
+    color: #f4f5f8;
+  }
+  ion-select.ion-select-language::part(text),
+  ion-select.ion-select-language::part(icon) {
+    color: #f4f5f8;
+  }
+  ion-select.ion-select-language::part(container) {
+    background: #2a2a2a;
+  }
+}
+body.dark .ion-select-language-label,
+body.dark ion-select.ion-select-language {
+  color: #f4f5f8;
+}
+body.dark ion-select.ion-select-language::part(text),
+body.dark ion-select.ion-select-language::part(icon) {
+  color: #f4f5f8;
+}
+body.dark ion-select.ion-select-language::part(container) {
+  background: #2a2a2a;
+}
+ion-select.ion-select-language {
+  min-height: 36px;
+  border: 1px solid var(--ion-color-medium);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+body.dark ion-select.ion-select-language {
+  border-color: var(--ion-color-medium);
+}
+
+ion-menu.md ion-content {
+  --padding-start: 8px;
+  --padding-end: 8px;
+  --padding-top: 20px;
+  --padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+}
+
+ion-menu.md ion-list {
+  padding: 20px 0;
+}
+
+ion-menu.md ion-note {
+  margin-bottom: 30px;
+}
+
+ion-menu.md ion-list-header, ion-menu.md ion-note {
+  padding-left: 10px;
+}
+
+ion-menu.md ion-list#inbox-list {
+  border-bottom: 1px solid var(--ion-color-step-150, #d7d8da);
+}
+
+ion-menu.md ion-list#inbox-list ion-list-header {
+  font-size: 22px;
+  font-weight: 600;
+  min-height: 20px;
+}
+
+ion-menu.md ion-list#labels-list ion-list-header {
+  font-size: 16px;
+  margin-bottom: 18px;
+  color: #757575;
+  min-height: 26px;
+}
+
+ion-menu.md ion-item {
+  --padding-start: 10px;
+  --padding-end: 10px;
+  border-radius: 4px;
+}
+
+ion-menu.md ion-item.selected ion-icon {
+  color: var(--ion-color-primary);
+}
+
+ion-menu.md ion-item ion-icon {
+  color: #616e7e;
+}
+
+ion-menu.md ion-item ion-label {
+  font-weight: 500;
+}
+
+ion-menu.ios ion-content {
+  --padding-bottom: 20px;
+}
+
+ion-menu.ios ion-list {
+  padding: 20px 0 0 0;
+}
+
+ion-menu.ios ion-note {
+  line-height: 24px;
+  margin-bottom: 20px;
+}
+
+ion-menu.ios ion-item {
+  --padding-start: 16px;
+  --padding-end: 16px;
+  --min-height: 50px;
+}
+
+ion-menu.ios ion-item ion-icon {
+  font-size: 24px;
+  color: #73849a;
+}
+
+ion-menu.ios ion-item .selected ion-icon {
+  color: var(--ion-color-primary);
+}
+
+ion-menu.ios ion-list#labels-list ion-list-header {
+  margin-bottom: 8px;
+}
+
+ion-menu.ios ion-list-header,
+ion-menu.ios ion-note {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+ion-menu.ios ion-note {
+  margin-bottom: 8px;
+}
+
+ion-note {
+  display: inline-block;
+  font-size: 16px;
+  color: var(--ion-color-medium-shade);
+}
+
+ion-item.selected {
+  --color: var(--ion-color-primary);
+} 
+
+ion-select::part(container) {
+  background-color: #f4f5f8;
+}
+
+.dark ion-router-outlet .dark ion-content::part(scroll) {
+  background-color: black;
+}
+
+.dark ion-router-outlet ion-content::part(scroll) {
+  background-color: #222428;
+}
+
+ion-list {
+  --border-bottom: none;
+}

@@ -1,0 +1,132 @@
+{
+  "projects": [
+    {
+      "id": "d293bb7e-5a8f-4c5b-85ff-0aec5358a81f",
+      "title": "f-pro",
+      "units": "lbs",
+      "windmeter_units": "meter",
+      "pre_overload": "100",
+      "cycle": false,
+      "show_graphs": false,
+      "total_overload": "500"
+    },
+    {
+      "id": "2494533b-5906-463b-95d3-74f25aa3b4e9",
+      "title": "s-pro",
+      "units": "lbs",
+      "windmeter_units": "meter",
+      "pre_overload": "100",
+      "cycle": false,
+      "show_graphs": false,
+      "total_overload": "500"
+    }
+  ],
+  "lcs": [
+    {
+      "id": "6fb1827d-2d3c-4458-9de9-8855e21d8e66",
+      "underload": "-2",
+      "total_sum": true,
+      "title": "f-lcs",
+      "overload": "300",
+      "unitList": "8-12",
+      "groups": "4,7",
+      "lc_id": "8",
+      "project_id": "d293bb7e-5a8f-4c5b-85ff-0aec5358a81f",
+      "capacity": "300MS"
+    },
+    {
+      "id": "263fd28a-5d52-47de-8df6-cb507bdc4099",
+      "underload": "-2",
+      "total_sum": true,
+      "title": "f-lcs",
+      "overload": "300",
+      "unitList": "8-12",
+      "groups": "4,7",
+      "lc_id": "9",
+      "project_id": "d293bb7e-5a8f-4c5b-85ff-0aec5358a81f",
+      "capacity": "300MS"
+    },
+    {
+      "id": "cfb5b840-cb1f-4174-92bb-040116af3369",
+      "underload": "-2",
+      "total_sum": true,
+      "title": "f-lcs",
+      "overload": "300",
+      "unitList": "8-12",
+      "groups": "4,7",
+      "lc_id": "10",
+      "project_id": "d293bb7e-5a8f-4c5b-85ff-0aec5358a81f",
+      "capacity": "300MS"
+    },
+    {
+      "id": "16c36930-2e2a-47f4-98a0-1464ea086e8a",
+      "underload": "-2",
+      "total_sum": true,
+      "title": "f-lcs",
+      "overload": "300",
+      "unitList": "8-12",
+      "groups": "4,7",
+      "lc_id": "11",
+      "project_id": "d293bb7e-5a8f-4c5b-85ff-0aec5358a81f",
+      "capacity": "300MS"
+    },
+    {
+      "id": "ecf9f594-936c-4ce2-9368-f93735a26d70",
+      "underload": "-2",
+      "total_sum": true,
+      "title": "f-lcs",
+      "overload": "300",
+      "unitList": "8-12",
+      "groups": "4,7",
+      "lc_id": "12",
+      "project_id": "d293bb7e-5a8f-4c5b-85ff-0aec5358a81f",
+      "capacity": "300MS"
+    }
+  ],
+  "logs": [
+    {
+      "id": "2494533b-5906-463b-95d3-74f25aa3b4ee",
+      "lc_id": "6fb1827d-2d3c-4458-9de9-8855e21d8e66",
+      "project_id": "d293bb7e-5a8f-4c5b-85ff-0aec5358a81f",
+      "log_date": "2024-02-29T05:33:08",
+      "value": 45,
+      "overload": 42,
+      "underload": 40,
+      "unit": "Kg",
+      "battery": "100"
+    },
+    {
+      "id": "2494533b-5906-463b-95d3-74f25aa3b411",
+      "lc_id": "6fb1827d-2d3c-4458-9de9-8855e21d8e66",
+      "project_id": "d293bb7e-5a8f-4c5b-85ff-0aec5358a81f",
+      "log_date": "2024-02-29T05:35:08",
+      "value": 45,
+      "overload": 42,
+      "underload": 40,
+      "unit": "Kg",
+      "battery": "100"
+    },
+    {
+      "id": "2494533b-5906-463b-95d3-74f25aa3b422",
+      "lc_id": "6fb1827d-2d3c-4458-9de9-8855e21d8e66",
+      "project_id": "d293bb7e-5a8f-4c5b-85ff-0aec5358a81f",
+      "log_date": "2024-02-29T05:36:08",
+      "value": 45,
+      "overload": 42,
+      "underload": 40,
+      "unit": "Kg",
+      "battery": "100"
+    },
+    {
+      "id": "2494533b-5906-463b-95d3-74f25aa3b433",
+      "lc_id": "6fb1827d-2d3c-4458-9de9-8855e21d8e66",
+      "project_id": "d293bb7e-5a8f-4c5b-85ff-0aec5358a81f",
+      "log_date": "2024-02-29T05:38:08",
+      "value": 45,
+      "overload": 42,
+      "underload": 40,
+      "unit": "Kg",
+      "battery": "100"
+    }
+  ]
+}

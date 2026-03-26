@@ -1,0 +1,412 @@
+import React, { useEffect, useState } from 'react';
+import {
+  IonContent,
+  IonIcon,
+  IonImg,
+  IonItem,
+  IonLabel,
+  IonList,
+  IonMenu,
+  IonMenuToggle,
+  IonSelect,
+  IonSelectOption,
+} from '@ionic/react';
+
+// import { useLocation } from 'react-router-dom';
+import {
+  barChartOutline,
+  barbellOutline,
+  bluetoothOutline,
+  briefcaseOutline,
+  calculatorOutline,
+  carOutline,
+  cogOutline,
+  moonOutline,
+  sunnyOutline,
+  timerOutline,
+  tvOutline,
+  mailOutline, // <--- AÑADE ESTO
+} from 'ionicons/icons';
+import { MENUS, ModalMenus, ModalNames, ROUTES } from '../helper/constants';
+
+import { useTranslation } from 'react-i18next';
+import { Preferences } from '@capacitor/preferences';
+
+import lightLogo from '../assets/images/logo-lightmode.webp';
+import darkLogo from '../assets/images/logo-darkmode.webp';
+import './Menu.css';
+import { useHistory, useLocation } from 'react-router';
+import useAppData from '../hooks/useAppData';
+import { connectMenuIcon, monitorMenuIcon, projectsMenuIcon, prooftesMenuIcon, reportsMenuIcon, settingsMenuIcon, totalizerMenuIcon, weighingMenuIcon } from '../assets/icons';
+import Swal from 'sweetalert2';
+// import darkLogo from '../assets/images/logo-darkmode.webp';
+import { db } from '../db';
+//import { logEvent } from '../services/LogService';
+import { Share } from "@capacitor/share";
+//import Swal from "sweetalert2";
+import { exportLast60MinutesLogsFile, logEvent } from "../services/LogService";
+
+import { buildDiagnosticContext } from "../services/DiagnosticContext";
+
+
+interface AppPage {
+  url: string;
+  iosIcon: string;
+  mdIcon: string;
+  title: string;
+  imgIcon: string;
+  hidden?: boolean;
+}
+
+const appPages: AppPage[] = [
+  {
+    title: MENUS.Monitor,
+    url: ROUTES.Monitor,
+    iosIcon: timerOutline,
+    mdIcon: timerOutline,
+    imgIcon: monitorMenuIcon,
+  },
+  {
+    title: MENUS.Projects,
+    url: ROUTES.Projects,
+    iosIcon: briefcaseOutline,
+    mdIcon: briefcaseOutline,
+    imgIcon: projectsMenuIcon,
+  },
+  {
+    title: MENUS.Settings,
+    url: ROUTES.Settings,
+    iosIcon: cogOutline,
+    mdIcon: cogOutline,
+    imgIcon: settingsMenuIcon,
+  },
+  {
+    title: MENUS.Reports,
+    url: ROUTES.Reports,
+    iosIcon: barChartOutline,
+    mdIcon: barChartOutline,
+    imgIcon: reportsMenuIcon,
+  },
+  {
+    title: MENUS.ConnectDevice,
+    url: ROUTES.ConnectDevice,
+    iosIcon: bluetoothOutline,
+    mdIcon: bluetoothOutline,
+    imgIcon: connectMenuIcon,
+  },
+  {
+    title: MENUS.ProofTest,
+    url: ROUTES.ProofTest,
+    iosIcon: barbellOutline,
+    mdIcon: barbellOutline,
+    imgIcon: prooftesMenuIcon,
+    hidden: true,
+  },
+  {
+    title: MENUS.Totalizer,
+    url: ROUTES.Totalizer,
+    iosIcon: calculatorOutline,
+    mdIcon: calculatorOutline,
+    imgIcon: totalizerMenuIcon,
+    hidden: true,
+  },
+  {
+    title: MENUS.Document,
+    url: ROUTES.Document,
+    iosIcon: carOutline,
+    mdIcon: carOutline,
+    imgIcon: weighingMenuIcon,
+    hidden: true,
+  }
+];
+
+const Menu: React.FC = () => {
+  const { t, i18n } = useTranslation();
+  const location = useLocation();
+  const history = useHistory();
+  const { curProject, lcs, groups, mode, updateVisibleModal, updateErrStr, updateMode } = useAppData()
+
+  const [lang, setLang] = useState<string>('')
+  const [themeToggle, setThemeToggle] = useState(false);
+
+  useEffect(() => {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)');
+
+    const initThemeAndLang = async () => {
+      const themeRes = await Preferences.get({ key: 'eilon.theme' });
+      const isDark = themeRes?.value === 'dark' || themeRes?.value === 'light'
+        ? themeRes.value === 'dark'
+        : prefersDark.matches;
+      updateMode(isDark ? 'dark' : 'light');
+      setThemeToggle(isDark);
+      toggleDarkTheme(isDark);
+
+      const res = await Preferences.get({ key: 'eilon.lang' });
+      let defaultLang = "en";
+      if (res && res.value)
+        defaultLang = res.value;
+      setLang(defaultLang);
+    }
+
+    initThemeAndLang();
+  }, [])
+
+  // Add or remove the "dark" class on the document body; set color-scheme on html so Android respects app theme
+  const toggleDarkTheme = (shouldAdd: boolean) => {
+    document.body.classList.toggle('dark', shouldAdd);
+    document.documentElement.style.colorScheme = shouldAdd ? 'dark' : 'light';
+  };
+
+  const handleChangeLang = async (langVal: string) => {
+    i18n.changeLanguage(langVal);
+    setLang(langVal);
+    await Preferences.remove({ key: 'eilon.lang' });
+    await Preferences.set({ key: 'eilon.lang', value: langVal })
+  }
+
+  const handleChangeMode = async () => {
+    const newMode = mode === 'dark' ? 'light' : 'dark';
+    updateMode(newMode);
+    setThemeToggle(newMode === 'dark');
+    toggleDarkTheme(newMode === 'dark');
+    await Preferences.set({ key: 'eilon.theme', value: newMode });
+  }
+
+  const handleOpenMonitor = () => {
+    if (curProject) {
+      const current_grroups = groups.filter((group) => {
+        return String(group.project_id) === String(curProject.id);
+      })
+      const filtredGroup = current_grroups.filter(({ overload }) => overload);
+      const groupZero = filtredGroup.find(({ overload }) => parseFloat(overload) === 0)
+      if (groupZero !== undefined) {
+        Swal.fire({
+          icon: 'error',
+          title: `<h2 class="text-danger">${t('Common.Error')}</h2>`,
+          html: `<p>${groupZero.title} Can't be 0</p>`,
+          heightAuto: false
+        });
+        return;
+      }
+      const setGroups = groups?.filter((group) => String(group.project_id) === String(curProject.id) && group.overload != '');
+      const filtered = lcs.filter(item => item.total_sum)
+      if (filtered.length > 0) {
+        if (setGroups.length > 0)
+          history.push(ROUTES.Monitor)
+        else
+          updateErrStr(t('You Must First set at Least One Group'))
+      }
+      else
+        updateErrStr(t('Msg.ErrInvalidMonitor'))
+    } else {
+      updateVisibleModal(ModalNames.NewProject)
+    }
+
+  }
+
+/*
+  const handleSendLogsToDeveloper = async () => {
+    try {
+      logEvent("INFO", "User tapped Send logs to the developer", {
+      route: window.location.pathname,
+    });
+
+      const fileUri = await exportLast60MinutesLogsFile();
+
+      await Share.share({
+        title: "App logs - last 60 minutes",
+        text: "Attached are the application logs from the last 60 minutes.",
+        files: [fileUri],
+        dialogTitle: "Send logs to the developer",
+      });
+    } catch (error) {
+      await logEvent("ERROR", "Failed to share logs file", {
+        error: String(error),
+      });
+
+      await Swal.fire({
+        icon: "error",
+        title: "Error",
+        text: "Could not prepare the logs file.",
+        heightAuto: false,
+      });
+    }
+  };*/
+
+  const handleSendLogsToDeveloper = async () => {
+    try {
+      await logEvent(
+        "INFO",
+        "User tapped Send logs to the developer",
+        { route: window.location.pathname },
+        "USER_ACTION"
+      );
+
+      const context = await buildDiagnosticContext();
+      const fileUri = await exportLast60MinutesLogsFile(context);
+
+      await Share.share({
+        title: "App logs - last 60 minutes",
+        text: "Attached are the application logs from the last 60 minutes.",
+        files: [fileUri],
+        dialogTitle: "Send logs to the developer",
+      });
+    } catch (error) {
+      await logEvent(
+        "ERROR",
+        "Failed to share logs file",
+        { error: String(error) },
+        "SHARE"
+      );
+
+      await Swal.fire({
+        icon: "error",
+        title: "Error",
+        text: "Could not prepare the logs file.",
+        heightAuto: false,
+      });
+    }
+  };
+
+  // reference: handleOpenMonitor()
+  const draw_realtime_report = (date: any, data: any) => {
+    console.log('===draw_realtime_report===')
+    data.map((row: any) => (
+      <>
+        <tr data-stats={(row.value >= row.overload) ? "overload" : (row.value <= row.underload) ? "unedrload" : "ok"}>
+          <td>{row.lc_id}</td>
+          <td>{(row.value >= row.overload) ? "overload" : (row.value <= row.underload) ? "unedrload" : ""}</td>
+          <td className={(row.value > row.overload || row.value < row.underload) ? "bg-danger" : ""}>{row.value}</td>
+          {/* <td>{moment.unix(row.log_date / 1000).format("YYYY-MM-DDTHH:mm")}</td> */}
+        </tr >
+      </>
+    ))
+    // $("#warning_log_table").append(log_e);
+  }
+
+  const get_peak = () => {
+    console.log('===get_peak===')
+    if (curProject === null) {
+      return;
+    }
+
+    const myLogsStore = db.logs;
+    const key = 'project_id';
+    const value = curProject.id; // Replace this with the value you are looking fo
+    try {
+      myLogsStore.where(key).equals(value).reverse().first().then(function (data: any) {
+        const peak = data || 0;
+      })
+    } catch (error) {
+      logEvent('ERROR', 'Failure on DB', error);
+      console.error('Error querying data from the table: ' + error);
+    }
+  }
+
+  const ionIcon = true;
+
+  
+
+  return (
+    <>
+      <IonMenu contentId="main" type="overlay">
+        <IonContent className='main-content' >
+          <IonList id="inbox-list" className='bg-transparent dark:bg-dark'>
+            <IonImg src={themeToggle ? darkLogo : lightLogo} alt='logo'></IonImg>
+            <div className='flex flex-row items-center justify-between px-3 mb-4 gap-6'>
+              <div className="flex flex-col text-dark dark:text-light min-w-0 flex-1 ion-select-language-wrapper">
+                <span className="ion-select-language-label text-xs font-medium mb-1">{t("Language")}</span>
+                <IonSelect
+                  value={lang}
+                  className="ion-select-language text-dark dark:text-light"
+                  interface="popover"
+                  onIonChange={(e) => handleChangeLang(e.detail.value)}
+                >
+                  <IonSelectOption value="en">English</IonSelectOption>
+                  <IonSelectOption value="jp">日本語</IonSelectOption>
+                </IonSelect>
+              </div>
+              {/* { mode !== 'dark' ? */}
+              {themeToggle ?
+                <IonIcon src={moonOutline} color='dark' className='text-xl cursor-pointer' onClick={() => handleChangeMode()} />
+                :
+                <IonIcon src={sunnyOutline} className='text-xl cursor-pointer' onClick={() => handleChangeMode()} />
+              }
+            </div>
+            {appPages.map((appPage, index) => {
+              if (appPage.hidden) return null;
+              if (appPage.title === '') return null;
+              if (ModalMenus.includes(appPage.title)) {
+                const isSelected = location.pathname === appPage.url;
+                const itemColor = isSelected ? 'primary' : (themeToggle ? 'light' : 'dark');
+                const textClass = themeToggle ? (isSelected ? '' : '!text-white') : (isSelected ? '' : '!text-black dark:!text-white');
+                if (appPage.title === MENUS.Monitor) {
+                  return (
+                    <IonMenuToggle key={index} autoHide={false} onClick={() => handleOpenMonitor()}>
+                      <IonItem className={`bg-white dark:bg-dark cursor-pointer ${textClass}`} routerDirection="none" lines="none" detail={false}>
+                        {ionIcon ? <IonIcon color={itemColor} className={textClass} aria-hidden="true" slot="start" ios={appPage.iosIcon} md={appPage.mdIcon} />
+                          : <IonImg src={appPage.imgIcon} alt='' className='w-10 mr-2' />}
+                        <IonLabel color={itemColor} className={textClass}>{t(`Menu.${appPage.title}`)}</IonLabel>
+                      </IonItem>
+                    </IonMenuToggle>
+                  );
+                } else
+                  return (
+                    <IonMenuToggle key={index} className='bg-white dark:bg-dark' autoHide={false} onClick={() => updateVisibleModal(appPage.title)}>
+                      <IonItem className={`bg-white dark:bg-dark cursor-pointer ${textClass}`} lines="none" detail={false}>
+                        {ionIcon ? <IonIcon color={itemColor} className={textClass} aria-hidden="true" slot="start" ios={appPage.iosIcon} md={appPage.mdIcon} />
+                          : <IonImg src={appPage.imgIcon} alt='' className='w-10 mr-2' />}
+                        <IonLabel color={itemColor} className={textClass}>{t(`Menu.${appPage.title}`)}</IonLabel>
+                      </IonItem>
+                    </IonMenuToggle>
+                  )
+              } else {
+                const isSelected = location.pathname === appPage.url;
+                const itemColor = isSelected ? 'primary' : (themeToggle ? 'light' : 'dark');
+                const textClass = themeToggle ? (isSelected ? '' : '!text-white') : (isSelected ? '' : '!text-black dark:!text-white');
+                return (
+                  <IonMenuToggle key={index} autoHide={false}>
+                    <IonItem className={`bg-white dark:bg-dark ${textClass}`} routerLink={appPage.url} routerDirection="none" lines="none" detail={false}>
+                      {ionIcon ? <IonIcon color={itemColor} className={textClass} aria-hidden="true" slot="start" ios={appPage.iosIcon} md={appPage.mdIcon} />
+                        : <IonImg src={appPage.imgIcon} alt='' className='w-10 mr-2' />}
+                      <IonLabel color={itemColor} className={textClass}>{t(`Menu.${appPage.title}`)}</IonLabel>
+                    </IonItem>
+                  </IonMenuToggle>
+                );
+              }
+            })
+            /*
+            <IonItem button onClick={() => exportAndSendLogs()} detail={false}>
+            <IonIcon slot="start" icon={mailOutline} />
+            <IonLabel>Send logs to the developer</IonLabel>
+          </IonItem>
+
+
+          <IonItem className='flex items-center gap-2 p-2 cursor-pointer' button onClick={handleSendLogs} detail={false}>
+            <IonIcon slot="start" icon={mailOutline} />
+            <IonLabel>Send logs to the developer</IonLabel>
+          </IonItem>
+
+          */
+            
+            
+            }
+          </IonList>
+
+          
+          
+            <IonItem className='flex items-center gap-2 p-2 cursor-pointer' button onClick={handleSendLogsToDeveloper} detail={false}>
+            <IonIcon slot="start" icon={mailOutline} />
+            <IonLabel>Send logs to the developer</IonLabel>
+          </IonItem>
+          
+
+
+          <h1>version-1.4.0</h1>
+        </IonContent>
+      </IonMenu>
+    </>
+  );
+};
+
+export default Menu;

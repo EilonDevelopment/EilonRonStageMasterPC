@@ -1,0 +1,7 @@
+{
+  "name": "eilon.app",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "react"
+}
