@@ -1,4 +1,4 @@
-import React, { FC, useEffect, useRef, useState } from "react";
+import React, { FC, useEffect, useMemo, useRef, useState } from "react";
 import { IonIcon, IonToggle } from "@ionic/react";
 import { useTranslation } from "react-i18next";
 import { codeSlashSharp, cubeSharp, documentSharp, downloadSharp, mailSharp, refreshSharp, trashSharp } from "ionicons/icons";
@@ -11,6 +11,7 @@ import useAppData from "../../hooks/useAppData";
 import Text from "../../components/Text";
 import { IProject } from "../../helper/types";
 import { normalizeProjectId } from "../../helper/functions";
+import { buildReportGroupsAsync, type ReportGroupQuery } from "../../helper/reportGrouping";
 import { db } from '../../db'
 import Swal from "sweetalert2";
 import Spinner from "../../components/Spinner";
@@ -61,6 +62,8 @@ const Report: FC = () => {
   const [loadStatus, setLoadStatus] = useState<boolean>(false)
   const [rawLogs, setRawLogs] = useState<any[] | null>(null);
   const PAGE_SIZE = 10
+  /** First load only: fewer rows = faster UI (same date range; use Load more for full cap). */
+  const REPORT_PREVIEW_ROW_LIMIT = 800
   const MAX_REPORT_LOGS = 15000
   const MAX_ANDROID_EXPORT_ROWS = 20000
   const [page, setPage] = useState<number>(1)
@@ -231,68 +234,19 @@ const Report: FC = () => {
   };
 
   const loadReqIdRef = useRef(0);
+  const filterBuildGenRef = useRef(0);
   const [isPreview, setIsPreview] = useState(false);
   const [canLoadMore, setCanLoadMore] = useState(false);
   const lastQueryRef = useRef<any>(null);
 
-  const buildGroupedLogList = (allLogs: any[], query: {
-    ok: boolean; overload: boolean; danger: boolean; underload: boolean; trerr: boolean; report_interval_seconds: number;
-  }) => {
-    const { ok, overload, danger, underload, trerr, report_interval_seconds } = query;
-
-    const hasLogType = (log: any) =>
-      log.log_type != null &&
-      String(log.log_type).trim() !== '' &&
-      String(log.log_type).toLowerCase() !== 'agg';
-    const logType = (log: any) => String(log.log_type).toLowerCase();
-    const n = (x: any) => Number(x);
-    const isAggRow = (log: any) => String(log?.log_type ?? '').toLowerCase() === 'agg';
-    const byFilter = (log: any) => {
-      const valueN = n(log.value);
-      const overloadN = n(log.overload);
-      const underloadN = n(log.underload);
-
-      if (isAggRow(log) && (Number.isNaN(overloadN) || Number.isNaN(underloadN))) {
-        if (trerr && valueN === -99999999) return true;
-        if (ok) return true;
-        return false;
-      }
-
-      if (ok && (hasLogType(log) ? logType(log) === 'ok' : (valueN >= underloadN && valueN <= overloadN))) return true;
-      if (overload && (hasLogType(log) ? logType(log) === 'overload' : valueN > overloadN)) return true;
-      if (danger) {
-        const isDangerByType = hasLogType(log) && logType(log) === 'danger';
-        const isDangerByValue = overloadN > 0 && valueN >= overloadN * 1.3;
-        if (isDangerByType || isDangerByValue) return true;
-      }
-      if (underload && (hasLogType(log) ? logType(log) === 'underload' : (valueN < underloadN && valueN !== -99999999))) return true;
-      if (trerr && (hasLogType(log) ? logType(log) === 'err' : valueN === -99999999)) return true;
-      return false;
-    };
-
-    const hasAnyFilter = ok || overload || danger || underload || trerr;
-    const mergedLogs = hasAnyFilter ? allLogs.filter(byFilter) : allLogs;
-
-    const validLogs = mergedLogs.filter((log: any) => {
-      const value = parseFloat(log.value);
-      const realval = parseFloat(log.realval);
-      const valueOk = !isNaN(value);
-      const realvalOk = !isNaN(realval);
-      return valueOk || realvalOk;
-    });
-
-    if (validLogs.length === 0) return { groups: null as any, rowCount: 0 };
-
-    const intervalMs = Math.max(1000, (report_interval_seconds || 60) * 1000);
-    const groups: any = {};
-    validLogs.forEach((log: any) => {
-      const intervalStart = Math.floor(Number(log.log_date) / intervalMs) * intervalMs;
-      const key = format(new Date(intervalStart), "yyyy-MM-dd HH:mm:ss");
-      groups[key] = groups[key] || [];
-      groups[key].push(log);
-    });
-    return { groups, rowCount: mergedLogs.length };
-  };
+  const reportGroupQuery = (report_interval_seconds: number): ReportGroupQuery => ({
+    ok: filter.ok,
+    overload: filter.overload,
+    danger: filter.danger,
+    underload: filter.underload,
+    trerr: filter.err,
+    report_interval_seconds,
+  });
 
   const load_reports = async (project_id: any, fromVal: any, toVal: any, report_interval_seconds = 60) => {
     reportTrace('INICIO: load_reports', { project_id, fromVal, toVal, report_interval_seconds });
@@ -339,9 +293,7 @@ const Report: FC = () => {
         return;
       }
 
-      const PREVIEW_LIMIT = 2000;
-      const isLast24h = (to - from) <= 24 * 60 * 60 * 1000 + 1000;
-      const previewLimit = isLast24h ? PREVIEW_LIMIT : PREVIEW_LIMIT; // still helpful even for larger ranges
+      const previewLimit = REPORT_PREVIEW_ROW_LIMIT;
 
       const allLogs = await withTimeout(fetchProjectLogsInRange(project_id, from, to, previewLimit), 30000);
       if (loadReqIdRef.current !== reqId) return;
@@ -362,14 +314,14 @@ const Report: FC = () => {
         const previewTruncated = allLogs.length >= previewLimit;
         setIsPreview(previewTruncated);
         setCanLoadMore(previewTruncated);
-        const { groups } = buildGroupedLogList(allLogs, {
-          ok: filter.ok,
-          overload: filter.overload,
-          danger: filter.danger,
-          underload: filter.underload,
-          trerr: filter.err,
-          report_interval_seconds,
-        });
+        const groupResult = await buildReportGroupsAsync(
+          allLogs,
+          reportGroupQuery(report_interval_seconds),
+          () => loadReqIdRef.current !== reqId
+        );
+        if (loadReqIdRef.current !== reqId) return;
+        if (groupResult.cancelled) return;
+        const { groups } = groupResult;
 
         if (!groups) {
           setLogList(null);
@@ -464,14 +416,14 @@ const Report: FC = () => {
       if (loadReqIdRef.current !== reqId) return;
 
       setRawLogs(allLogs);
-      const { groups } = buildGroupedLogList(allLogs, {
-        ok: filter.ok,
-        overload: filter.overload,
-        danger: filter.danger,
-        underload: filter.underload,
-        trerr: filter.err,
-        report_interval_seconds,
-      });
+      const groupResult = await buildReportGroupsAsync(
+        allLogs,
+        reportGroupQuery(report_interval_seconds),
+        () => loadReqIdRef.current !== reqId
+      );
+      if (loadReqIdRef.current !== reqId) return;
+      if (groupResult.cancelled) return;
+      const { groups } = groupResult;
       if (!groups) {
         setLogList(null);
         Swal.fire({
@@ -525,9 +477,16 @@ const Report: FC = () => {
     console.log("===draw_report_table===")
   }
 
+  const sortedIntervalKeys = useMemo(() => {
+    if (!logList || typeof logList !== 'object') return [] as string[];
+    return (Object.keys(logList) as string[]).sort(
+      (a, b) => new Date(b).getTime() - new Date(a).getTime()
+    );
+  }, [logList]);
+
   const ReportTable = () => {
     if (!logList || loading) return null
-    const intervalKeys = (Object.keys(logList) as string[]).sort((a, b) => new Date(b).getTime() - new Date(a).getTime())
+    const intervalKeys = sortedIntervalKeys
     const totalIntervals = intervalKeys.length
     const totalPages = Math.max(1, Math.ceil(totalIntervals / PAGE_SIZE))
     const currentPage = Math.min(page, totalPages)
@@ -558,12 +517,18 @@ const Report: FC = () => {
               <tbody>
                 {paginatedByDate[key].map((sItem: any, sKey: any) => {
                   const lc = lcs.find((cItem: any) => cItem.id === sItem.lc_id?.toString());
-                  const isTrErr = (sItem.log_type != null && String(sItem.log_type).toLowerCase() === 'err') || Number(sItem.value) === -99999999;
-                  const displayLoad = isTrErr ? 'Tr.Err' : `${sItem.value ?? ''} ${sItem.unit ?? ''}`.trim();
+                  const lt = String(sItem.log_type || '').toLowerCase();
+                  const isPrrLink = lt === 'prr_connected' || lt === 'prr_disconnected';
+                  const titleCell = isPrrLink
+                    ? (lt === 'prr_connected' ? 'PRR connected' : 'PRR disconnected')
+                    : lc?.title;
+                  const idCell = isPrrLink ? (sItem.unit != null && String(sItem.unit) !== '' ? String(sItem.unit) : '—') : lc?.id;
+                  const isTrErr = !isPrrLink && ((sItem.log_type != null && String(sItem.log_type).toLowerCase() === 'err') || Number(sItem.value) === -99999999);
+                  const displayLoad = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : `${sItem.value ?? ''} ${sItem.unit ?? ''}`.trim());
                   return (
                     <tr key={sKey} className="w-full">
-                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{lc?.title}</td>
-                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{lc?.id}</td>
+                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{titleCell}</td>
+                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{idCell}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{displayLoad}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{formatBattery(sItem.battery)}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{format(sItem.log_date, "yyyy-MM-dd pp")}</td>
@@ -639,6 +604,9 @@ const Report: FC = () => {
   };
 
   const formatLogLoad = (log: any) => {
+    const plt = String(log.log_type || '').toLowerCase();
+    if (plt === 'prr_connected') return 'PRR connected';
+    if (plt === 'prr_disconnected') return 'PRR disconnected';
     const isErr = (log.log_type != null && String(log.log_type).toLowerCase() === 'err') || Number(log.value) === -99999999;
     return isErr ? 'Tr.Err' : `${log.value ?? ''} ${log.unit ?? ''}`.trim();
   };
@@ -650,6 +618,15 @@ const Report: FC = () => {
   };
   const getReportRows = (data: any[]) =>
     data.map((log: any) => {
+      const plt = String(log.log_type || '').toLowerCase();
+      if (plt === 'prr_connected' || plt === 'prr_disconnected') {
+        return {
+          Unit: plt === 'prr_connected' ? 'PRR connected' : 'PRR disconnected',
+          Load: log.unit != null ? String(log.unit) : '',
+          Battery: '',
+          Time: format(new Date(log.log_date), 'yyyy-MM-dd HH:mm:ss'),
+        };
+      }
       const lc = lcs.find((c: any) => c.id === log.lc_id?.toString());
       return {
         Unit: (lc?.title || log.lc_id || '').toString(),
@@ -1185,19 +1162,17 @@ const Report: FC = () => {
     setLoadStatus(true)
   }
 
-  // Apply checkbox filters instantly without re-querying IndexedDB.
+  // Re-apply checkbox filters without re-querying IndexedDB. Chunked async work so huge Ok/Tr.Err sets do not freeze the UI.
   useEffect(() => {
     if (!rawLogs) return;
-    const { groups } = buildGroupedLogList(rawLogs, {
-      ok: filter.ok,
-      overload: filter.overload,
-      danger: filter.danger,
-      underload: filter.underload,
-      trerr: filter.err,
-      report_interval_seconds: reportIntervalSeconds,
-    });
-    setLogList(groups);
-    setPage(1);
+    const gen = ++filterBuildGenRef.current;
+    const q = reportGroupQuery(reportIntervalSeconds);
+    void (async () => {
+      const result = await buildReportGroupsAsync(rawLogs, q, () => gen !== filterBuildGenRef.current);
+      if (gen !== filterBuildGenRef.current || result.cancelled) return;
+      setLogList(result.groups);
+      setPage(1);
+    })();
   }, [filter.ok, filter.overload, filter.danger, filter.underload, filter.err, rawLogs, reportIntervalSeconds]);
 
   const selectedProject = projectList.find((p: IProject) => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
@@ -1211,15 +1186,15 @@ const Report: FC = () => {
             {projectList.length > 0 && projectList.map((item: IProject, index: number) => {
               const isSelected = normalizeProjectId(item.id) === normalizeProjectId(selectedId);
               return (
-                <ul
+                <button
                   key={index}
-                  className={`list-disc list-inside px-4 py-1 cursor-pointer ${isSelected ? 'ring-2 ring-primary rounded font-bold shadow-md' : ''}`}
+                  type="button"
+                  className={`w-full text-left border-0 bg-transparent px-4 py-1 cursor-pointer flex items-baseline gap-2 ${isSelected ? 'ring-2 ring-primary rounded font-bold shadow-md' : ''}`}
                   onClick={() => setSelectedId(String(item.id))}
                 >
-                  <li>
-                    <Text classes={isSelected ? 'text-primary font-bold' : 'text-primary'} label={item.title} />
-                  </li>
-                </ul>
+                  <span className="text-primary shrink-0 select-none" aria-hidden>•</span>
+                  <Text classes={isSelected ? 'text-primary font-bold' : 'text-primary'} label={item.title} />
+                </button>
               );
             })}
           </div>
@@ -1235,38 +1210,55 @@ const Report: FC = () => {
               <div className="flex flex-row items-center gap-2 py-2">
                 <Text label={`${t('Report.Export')}: `} />
                 {ExportList.filter((item) => !(item as { hidden?: boolean }).hidden).map((item, key) => (
-                  <div
+                  <button
                     key={key}
-                    className="flex flex-row items-center gap-1"
-                    onClick={() => handleExport(item.title)}
+                    type="button"
+                    className="flex flex-row items-center gap-1 border-0 bg-transparent p-0 cursor-pointer touch-manipulation"
+                    onClick={() => void handleExport(item.title)}
                   >
                     <IonIcon src={item.icon} color="primary" />
                     <Text label={item.title} />
-                  </div>
+                  </button>
                 ))}
               </div>
               <hr className="w-full border border-gray-300" />
               <div className="flex flex-col gap-2">
                 <Text label={`${t('Common.Filter')}:`} />
                 <div className="flex flex-row flex-wrap items-center gap-x-4 gap-y-2">
-                  <div className='flex flex-row justify-center items-center gap-2' onClick={() => handleChangeFilter('ok', !filter.ok)}>
-                    <IonToggle checked={filter.ok} onChange={() => { console.log('') }} />
+                  {/* Use only onIonChange — wrapping div onClick + IonToggle caused double-toggles on iOS and ghost touch issues */}
+                  <div className="flex flex-row justify-center items-center gap-2">
+                    <IonToggle
+                      checked={filter.ok}
+                      onIonChange={(e) => handleChangeFilter('ok', e.detail.checked)}
+                    />
                     <Text label={t('Common.Okay')} />
                   </div>
-                  <div className='flex flex-row justify-center items-center gap-2' onClick={() => handleChangeFilter('overload', !filter.overload)}>
-                    <IonToggle checked={filter.overload} onChange={() => { console.log('') }} />
+                  <div className="flex flex-row justify-center items-center gap-2">
+                    <IonToggle
+                      checked={filter.overload}
+                      onIonChange={(e) => handleChangeFilter('overload', e.detail.checked)}
+                    />
                     <Text label={t('Common.Overload')} />
                   </div>
-                  <div className='flex flex-row justify-center items-center gap-2' onClick={() => handleChangeFilter('danger', !filter.danger)}>
-                    <IonToggle checked={filter.danger} onChange={() => { console.log('') }} />
+                  <div className="flex flex-row justify-center items-center gap-2">
+                    <IonToggle
+                      checked={filter.danger}
+                      onIonChange={(e) => handleChangeFilter('danger', e.detail.checked)}
+                    />
                     <Text label={t('Common.Danger')} />
                   </div>
-                  <div className='flex flex-row justify-center items-center gap-2' onClick={() => handleChangeFilter('underload', !filter.underload)}>
-                    <IonToggle checked={filter.underload} onChange={() => { console.log('') }} />
+                  <div className="flex flex-row justify-center items-center gap-2">
+                    <IonToggle
+                      checked={filter.underload}
+                      onIonChange={(e) => handleChangeFilter('underload', e.detail.checked)}
+                    />
                     <Text label={t('Common.Underload')} />
                   </div>
-                  <div className='flex flex-row justify-center items-center gap-2' onClick={() => handleChangeFilter('err', !filter.err)}>
-                    <IonToggle checked={filter.err} onChange={() => { console.log('') }} />
+                  <div className="flex flex-row justify-center items-center gap-2">
+                    <IonToggle
+                      checked={filter.err}
+                      onIonChange={(e) => handleChangeFilter('err', e.detail.checked)}
+                    />
                     <Text label={t('Common.TrErr')} />
                   </div>
                 </div>
@@ -1277,7 +1269,10 @@ const Report: FC = () => {
                       type="date"
                       value={format(new Date(filter.start).toISOString(), 'yyyy-MM-dd')}
                       className="outline-none border border-dark rounded p-1"
-                      onChange={(e) => handleChangeFilter('start', new Date(getTime(e.target.value) + new Date().getTimezoneOffset() * 60 * 1000))}
+                      onChange={(e) => {
+                        handleChangeFilter('start', new Date(getTime(e.target.value) + new Date().getTimezoneOffset() * 60 * 1000));
+                        e.currentTarget.blur();
+                      }}
                     />
                   </div>
                   <div className="flex flex-row items-center gap-2">
@@ -1286,23 +1281,31 @@ const Report: FC = () => {
                       type="date"
                       value={format(new Date(filter.end), 'yyyy-MM-dd')}
                       className="outline-none border border-dark rounded p-1"
-                      onChange={(e) => handleChangeFilter('end', new Date(getTime(e.target.value) + new Date().getTimezoneOffset() * 60 * 1000))}
+                      onChange={(e) => {
+                        handleChangeFilter('end', new Date(getTime(e.target.value) + new Date().getTimezoneOffset() * 60 * 1000));
+                        e.currentTarget.blur();
+                      }}
                     />
                   </div>
                 </div>
               </div>
               <div className="flex gap-2">
-                <div className={`p-2 w-max rounded flex justify-center items-center ${logList ? 'bg-danger' : 'bg-red-300'}`}
-                  onClick={() => handleRemove()}
+                <button
+                  type="button"
+                  className={`p-2 w-max rounded flex justify-center items-center border-0 ${logList ? 'bg-danger' : 'bg-red-300'}`}
+                  onClick={() => void handleRemove()}
+                  aria-label={t('Common.Delete')}
                 >
                   <IonIcon icon={trashSharp} color="light" />
-                </div>
-                <div
-                  className={`p-2 w-max rounded flex justify-center items-center bg-primary`}
+                </button>
+                <button
+                  type="button"
+                  className="p-2 w-max rounded flex justify-center items-center bg-primary border-0"
                   onClick={() => handleRefresh()}
+                  aria-label={t('Common.Refresh')}
                 >
                   <IonIcon icon={refreshSharp} color="light" />
-                </div>
+                </button>
                 {isPreview && canLoadMore && (
                   <button
                     type="button"

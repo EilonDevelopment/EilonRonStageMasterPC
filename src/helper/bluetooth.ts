@@ -1,4 +1,5 @@
 import { BleClient, numbersToDataView, numberToUUID } from '@capacitor-community/bluetooth-le';
+import { BLE_CONNECT_TIMEOUT_MS } from './bleConstants';
 
 const HEART_RATE_SERVICE = '0000180d-0000-1000-8000-00805f9b34fb';
 const HEART_RATE_MEASUREMENT_CHARACTERISTIC = '00002a37-0000-1000-8000-00805f9b34fb';
@@ -20,7 +21,9 @@ export async function main(): Promise<void> {
     console.log('')
     // connect to device, the onDisconnect callback is optional
     console.log('device info: ', device)
-    await BleClient.connect(device.deviceId, (deviceId) => onDisconnect(deviceId));
+    await BleClient.connect(device.deviceId, (deviceId) => onDisconnect(deviceId), {
+      timeout: BLE_CONNECT_TIMEOUT_MS,
+    });
     console.log('connected to device', device);
 
     const result = await BleClient.read(device.deviceId, HEART_RATE_SERVICE, BODY_SENSOR_LOCATION_CHARACTERISTIC);

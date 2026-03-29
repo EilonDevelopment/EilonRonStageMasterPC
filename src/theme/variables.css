@@ -399,3 +399,27 @@ ion-header ion-toolbar:first-child {
     padding-top: env(safe-area-inset-top, 20px);
   }
 }
+
+/* Real buttons / inputs only — do NOT set touch-action on ion-content or ion-toolbar (breaks first tap on iOS/Ionic). */
+ion-menu-button,
+ion-button,
+button,
+input[type="button"],
+input[type="submit"],
+input[type="date"],
+input[type="file"] {
+  touch-action: manipulation;
+}
+
+/* Toast list should not intercept taps meant for the page */
+.Toastify__toast-container {
+  pointer-events: none;
+}
+.Toastify__toast {
+  pointer-events: auto;
+}
+
+/* SweetAlert2 hide animation: backdrop can still sit full-screen briefly and steal taps on WKWebView */
+.swal2-container.swal2-backdrop-hide {
+  pointer-events: none !important;
+}

@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { IonApp, IonRouterOutlet, IonSplitPane, setupIonicReact } from "@ionic/react";
+import { IonApp, IonRouterOutlet, setupIonicReact } from "@ionic/react";
 import { IonReactRouter } from "@ionic/react-router";
 import { Redirect, Route } from "react-router-dom";
 import Menu from "./components/Menu";
@@ -38,7 +38,9 @@ import { logEvent } from "./services/LogService";
 
 Chart.register(CategoryScale);
 
-setupIonicReact();
+// Disable iOS edge swipe-back on IonRouterOutlet: users confused it with “open menu” and landed on
+// the previous route (e.g. Settings). Menu opens only via IonMenuButton; see Menu.tsx swipeGesture.
+setupIonicReact({ swipeBackEnabled: false });
 void logEvent("INFO", "Application started", {
   route: window.location.pathname,
 }, "APP");
@@ -49,7 +51,6 @@ const App: React.FC = () => {
   useEffect(() => {
     let resumeAlertHandle: any;
     let pauseHandle: any;
-    let resumeLogHandle: any;
 
     const setupAppListeners = async () => {
       resumeAlertHandle = await Application.addListener("resume", () => {
@@ -126,12 +127,6 @@ const App: React.FC = () => {
         route: window.location.pathname,
       }, "APP");
     });
-
-      resumeLogHandle = await Application.addListener("resume", () => {
-        logEvent("INFO", "App resumed (Foreground)", {
-          route: window.location.pathname,
-        }, "APP");
-      });
     };
 
     window.onerror = (msg, url, line, col, error) => {
@@ -156,7 +151,6 @@ const App: React.FC = () => {
     return () => {
       resumeAlertHandle?.remove?.();
       pauseHandle?.remove?.();
-      resumeLogHandle?.remove?.();
       window.onerror = null;
       window.onunhandledrejection = null;
     };
@@ -214,9 +208,9 @@ const App: React.FC = () => {
         newestOnTop={false}
         closeOnClick
         rtl={false}
-        pauseOnFocusLoss
+        pauseOnFocusLoss={false}
         draggable
-        pauseOnHover
+        pauseOnHover={false}
         toastStyle={{
           width: "auto",
           fontSize: "150%",

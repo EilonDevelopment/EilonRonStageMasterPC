@@ -32,6 +32,7 @@ import SuccessModal from '../components/Modals/SuccessModal';
 import ProjectListModal from '../components/Modals/ProjectListModal';
 import ProofTestModal from '../components/Modals/ProofTestModal';
 import SelectDeviceModal from '../components/Modals/SelectDeviceModal';
+import BleDeviceListModal from '../components/Modals/BleDeviceListModal';
 import TotalizerModal from '../components/Modals/TotalizerModal';
 import DocumentModal from '../components/Modals/DocumentModal';
 import ProjectInformationModal from '../components/Modals/ProjectInformationModal';
@@ -56,6 +57,8 @@ import { Share } from '@capacitor/share';
 // reglas nativas en los helpers, no duplicar aquí.
 import { checkNativeBleScanPrerequisites } from '../helper/nativeBleScan';
 import { pickProjectCsvText, shouldUseNativeCsvPickerForImport } from '../helper/nativeProjectCsvImport';
+import { BLE_CONNECT_TIMEOUT_MS, BLE_SCAN_DURATION_MS } from '../helper/bleConstants';
+import { collectBleDevicesForService, type BleDiscoveredDevice } from '../helper/bleLeScanCollection';
 import { toast } from 'react-toastify';
 import useFunctions from '../hooks/useFunctions';
 
@@ -92,13 +95,17 @@ interface CommonLayoutProps {
 const LC_DISPLAY_BATCH_MS_DEFAULT = 100;
 
 const getLcDisplayBatchMs = (platformType: string | undefined, lcCount: number): number => {
-  const isAndroid = String(platformType).toLowerCase() === 'android';
-  if (!isAndroid) return LC_DISPLAY_BATCH_MS_DEFAULT;
-  // More LCs => fewer flushes to keep WebView renderer stable.
-  if (lcCount >= 75) return 333; // ~3 FPS
-  if (lcCount >= 50) return 250; // ~4 FPS
-  if (lcCount >= 25) return 150; // ~6 FPS
-  return LC_DISPLAY_BATCH_MS_DEFAULT; // 10 FPS
+  const p = String(platformType).toLowerCase();
+  const isAndroid = p === 'android';
+  const isIos = p === 'ios';
+  // More LCs => fewer flushes to keep WebView renderer stable (Android + iPad).
+  if (isAndroid || isIos) {
+    if (lcCount >= 75) return 333;
+    if (lcCount >= 50) return 250;
+    if (lcCount >= 25) return 150;
+  }
+  if (isAndroid) return LC_DISPLAY_BATCH_MS_DEFAULT;
+  return LC_DISPLAY_BATCH_MS_DEFAULT;
 };
 
 type PendingLCDisplay = {
@@ -193,6 +200,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     f_lc_capacity_id,
     f_lc_by_id,
     f_log_lc_value,
+    f_log_prr_link_event,
     f_log_delete,
     f_load_cells,
     f_insert_lc,
@@ -254,6 +262,11 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const activeAlertsRef = useRef<Set<string>>(new Set());
 
   const [showLocationAlert, setShowLocationAlert] = useState(false);
+  const [blePickerOpen, setBlePickerOpen] = useState(false);
+  const [blePickerScanning, setBlePickerScanning] = useState(false);
+  const [blePickerDevices, setBlePickerDevices] = useState<BleDiscoveredDevice[]>([]);
+  const [blePickerType, setBlePickerType] = useState<'prr' | 'lc' | null>(null);
+  const bleScanAbortRef = useRef(false);
 
   useEffect(() => {
     locationRef.current = location.pathname + location.search + (location.hash || '')
@@ -878,36 +891,27 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   }
 };
 
-  const bt_scan = async (type: string) => {
-    void logEvent("INFO", "BLE scan started", {}, "BLE");
-    // no device paired yet
+  const bleConnectToDevice = async (deviceId: string, type: string, displayName?: string) => {
     const s = (type == "prr") ? numberToUUID(0xfff0) : '0bd51666-e7cb-469b-8e4d-2742f1ba77cc';
     const c = (type == "prr") ? numberToUUID(0xfff4) : 'e7add780-b042-4876-aae1-112855353cc1';
-
-  
     try {
-      //await BleClient.initialize();
-
-      const device = await BleClient.requestDevice({
-        services: [s],
-        optionalServices: []
+      await BleClient.connect(deviceId, (did) => bt_disconnect(did), {
+        timeout: BLE_CONNECT_TIMEOUT_MS,
       });
-
-      //  connect to device, the bt_disconnect callback is optional
-      await BleClient.connect(device.deviceId, (deviceId) => bt_disconnect(deviceId));
+      if (type === 'prr') {
+        prrBleDeviceIdRef.current = deviceId;
+        prrBleDisplayNameRef.current =
+          (displayName && displayName.trim()) || deviceId;
+      }
       updateBleConnected(true);
-
-      const services = await BleClient.getServices(device.deviceId);
-      //console.log('services: ', services)
-      void logEvent("INFO", "BLE device connected", { device, name }, "BLE");
+      await BleClient.getServices(deviceId);
+      void logEvent("INFO", "BLE device connected", { deviceId, type }, "BLE");
       await BleClient.startNotifications(
-        device.deviceId,
+        deviceId,
         s,
         c,
         (value) => {
-          // //console.log('[BT] Received notification at:', new Date().toISOString(), 'buffer length:', value.buffer.byteLength);
           bt_parse(new Uint8Array(value.buffer));
-          // //console.log('[BT] After bt_parse, value:', value)
         }
       );
     } catch (error) {
@@ -915,7 +919,81 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       void logEvent("ERROR", "BLE notification setup failed", { error }, "BLE");
       updateBleConnected(false);
     }
-  }
+  };
+
+  const runBleDevicePickerFlow = async (kind: "prr" | "lc") => {
+    const s =
+      kind === "prr"
+        ? numberToUUID(0xfff0)
+        : "0bd51666-e7cb-469b-8e4d-2742f1ba77cc";
+    bleScanAbortRef.current = false;
+    setBlePickerType(kind);
+    setBlePickerDevices([]);
+    setBlePickerScanning(true);
+    setBlePickerOpen(true);
+    try {
+      const devices = await collectBleDevicesForService(s, BLE_SCAN_DURATION_MS, [], bleScanAbortRef);
+      if (bleScanAbortRef.current) {
+        return;
+      }
+      setBlePickerDevices(devices);
+    } catch (error) {
+      console.error(error);
+      void logEvent("ERROR", "BLE scan collection failed", { error }, "BLE");
+      updateErrStr(t("ConnectDevice.ScanFailed") || "Bluetooth scan failed.");
+      setBlePickerOpen(false);
+    } finally {
+      setBlePickerScanning(false);
+    }
+  };
+
+  const handleBlePickerClose = () => {
+    bleScanAbortRef.current = true;
+    void BleClient.stopLEScan().catch(() => undefined);
+    setBlePickerOpen(false);
+    setBlePickerScanning(false);
+    setBlePickerDevices([]);
+    setBlePickerType(null);
+  };
+
+  const handleBlePickerConnect = async (deviceId: string, displayName?: string) => {
+    const kind = blePickerType;
+    bleScanAbortRef.current = true;
+    void BleClient.stopLEScan().catch(() => undefined);
+    setBlePickerOpen(false);
+    setBlePickerScanning(false);
+    setBlePickerDevices([]);
+    setBlePickerType(null);
+    if (!kind) {
+      return;
+    }
+    await bleConnectToDevice(deviceId, kind, displayName);
+  };
+
+  const bt_scan = async (type: string) => {
+    void logEvent("INFO", "BLE scan started", {}, "BLE");
+    const s = (type == "prr") ? numberToUUID(0xfff0) : '0bd51666-e7cb-469b-8e4d-2742f1ba77cc';
+
+    if (Capacitor.getPlatform() === "web") {
+      try {
+        const device = await BleClient.requestDevice({
+          services: [s],
+          optionalServices: [],
+        });
+        await bleConnectToDevice(device.deviceId, type, device.name?.trim() || undefined);
+      } catch (error) {
+        console.error(error);
+        void logEvent("ERROR", "BLE notification setup failed", { error }, "BLE");
+        updateBleConnected(false);
+      }
+      return;
+    }
+
+    if (type !== "prr" && type !== "lc") {
+      return;
+    }
+    await runBleDevicePickerFlow(type);
+  };
 
   const bt_connect = () => {
     //console.log('===bt_connect===')
@@ -1089,12 +1167,24 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const prevCurProjectIdRef = useRef<string | undefined>(curProject?.id);
   const lcDisplayBufferRef = useRef<Record<string, PendingLCDisplay>>({});
   const lastReportTimeRef = useRef<Record<string, number>>({});
+  /** Last PRR BLE peripheral id (iOS UUID). */
+  const prrBleDeviceIdRef = useRef<string | null>(null);
+  /** Friendly name for PRR report rows (ID column); falls back to deviceId if unnamed. */
+  const prrBleDisplayNameRef = useRef<string | null>(null);
+  const prevBlePrrLogRef = useRef<boolean | null>(null);
   // Keep ref in sync every render so flushLcDisplayBuffer always merges buffer into latest lcs (preserves status_tare/tare)
   currentLcs.current = lcs;
 
   const maybeLogLcValue = (lcId: any, projectId: any, value: any, realval: any, overload: any, underload: any, batteryParam?: number | string) => {
     const proj = active_project;
     if (!proj?.cycle) return;
+    const isTrErrSample =
+      value === 'Tr.Err' ||
+      value === 'Tr. Err' ||
+      value === -99999999 ||
+      realval === -99999999;
+    // PRR offline: still show Tr.Err in UI, but do not write 75× Tr.Err/sec to IndexedDB (was killing UI thread).
+    if (isTrErrSample && !bleConnected) return;
     const intervalSec = Math.max(1, Math.min(86400, proj.report_interval_seconds ?? 60));
     const key = `${projectId}_${lcId}`;
     const now = Date.now();
@@ -1968,6 +2058,28 @@ const lastSoundTimeRef = useRef<number>(0);
     updateBleConnected(false);
   }
 
+  useEffect(() => {
+    const proj = active_project;
+    if (!proj?.id || !proj?.cycle) {
+      prevBlePrrLogRef.current = bleConnected;
+      return;
+    }
+    const devId = prrBleDeviceIdRef.current;
+    const reportLabel = (prrBleDisplayNameRef.current && prrBleDisplayNameRef.current.trim()) || devId;
+    const prev = prevBlePrrLogRef.current;
+    if (prev === null) {
+      prevBlePrrLogRef.current = bleConnected;
+      return;
+    }
+    if (bleConnected && !prev && reportLabel) {
+      f_log_prr_link_event(proj.id, 'connected', reportLabel);
+    }
+    if (!bleConnected && prev && reportLabel) {
+      f_log_prr_link_event(proj.id, 'disconnected', reportLabel);
+    }
+    prevBlePrrLogRef.current = bleConnected;
+  }, [bleConnected, active_project?.id, active_project?.cycle]);
+
   const usb_scan = () => {
     //console.log('')
   }
@@ -2409,6 +2521,14 @@ const lastSoundTimeRef = useRef<number>(0);
         data={warnLogs}
         onClear={() => handleAlertClear()}
         onClose={() => handleCloseModal()}
+      />
+
+      <BleDeviceListModal
+        isOpen={blePickerOpen}
+        scanning={blePickerScanning}
+        devices={blePickerDevices}
+        onClose={handleBlePickerClose}
+        onConnect={(id, name) => void handleBlePickerConnect(id, name)}
       />
 
       <IonAlert

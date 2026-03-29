@@ -43,6 +43,7 @@ android/local.properties
 ios/DerivedData/
 ios/Pods/
 ios/App/build/
+ios/build-ipad/
 
 # Local Xcode / Swift driver noise (never commit)
 CompilationCache.noindex/

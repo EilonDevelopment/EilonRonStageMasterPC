@@ -1,0 +1,14 @@
+/* IonModal must not be clipped when nested under IonPage (iPad/WebKit). Portal + explicit size fixes tiny toolbar. */
+ion-modal.ble-device-list-modal {
+  --width: min(92vw, 560px);
+  --min-width: 320px;
+  --max-width: 92vw;
+  --height: min(78vh, 720px);
+  --max-height: 85vh;
+  --border-radius: 12px;
+  --box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+ion-modal.ble-device-list-modal ion-content {
+  --background: var(--ion-background-color, #fff);
+}

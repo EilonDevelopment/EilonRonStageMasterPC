@@ -309,7 +309,8 @@ const Menu: React.FC = () => {
 
   return (
     <>
-      <IonMenu contentId="main" type="overlay">
+      {/* swipeGesture={false}: open side menu only from toolbar hamburger, not edge drag (iOS/Android). */}
+      <IonMenu contentId="main" type="overlay" swipeGesture={false}>
         <IonContent className='main-content' >
           <IonList id="inbox-list" className='bg-transparent dark:bg-dark'>
             <IonImg src={themeToggle ? darkLogo : lightLogo} alt='logo'></IonImg>
