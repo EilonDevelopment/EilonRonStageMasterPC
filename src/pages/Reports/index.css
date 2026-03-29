@@ -1,3 +1,8 @@
+.report-busy-overlay .report-busy-spinner {
+  width: 3.5rem;
+  height: 3.5rem;
+}
+
 .dark ion-toggle {
     padding: 12px;
     --track-background: #aaa;

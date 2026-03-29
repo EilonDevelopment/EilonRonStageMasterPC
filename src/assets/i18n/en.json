@@ -259,7 +259,8 @@
     "ExportSuccessFirstOf": "Report exported (first {{first}} of {{total}} logs). Use CSV for full data.",
     "CycleDisabled": "Reports Cycle is disabled",
     "CycleDisabledMessage": "Reports are not available. Please enable Reports Cycle in project settings to view reports.",
-    "PreparingExport": "Preparing export..."
+    "PreparingExport": "Preparing export...",
+    "LoadingReport": "Loading report data..."
   },
   "Msg": {
     "ConfirmSetting": "Project settings successfully updated",

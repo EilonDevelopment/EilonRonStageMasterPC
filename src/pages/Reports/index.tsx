@@ -1,5 +1,5 @@
 import React, { FC, useEffect, useMemo, useRef, useState } from "react";
-import { IonIcon, IonToggle } from "@ionic/react";
+import { IonIcon, IonSpinner, IonToggle } from "@ionic/react";
 import { useTranslation } from "react-i18next";
 import { codeSlashSharp, cubeSharp, documentSharp, downloadSharp, mailSharp, refreshSharp, trashSharp } from "ionicons/icons";
 import { Capacitor } from '@capacitor/core';
@@ -14,7 +14,6 @@ import { normalizeProjectId } from "../../helper/functions";
 import { buildReportGroupsAsync, type ReportGroupQuery } from "../../helper/reportGrouping";
 import { db } from '../../db'
 import Swal from "sweetalert2";
-import Spinner from "../../components/Spinner";
 import { format, getTime, getUnixTime } from "date-fns"
 import { jsPDF } from 'jspdf';
 import { EmailComposer } from "@awesome-cordova-plugins/email-composer";
@@ -59,6 +58,8 @@ const Report: FC = () => {
   } as LogFilter);
   const [logList, setLogList] = useState<any>(null)
   const [loading, setLoading] = useState<boolean>(false)
+  /** Blocks UI during CSV/PDF/email prep (native Share + large files can take several seconds). */
+  const [exportBusy, setExportBusy] = useState(false)
   const [loadStatus, setLoadStatus] = useState<boolean>(false)
   const [rawLogs, setRawLogs] = useState<any[] | null>(null);
   const PAGE_SIZE = 10
@@ -645,7 +646,8 @@ const Report: FC = () => {
     window.location.href = mailto;
   };
 
-  const androidDeferredAfterIntent = (successMessage: string) => {
+  /** After Share sheet / intent on native: toast instead of Swal (Swal + iOS WKWebView often leaves a black overlay). */
+  const nativeDeferredAfterShare = (successMessage: string) => {
     requestAnimationFrame(() => {
       setTimeout(() => {
         try {
@@ -661,37 +663,37 @@ const Report: FC = () => {
     });
   };
 
-  const ANDROID_EXPORT_PREPARING_TOAST_ID = 'report-android-export-preparing';
-  const ANDROID_EXPORT_TIMEOUT_MS = 60000; // 60s
-  const MAX_ANDROID_PDF_ROWS = 1500; // Limit PDF size on Android so export finishes in seconds
+  const NATIVE_EXPORT_TIMEOUT_MS = 60000; // 60s
+  /** Cap row count for PDF when using native Share (Android + iOS); keeps main thread responsive. */
+  const MAX_NATIVE_PDF_ROWS = 1500;
 
-  const runAndroidExport = (fn: () => Promise<void>) => {
-    toast.info(t('Report.PreparingExport') || 'Preparing export...', { toastId: ANDROID_EXPORT_PREPARING_TOAST_ID });
-    requestAnimationFrame(() => {
-      setTimeout(() => {
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Export timeout')), ANDROID_EXPORT_TIMEOUT_MS)
-        );
-        Promise.race([fn(), timeoutPromise])
-          .then(() => {
-            toast.dismiss(ANDROID_EXPORT_PREPARING_TOAST_ID);
-          })
-          .catch((err) => {
-            toast.dismiss(ANDROID_EXPORT_PREPARING_TOAST_ID);
-            if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
-            console.error('[Report Export] Error:', err);
-            const isTimeout = err?.message === 'Export timeout';
-            Swal.fire({
-              title: tr('Report.Export', 'Export'),
-              text: isTimeout
-                ? tr('Report.ExportTimeout', 'Export took too long. Try a smaller date range or try again.')
-                : tr('Report.ExportError', 'Failed to export.'),
-              icon: 'error',
+  /** Deferred start keeps overlay painted before heavy PDF/CSV work on the main thread. */
+  const runNativeExport = (fn: () => Promise<void>): Promise<void> =>
+    new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Export timeout')), NATIVE_EXPORT_TIMEOUT_MS)
+          );
+          Promise.race([fn(), timeoutPromise])
+            .then(() => resolve())
+            .catch((err) => {
+              if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+              console.error('[Report Export] Error:', err);
+              const isTimeout = err?.message === 'Export timeout';
+              Swal.fire({
+                title: tr('Report.Export', 'Export'),
+                text: isTimeout
+                  ? tr('Report.ExportTimeout', 'Export took too long. Try a smaller date range or try again.')
+                  : tr('Report.ExportError', 'Failed to export.'),
+                icon: 'error',
+                heightAuto: false,
+              });
+              resolve();
             });
-          });
-      }, 50);
+        }, 50);
+      });
     });
-  };
 
   const handleExport = async (type: string) => {
     const logData = getAllLogsFromList();
@@ -707,13 +709,16 @@ const Report: FC = () => {
       return;
     }
 
+    setExportBusy(true);
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    try {
     switch (type) {
       case t('Report.CSV'): {
         try {
-          if (platformType === 'android' && logData.length > MAX_ANDROID_EXPORT_ROWS) {
+          if ((platformType === 'android' || platformType === 'ios') && logData.length > MAX_ANDROID_EXPORT_ROWS) {
             Swal.fire({
               title: t('Report.Export') || 'Export',
-              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on Android.`,
+              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on mobile.`,
               icon: 'warning',
               heightAuto: false,
             });
@@ -739,7 +744,7 @@ const Report: FC = () => {
             a.download = fileName;
             a.click();
             URL.revokeObjectURL(url);
-          } else if (platformType === 'android') {
+          } else if (platformType === 'android' || platformType === 'ios') {
                 const reportRows = getReportRows(logData);
                 const csvChunks: string[] = ['\uFEFFUnit,Load,Battery,Time\r\n'];
                 reportRows.forEach((r) => {
@@ -749,13 +754,13 @@ const Report: FC = () => {
             const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
             if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
             await Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' });
-            androidDeferredAfterIntent(`${t('Report.ExportSuccess') || 'Export success'} (${logData.length} logs).`);
+            nativeDeferredAfterShare(`${t('Report.ExportSuccess') || 'Export success'} (${logData.length} logs).`);
           } else {
             await Filesystem.writeFile({ path: fileName, data: '\uFEFF' + csvStr, directory: Directory.Documents, encoding: Encoding.UTF8 });
-            Swal.fire({ title: t('Report.Export') || 'Export', text: `${t('Report.ExportSuccess')} (${logData.length} logs).`, icon: 'success' });
+            Swal.fire({ title: t('Report.Export') || 'Export', text: `${t('Report.ExportSuccess')} (${logData.length} logs).`, icon: 'success', heightAuto: false });
           }
         } catch (err) {
-          if (platformType === 'android' && typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+          if ((platformType === 'android' || platformType === 'ios') && typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
           console.error('[Report Export] CSV export error:', err);
           Swal.fire({
             title: t('Report.Export') || 'Export',
@@ -766,17 +771,17 @@ const Report: FC = () => {
         break;
       }
       case t('Report.JSON'): {
-        if (platformType === 'android') {
+        if (platformType === 'android' || platformType === 'ios') {
           if (logData.length > MAX_ANDROID_EXPORT_ROWS) {
             Swal.fire({
               title: t('Report.Export') || 'Export',
-              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on Android.`,
+              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on mobile.`,
               icon: 'warning',
               heightAuto: false,
             });
             return;
           }
-          runAndroidExport(async () => {
+          await runNativeExport(async () => {
             try {
               const reportRows = getReportRows(logData);
               const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.json`;
@@ -789,7 +794,7 @@ const Report: FC = () => {
               const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
               if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
               await Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' });
-              androidDeferredAfterIntent(`${t('Report.ExportSuccess') || 'Export success'} (${logData.length} logs).`);
+              nativeDeferredAfterShare(`${t('Report.ExportSuccess') || 'Export success'} (${logData.length} logs).`);
             } catch (err) {
               if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
               console.error('[Report Export] JSON export error:', err);
@@ -821,17 +826,17 @@ const Report: FC = () => {
         break;
       }
       case t('Report.SQL'): {
-        if (platformType === 'android') {
+        if (platformType === 'android' || platformType === 'ios') {
           if (logData.length > MAX_ANDROID_EXPORT_ROWS) {
             Swal.fire({
               title: t('Report.Export') || 'Export',
-              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on Android.`,
+              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on mobile.`,
               icon: 'warning',
               heightAuto: false,
             });
             return;
           }
-          runAndroidExport(async () => {
+          await runNativeExport(async () => {
             try {
               const reportRows = getReportRows(logData);
               const escape = (v: any) => {
@@ -847,7 +852,7 @@ const Report: FC = () => {
               const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
               if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
               await Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' });
-              androidDeferredAfterIntent(`${t('Report.ExportSuccess') || 'Export success'} (${logData.length} logs).`);
+              nativeDeferredAfterShare(`${t('Report.ExportSuccess') || 'Export success'} (${logData.length} logs).`);
             } catch (err) {
               if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
               console.error('[Report Export] SQL export error:', err);
@@ -886,21 +891,21 @@ const Report: FC = () => {
         break;
       }
       case t('Report.PDF'): {
-        if (platformType === 'android') {
+        if (platformType === 'android' || platformType === 'ios') {
           if (logData.length > MAX_ANDROID_EXPORT_ROWS) {
             Swal.fire({
               title: t('Report.Export') || 'Export',
-              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on Android.`,
+              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on mobile.`,
               icon: 'warning',
               heightAuto: false,
             });
             return;
           }
-          runAndroidExport(async () => {
+          await runNativeExport(async () => {
             try {
               const totalRows = logData.length;
-              const capped = totalRows > MAX_ANDROID_PDF_ROWS;
-              const rowsForPdf = capped ? getReportRows(logData).slice(0, MAX_ANDROID_PDF_ROWS) : getReportRows(logData);
+              const capped = totalRows > MAX_NATIVE_PDF_ROWS;
+              const rowsForPdf = capped ? getReportRows(logData).slice(0, MAX_NATIVE_PDF_ROWS) : getReportRows(logData);
               const project = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
               const doc = new jsPDF('p', 'mm', 'a4');
               const pageW = doc.internal.pageSize.getWidth();
@@ -957,7 +962,7 @@ const Report: FC = () => {
                 y += 6;
                 doc.setFontSize(7);
                 doc.setTextColor(120, 120, 120);
-                doc.text(t('Report.PdfTruncatedNote') || `First ${MAX_ANDROID_PDF_ROWS} of ${totalRows} rows. Use CSV for full report.`, margin, y);
+                doc.text(t('Report.PdfTruncatedNote') || `First ${MAX_NATIVE_PDF_ROWS} of ${totalRows} rows. Use CSV for full report.`, margin, y);
                 doc.setTextColor(0, 0, 0);
               }
               const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.pdf`;
@@ -967,9 +972,9 @@ const Report: FC = () => {
               if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
               await Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' });
               const successMsg = capped
-                ? (t('Report.ExportSuccessFirstOf') || 'Report exported (first {{first}} of {{total}} logs). Use CSV for full data.').replace('{{first}}', String(MAX_ANDROID_PDF_ROWS)).replace('{{total}}', String(totalRows))
+                ? (t('Report.ExportSuccessFirstOf') || 'Report exported (first {{first}} of {{total}} logs). Use CSV for full data.').replace('{{first}}', String(MAX_NATIVE_PDF_ROWS)).replace('{{total}}', String(totalRows))
                 : `${t('Report.ExportSuccess') || 'Export success'} (${totalRows} logs).`;
-              androidDeferredAfterIntent(successMsg);
+              nativeDeferredAfterShare(successMsg);
             } catch (err) {
               if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
               console.error('[Report Export] PDF export error:', err);
@@ -1007,7 +1012,8 @@ const Report: FC = () => {
           doc.line(margin, y + rowHeight, pageW - margin, y + rowHeight);
           y += rowHeight;
           const maxY = doc.internal.pageSize.getHeight() - margin;
-          for (let i = 0; i < logData.length; i++) {
+          const reportRowsPdf = getReportRows(logData);
+          for (let i = 0; i < reportRowsPdf.length; i++) {
             if (y + rowHeight > maxY) {
               doc.addPage();
               y = margin;
@@ -1021,7 +1027,7 @@ const Report: FC = () => {
               doc.line(margin, y + rowHeight, pageW - margin, y + rowHeight);
               y += rowHeight;
             }
-            const r = getReportRows(logData)[i];
+            const r = reportRowsPdf[i];
             const row = [r.Unit.slice(0, 24), r.Load.slice(0, 14), r.Battery.slice(0, 8), r.Time.slice(0, 19)];
             row.forEach((cell, ii) => {
               doc.text(cell, margin + (ii === 0 ? 2 : colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2), y + 5);
@@ -1044,11 +1050,11 @@ const Report: FC = () => {
           } else {
             const base64 = doc.output('datauristring').split(',')[1];
             await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Documents });
-            Swal.fire({ title: t('Report.Export') || 'Export', text: `${t('Report.ExportSuccess')} (${logData.length} logs).`, icon: 'success' });
+            Swal.fire({ title: t('Report.Export') || 'Export', text: `${t('Report.ExportSuccess')} (${logData.length} logs).`, icon: 'success', heightAuto: false });
           }
         } catch (err) {
           console.error('[Report Export] PDF export error:', err);
-          Swal.fire({ title: t('Report.Export') || 'Export', text: t('Report.ExportError') || 'Failed to export PDF.', icon: 'error' });
+          Swal.fire({ title: t('Report.Export') || 'Export', text: t('Report.ExportError') || 'Failed to export PDF.', icon: 'error', heightAuto: false });
         }
         break;
       }
@@ -1084,23 +1090,19 @@ const Report: FC = () => {
                   const base64Csv = btoa(unescape(encodeURIComponent(csvStr)));
                   attachments = [`base64:${fileName}//${base64Csv}`];
                 }
-                if (platformType === 'android' && typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
+                if ((platformType === 'android' || platformType === 'ios') && typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
                 await EmailComposer.open({
                   subject,
                   body: bodyText,
                   isHtml: false,
                   attachments,
                 });
-                if (platformType === 'android') {
-                  androidDeferredAfterIntent(t('Report.EmailOpened') || 'Email composer opened.');
-                } else {
-                  Swal.fire({ title: t('Report.Export') || 'Export', text: t('Report.EmailOpened') || 'Email composer opened.', icon: 'success' });
-                }
+                nativeDeferredAfterShare(t('Report.EmailOpened') || 'Email composer opened.');
               } else {
                 openMailtoFallback(subject, logData);
               }
             } catch (pluginErr) {
-              if (platformType === 'android' && typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+              if ((platformType === 'android' || platformType === 'ios') && typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
               console.warn('[Report Email] Plugin failed, using mailto:', pluginErr);
               openMailtoFallback(subject, logData);
             }
@@ -1108,14 +1110,17 @@ const Report: FC = () => {
             openMailtoFallback(subject, logData);
           }
         } catch (err) {
-          if (platformType === 'android' && typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+          if ((platformType === 'android' || platformType === 'ios') && typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
           console.error('[Report Export] Email error:', err);
-          Swal.fire({ title: t('Report.Export') || 'Export', text: t('Report.ExportError') || 'Failed to open email.', icon: 'error' });
+          Swal.fire({ title: t('Report.Export') || 'Export', text: t('Report.ExportError') || 'Failed to open email.', icon: 'error', heightAuto: false });
         }
         break;
       }
       default:
         break;
+    }
+    } finally {
+      setExportBusy(false);
     }
   }
 
@@ -1177,7 +1182,23 @@ const Report: FC = () => {
 
   const selectedProject = projectList.find((p: IProject) => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
 
+  const busyMessage = exportBusy
+    ? (t('Report.PreparingExport') || 'Preparing export...')
+    : (t('Report.LoadingReport') || 'Loading report...');
+
   return (
+    <>
+      {(loading || exportBusy) && (
+        <div
+          className="report-busy-overlay fixed inset-0 z-[25000] flex flex-col items-center justify-center gap-4 bg-black/50 px-6"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <IonSpinner name="crescent" color="light" className="report-busy-spinner h-14 w-14" />
+          <p className="text-center text-sm font-medium text-white max-w-sm">{busyMessage}</p>
+        </div>
+      )}
     <CommonLayout>
       <div className="grid grid-cols-4 gap-2">
         <div className="flex flex-col gap-2 ml-0.5 min-w-0">
@@ -1213,7 +1234,8 @@ const Report: FC = () => {
                   <button
                     key={key}
                     type="button"
-                    className="flex flex-row items-center gap-1 border-0 bg-transparent p-0 cursor-pointer touch-manipulation"
+                    disabled={exportBusy}
+                    className={`flex flex-row items-center gap-1 border-0 bg-transparent p-0 touch-manipulation ${exportBusy ? 'opacity-40 cursor-wait' : 'cursor-pointer'}`}
                     onClick={() => void handleExport(item.title)}
                   >
                     <IonIcon src={item.icon} color="primary" />
@@ -1317,12 +1339,12 @@ const Report: FC = () => {
                   </button>
                 )}
               </div>
-              <Spinner visible={loading} />
               <ReportTable />
           </>
         </div>
       </div>
     </CommonLayout>
+    </>
   )
 }
 
