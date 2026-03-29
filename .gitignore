@@ -44,6 +44,11 @@ ios/DerivedData/
 ios/Pods/
 ios/App/build/
 
+# Local Xcode / Swift driver noise (never commit)
+CompilationCache.noindex/
+ModuleCache.noindex/
+rsm-*/
+
 # Python cache (if any helper scripts exist)
 __pycache__/
 *.pyc

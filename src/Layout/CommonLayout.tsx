@@ -50,7 +50,12 @@ import { faBatteryEmpty, faBatteryQuarter, faBatteryHalf, faBatteryThreeQuarters
 import { format, getTime, getUnixTime } from 'date-fns';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import { FilePicker } from '@capawesome/capacitor-file-picker';
+// COORDINATION (iOS Mac branch / Android Windows branch): BLE + native CSV import logic
+// lives in `src/helper/nativeBleScan.ts` and `nativeProjectCsvImport.ts`. Prefer editing
+// those files for platform rules so merges between branches stay small. / Coordinación:
+// reglas nativas en los helpers, no duplicar aquí.
+import { checkNativeBleScanPrerequisites } from '../helper/nativeBleScan';
+import { pickProjectCsvText, shouldUseNativeCsvPickerForImport } from '../helper/nativeProjectCsvImport';
 import { toast } from 'react-toastify';
 import useFunctions from '../hooks/useFunctions';
 
@@ -790,24 +795,14 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   };
 
   const handleImportProject = async () => {
-    if (platformType === 'android') {
+    if (shouldUseNativeCsvPickerForImport()) {
       try {
-        const result = await FilePicker.pickFiles({
-          types: ['text/csv', 'application/csv', 'text/comma-separated-values'],
-          readData: true,
-        });
-        const file = result.files?.[0];
-        if (!file?.data) {
-          return;
-        }
-        const binary = atob(file.data);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const text = new TextDecoder().decode(bytes);
+        const text = await pickProjectCsvText();
+        if (text == null) return;
         await runImportWithCsvText(text);
       } catch (err) {
         if (String(err).includes('cancel') || (err as any)?.message?.toLowerCase?.().includes('cancel')) return;
-        console.error('Import project (Android):', err);
+        console.error('Import project (native):', err);
         Swal.fire({ title: t('Project.Import') || 'Import', text: t('Project.ImportError') || 'Failed to import project.', icon: 'error', heightAuto: false });
       }
       return;
@@ -861,32 +856,22 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
 
   const handleStartScan = async (type: string) => {
   try {
-    // 1. ¡CRUCIAL! Inicializar el plugin antes de usarlo
-    
-    
     await BleClient.initialize();
 
-    if (Capacitor.getPlatform() !== 'web') {
-
-    // 1. Verificamos si el Bluetooth está encendido (Corregido)
-    const bluetoothEnabled = await BleClient.isEnabled();
-    if (!bluetoothEnabled) {
-      updateErrStr("Please, turn on Bluetooth.");
-      return;
-    }
-
-    // 2. Verificamos la Ubicación (GPS) usando la función real de la librería
-    const locationEnabled = await BleClient.isLocationEnabled();
-    if (!locationEnabled) {
-      setShowLocationAlert(true); // El modal que creamos
-      return;
-    }
-  } else {
+    if (Capacitor.getPlatform() === 'web') {
       console.warn("Status: Platform is web. Skipping native hardware checks.");
+    } else {
+      const pre = await checkNativeBleScanPrerequisites();
+      if (!pre.ok) {
+        if (pre.reason === 'bluetooth_off') {
+          updateErrStr("Please, turn on Bluetooth.");
+          return;
+        }
+        setShowLocationAlert(true);
+        return;
+      }
     }
 
-    
-    // 3. Si todo está OK, llamamos al escaneo original
     bt_scan(type);
   } catch (error) {
     console.error("Error al verificar requisitos:", error);
