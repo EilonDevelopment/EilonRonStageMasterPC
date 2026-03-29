@@ -56,7 +56,7 @@ npm run build && npx cap sync ios
 | Date (UTC) | Branch   | Author / machine | Summary (1–2 lines) | Commit / PR |
 |------------|----------|------------------|---------------------|-------------|
 | 2026-03-29 | ios-development-ai | Mac | Added `docs/DEV_HANDOFF.md` (branches, sync, coordination pointers) | fcc14f0 |
-| 2026-03-29 | development-ai | Windows | Fast-forward merged `origin/ios-development-ai`; adopting repo handoff mailbox | 7924064 |
+| 2026-03-29 | development-ai | Windows | Fast-forward merged `origin/ios-development-ai`; adopting repo handoff mailbox | e3f26bd |
 
 *Example:* `2026-03-29 | ios-development-ai | Mac | Info.plist BLE/camera; native CSV on iOS | e250fe7`
 
