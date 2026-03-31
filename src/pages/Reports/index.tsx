@@ -1,5 +1,5 @@
 import React, { FC, useEffect, useMemo, useRef, useState } from "react";
-import { IonIcon, IonSpinner, IonToggle } from "@ionic/react";
+import { IonIcon, IonToggle } from "@ionic/react";
 import { useTranslation } from "react-i18next";
 import { codeSlashSharp, cubeSharp, documentSharp, downloadSharp, mailSharp, refreshSharp, trashSharp } from "ionicons/icons";
 import { Capacitor } from '@capacitor/core';
@@ -666,6 +666,30 @@ const Report: FC = () => {
   const NATIVE_EXPORT_TIMEOUT_MS = 60000; // 60s
   /** Cap row count for PDF when using native Share (Android + iOS); keeps main thread responsive. */
   const MAX_NATIVE_PDF_ROWS = 1500;
+  const NATIVE_DIALOG_OPEN_TIMEOUT_MS = 15000;
+
+  const isUserCancelledError = (err: any) => {
+    const msg = String(err?.message || err || '').toLowerCase();
+    return msg.includes('cancel') || msg.includes('canceled') || msg.includes('cancelled') || msg.includes('aborted');
+  };
+
+  /**
+   * Keep progress visible while preparing files; hide it before native modal opens
+   * so a cancel never leaves the UI blocked behind our own overlay.
+   */
+  const openNativeDialogSafely = async (openDialog: () => Promise<any>) => {
+    setExportBusy(false);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Native dialog timeout')), NATIVE_DIALOG_OPEN_TIMEOUT_MS)
+    );
+    try {
+      await Promise.race([openDialog(), timeoutPromise]);
+      return { cancelled: false };
+    } catch (err: any) {
+      if (isUserCancelledError(err)) return { cancelled: true };
+      throw err;
+    }
+  };
 
   /** Deferred start keeps overlay painted before heavy PDF/CSV work on the main thread. */
   const runNativeExport = (fn: () => Promise<void>): Promise<void> =>
@@ -753,7 +777,11 @@ const Report: FC = () => {
                 await writeTextFileInChunks(fileName, csvChunks);
             const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
             if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
-            await Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' });
+            const shareResult = await openNativeDialogSafely(() => Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' }));
+            if (shareResult.cancelled) {
+              if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+              return;
+            }
             nativeDeferredAfterShare(`${t('Report.ExportSuccess') || 'Export success'} (${logData.length} logs).`);
           } else {
             await Filesystem.writeFile({ path: fileName, data: '\uFEFF' + csvStr, directory: Directory.Documents, encoding: Encoding.UTF8 });
@@ -793,7 +821,11 @@ const Report: FC = () => {
               await writeTextFileInChunks(fileName, jsonChunks);
               const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
               if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
-              await Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' });
+              const shareResult = await openNativeDialogSafely(() => Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' }));
+              if (shareResult.cancelled) {
+                if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+                return;
+              }
               nativeDeferredAfterShare(`${t('Report.ExportSuccess') || 'Export success'} (${logData.length} logs).`);
             } catch (err) {
               if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
@@ -851,7 +883,11 @@ const Report: FC = () => {
               await writeTextFileInChunks(fileName, sqlChunks);
               const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
               if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
-              await Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' });
+              const shareResult = await openNativeDialogSafely(() => Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' }));
+              if (shareResult.cancelled) {
+                if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+                return;
+              }
               nativeDeferredAfterShare(`${t('Report.ExportSuccess') || 'Export success'} (${logData.length} logs).`);
             } catch (err) {
               if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
@@ -970,7 +1006,11 @@ const Report: FC = () => {
               await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Cache });
               const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
               if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
-              await Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' });
+              const shareResult = await openNativeDialogSafely(() => Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' }));
+              if (shareResult.cancelled) {
+                if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+                return;
+              }
               const successMsg = capped
                 ? (t('Report.ExportSuccessFirstOf') || 'Report exported (first {{first}} of {{total}} logs). Use CSV for full data.').replace('{{first}}', String(MAX_NATIVE_PDF_ROWS)).replace('{{total}}', String(totalRows))
                 : `${t('Report.ExportSuccess') || 'Export success'} (${totalRows} logs).`;
@@ -1091,17 +1131,25 @@ const Report: FC = () => {
                   attachments = [`base64:${fileName}//${base64Csv}`];
                 }
                 if ((platformType === 'android' || platformType === 'ios') && typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
-                await EmailComposer.open({
+                const emailResult = await openNativeDialogSafely(() => EmailComposer.open({
                   subject,
                   body: bodyText,
                   isHtml: false,
                   attachments,
-                });
+                }));
+                if (emailResult.cancelled) {
+                  if ((platformType === 'android' || platformType === 'ios') && typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+                  return;
+                }
                 nativeDeferredAfterShare(t('Report.EmailOpened') || 'Email composer opened.');
               } else {
                 openMailtoFallback(subject, logData);
               }
             } catch (pluginErr) {
+              if (isUserCancelledError(pluginErr)) {
+                if ((platformType === 'android' || platformType === 'ios') && typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+                return;
+              }
               if ((platformType === 'android' || platformType === 'ios') && typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
               console.warn('[Report Email] Plugin failed, using mailto:', pluginErr);
               openMailtoFallback(subject, logData);
@@ -1189,14 +1237,9 @@ const Report: FC = () => {
   return (
     <>
       {(loading || exportBusy) && (
-        <div
-          className="report-busy-overlay fixed inset-0 z-[25000] flex flex-col items-center justify-center gap-4 bg-black/50 px-6"
-          role="status"
-          aria-live="polite"
-          aria-busy="true"
-        >
-          <IonSpinner name="crescent" color="light" className="report-busy-spinner h-14 w-14" />
-          <p className="text-center text-sm font-medium text-white max-w-sm">{busyMessage}</p>
+        <div className="report-progress-wrap" role="status" aria-live="polite" aria-busy="true">
+          <div className="report-progress-bar" />
+          <p className="report-progress-text">{busyMessage}</p>
         </div>
       )}
     <CommonLayout>

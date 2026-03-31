@@ -108,6 +108,14 @@ const getLcDisplayBatchMs = (platformType: string | undefined, lcCount: number):
   return LC_DISPLAY_BATCH_MS_DEFAULT;
 };
 
+/**
+ * PRR + many LCs: per-LC "no fresh sample" before Tr.Err in ifConnection (must exceed slowest expected inter-sample gap).
+ * Global silence below must be greater than a full slow reporting round (e.g. 75× @ ~1 Hz + jitter).
+ */
+const PRR_STALE_LC_MS = 8000;
+/** If no BLE-driven updates hit dataTimeById for this long, declare full link loss and set all LCs to Tr.Err. */
+const PRR_SILENCE_ALL_TRERR_MS = 15000;
+
 type PendingLCDisplay = {
   value?: string;
   weightnotare?: string;
@@ -1003,7 +1011,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const idsWithStaleData = new Set<string>();
     for (const item of dataTimeById) {
       const timeDiff = Math.abs(realTime - item.realTime);
-      if (timeDiff > 6000) idsWithStaleData.add(String(item.id));  // cambie de 4000 a 6000 para dar un poco más de margen antes de marcar como error, considerando posibles retrasos en la llegada de datos
+      if (timeDiff > PRR_STALE_LC_MS) idsWithStaleData.add(String(item.id));
     }
     const updatedLcs = lcs.map((lcItem) => {
       const existsInDataTimeById = dataTimeById.some(item => item.id === lcItem.id);
@@ -1024,7 +1032,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const currentTime = Date.now();
     const filteredData = dataTimeById.filter(item => {
       const timeDifference = Math.abs(item.realTime - currentTime);
-      return timeDifference <= 6000; // cambiar de 4000 a 6000 para dar un poco más de margen antes de marcar como error, considerando posibles retrasos en la llegada de datos
+      return timeDifference <= PRR_STALE_LC_MS;
     });
     updateLiveLC(filteredData)
   }
@@ -1092,7 +1100,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       if (currentDataTimeById.length > 0) {
         mostRecentDataTime = Math.max(...currentDataTimeById.map(item => item.realTime || 0));
         const timeSinceMostRecent = Math.abs(now - mostRecentDataTime);
-        hasRecentData = timeSinceMostRecent <= 4000;
+        hasRecentData = timeSinceMostRecent <= PRR_SILENCE_ALL_TRERR_MS;
         if (mostRecentDataTime > lastUpdatedRef.current) {
           lastUpdatedRef.current = mostRecentDataTime;
           timeoutHandledRef.current = false;
@@ -1106,13 +1114,13 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       }
       const referenceTime = mostRecentDataTime > 0 ? mostRecentDataTime : lastUpdatedRef.current;
       const timeSinceLastUpdate = now - referenceTime; 
-      if (timeSinceLastUpdate < 4000) {
+      if (timeSinceLastUpdate < PRR_SILENCE_ALL_TRERR_MS) {
         if (timeoutHandledRef.current) {
           timeoutHandledRef.current = false;
         }
         return;
       }
-            if (timeSinceLastUpdate >= 4000 && !timeoutHandledRef.current) {
+      if (timeSinceLastUpdate >= PRR_SILENCE_ALL_TRERR_MS && !timeoutHandledRef.current) {
         timeoutHandledRef.current = true;
         setNoChange(true);
         const lcsArray: any = []
@@ -1124,8 +1132,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
           }
         });
         setTrrLcs(lcsArray)
-        setDataTimeById([])
-        updateLiveLC([])        
+        // Do NOT clear dataTimeById: empty list makes ifConnection treat every LC as "!exists" until the
+        // next full burst — flashes of Tr.Err while data is actually returning (e.g. after PRR resync).
         setTimeout(() => {
           timeoutHandledRef.current = false;
         }, 2000);
