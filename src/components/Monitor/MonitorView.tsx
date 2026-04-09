@@ -187,6 +187,10 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
 
   const [reset, setReset] = useState<boolean>(false);
   const [locked, setLocked] = useState<boolean>(false);
+  /** Force remount of LC draggable nodes after heavy layout changes (iPad WebView can leave ghost layers). */
+  const [lcRenderEpoch, setLcRenderEpoch] = useState(0);
+  /** Force remount only of image scene (Rnd), not whole stage container. */
+  const [sceneRenderEpoch, setSceneRenderEpoch] = useState(0);
 
   /** Default to home when lc_display_mode is undefined or not 'user' */
   const isUserMode = curProject?.lc_display_mode === 'user';
@@ -474,6 +478,16 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     onMoveLC(updatedItem);
   };
 
+  const forceSceneRepaint = () => {
+    // WKWebView can keep stale composited snapshots after many absolute-position moves.
+    // Remount only the Rnd scene and trigger resize twice to flush compositor caches.
+    setSceneRenderEpoch((v) => v + 1);
+    requestAnimationFrame(() => {
+      window.dispatchEvent(new Event('resize'));
+      requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+    });
+  };
+
   const handlePos = async () => {
     if (!isUserMode || !curProject?.p_image || locked) return;
 
@@ -527,6 +541,10 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     setListData(updated);
     updateLCs(updated);
     await db.lcs.bulkPut(updated);
+    // iPad WKWebView sometimes leaves stale composited layers after mass LC moves.
+    // Bump epoch so all LC draggable nodes remount and old ghost layers are dropped.
+    setLcRenderEpoch((v) => v + 1);
+    forceSceneRepaint();
     void Swal.fire({
       title: t('Monitor.AutoPlace') || 'Auto place',
       text: `Placed ${targetIndices.length} cells on the image.`,
@@ -566,6 +584,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     setPosInfo(pos)
     f_update_project_image_size(currProjectRef.current.id, size.width, size.height)
     f_update_project_image_position(currProjectRef.current.id, pos.y, pos.x)
+    forceSceneRepaint();
   };
   const handleImagePosition = (_e: DraggableEvent, data: DraggableData) => {
     console.log('--- onDragStop ---', { data })
@@ -705,7 +724,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       >
         {/* LC column: when no BG image, or in home mode, LCs go here (home = column layout as before) */}
         <div className="lc-column relative shrink-0" style={{ width: LC_BOX_WIDTH }}>
-          <div className="absolute inset-0 pointer-events-none z-10" aria-hidden>
+          <div key={`lc-col-${lcRenderEpoch}`} className="absolute inset-0 pointer-events-none z-10" aria-hidden>
             {(!currProjectRef?.current?.p_image || isHomeMode) && displayList.map((item, index) => {
               const pos = isHomeMode
                 ? (tempHomePositions[index] ?? { x: 0, y: 0 })
@@ -717,7 +736,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
 
               // Important: include x/y so Draggable remounts after saving a new base position.
               // Otherwise react-draggable keeps its internal transform and the LC can "jump" on drop (double offset).
-              const key = `${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
+              const key = `${lcRenderEpoch}-${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
               return (
                 <MonitorLcBox
                   key={key}
@@ -761,6 +780,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
             />
             {currProjectRef?.current?.p_image &&
               <Rnd
+                key={`scene-${sceneRenderEpoch}`}
                 ref={rndRef}
                 position={posInfo ? posInfo : { x: 20, y: 20 }}
                 size={sizeInfo ? sizeInfo : { width: frameDefaultSize.width, height: frameDefaultSize.height }}
@@ -799,7 +819,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                 </div>
                 {/* LCs on image only in user mode; in home mode (or default) LCs stay in column */}
                 {isUserMode && (
-                <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 5 }}>
+                <div key={`lc-img-${lcRenderEpoch}`} className="absolute inset-0 pointer-events-none" style={{ zIndex: 5 }}>
                   {displayList.map((item, index) => {
                     const pos = isHomeMode
                       ? (tempHomePositions[index] ?? { x: 0, y: 0 })
@@ -813,7 +833,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                     const boundsRight = Math.max(-displayPos.x, imgW - LC_BOX_WIDTH - displayPos.x);
                     const boundsBottom = Math.max(-displayPos.y, imgH - LC_BOX_HEIGHT - displayPos.y);
                     // Important: include x/y so Draggable remounts after saving a new base position.
-                    const key = `${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
+                    const key = `${lcRenderEpoch}-${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
 
                     return (
                       <MonitorLcBox
