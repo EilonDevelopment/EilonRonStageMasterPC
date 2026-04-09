@@ -646,27 +646,43 @@ const Report: FC = () => {
     window.location.href = mailto;
   };
 
-  /** After Share sheet / intent on native: toast instead of Swal (Swal + iOS WKWebView often leaves a black overlay). */
-  const nativeDeferredAfterShare = (successMessage: string) => {
+  const releaseUiLocks = () => {
+    if (typeof document === 'undefined') return;
+    const cls = ['swal2-shown', 'swal2-height-auto', 'swal2-no-backdrop', 'swal2-iosfix', 'ion-no-scroll'];
+    cls.forEach((c) => {
+      document.body.classList.remove(c);
+      document.documentElement.classList.remove(c);
+    });
+    document.body.style.overflow = '';
+    document.documentElement.style.overflow = '';
+    document.body.style.removeProperty('padding-right');
+    document.documentElement.style.removeProperty('padding-right');
+  };
+
+  const recoverAfterNativeDialog = (successMessage?: string) => {
     requestAnimationFrame(() => {
       setTimeout(() => {
         try {
+          releaseUiLocks();
           void document.body.offsetHeight;
           window.dispatchEvent(new Event('resize'));
-          toast.success(successMessage);
+          if (successMessage) toast.success(successMessage);
           if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
           layoutRefreshRef.current?.();
-        } catch (e) {
+        } catch {
           if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
         }
-      }, 400);
+      }, 380);
     });
   };
 
-  const NATIVE_EXPORT_TIMEOUT_MS = 60000; // 60s
+  /** After Share sheet / intent on native: toast instead of Swal (Swal + iOS WKWebView often leaves a black overlay). */
+  const nativeDeferredAfterShare = (successMessage: string) => {
+    recoverAfterNativeDialog(successMessage);
+  };
+
   /** Cap row count for PDF when using native Share (Android + iOS); keeps main thread responsive. */
   const MAX_NATIVE_PDF_ROWS = 1500;
-  const NATIVE_DIALOG_OPEN_TIMEOUT_MS = 15000;
 
   const isUserCancelledError = (err: any) => {
     const msg = String(err?.message || err || '').toLowerCase();
@@ -679,11 +695,10 @@ const Report: FC = () => {
    */
   const openNativeDialogSafely = async (openDialog: () => Promise<any>) => {
     setExportBusy(false);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Native dialog timeout')), NATIVE_DIALOG_OPEN_TIMEOUT_MS)
-    );
     try {
-      await Promise.race([openDialog(), timeoutPromise]);
+      // IMPORTANT: no timeout here. Native share/email sheet can stay open for a long time while
+      // user picks app/contact, and timing out would throw fake export errors + broken UI state.
+      await openDialog();
       return { cancelled: false };
     } catch (err: any) {
       if (isUserCancelledError(err)) return { cancelled: true };
@@ -696,20 +711,14 @@ const Report: FC = () => {
     new Promise((resolve) => {
       requestAnimationFrame(() => {
         setTimeout(() => {
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Export timeout')), NATIVE_EXPORT_TIMEOUT_MS)
-          );
-          Promise.race([fn(), timeoutPromise])
+          fn()
             .then(() => resolve())
             .catch((err) => {
               if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
               console.error('[Report Export] Error:', err);
-              const isTimeout = err?.message === 'Export timeout';
               Swal.fire({
                 title: tr('Report.Export', 'Export'),
-                text: isTimeout
-                  ? tr('Report.ExportTimeout', 'Export took too long. Try a smaller date range or try again.')
-                  : tr('Report.ExportError', 'Failed to export.'),
+                text: tr('Report.ExportError', 'Failed to export.'),
                 icon: 'error',
                 heightAuto: false,
               });
@@ -779,6 +788,7 @@ const Report: FC = () => {
             if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
             const shareResult = await openNativeDialogSafely(() => Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' }));
             if (shareResult.cancelled) {
+              recoverAfterNativeDialog();
               if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
               return;
             }
@@ -823,6 +833,7 @@ const Report: FC = () => {
               if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
               const shareResult = await openNativeDialogSafely(() => Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' }));
               if (shareResult.cancelled) {
+                recoverAfterNativeDialog();
                 if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
                 return;
               }
@@ -885,6 +896,7 @@ const Report: FC = () => {
               if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
               const shareResult = await openNativeDialogSafely(() => Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' }));
               if (shareResult.cancelled) {
+                recoverAfterNativeDialog();
                 if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
                 return;
               }
@@ -1008,6 +1020,7 @@ const Report: FC = () => {
               if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
               const shareResult = await openNativeDialogSafely(() => Share.share({ url: uri, title: t('Report.Export') || 'Export', dialogTitle: t('Report.Export') || 'Export' }));
               if (shareResult.cancelled) {
+                recoverAfterNativeDialog();
                 if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
                 return;
               }
@@ -1138,6 +1151,7 @@ const Report: FC = () => {
                   attachments,
                 }));
                 if (emailResult.cancelled) {
+                  recoverAfterNativeDialog();
                   if ((platformType === 'android' || platformType === 'ios') && typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
                   return;
                 }

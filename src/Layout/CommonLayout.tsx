@@ -655,9 +655,43 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   }
 
   const handleExportProject = async (project: IProject) => {
+    const releaseUiLocks = () => {
+      if (typeof document === 'undefined') return;
+      const cls = ['swal2-shown', 'swal2-height-auto', 'swal2-no-backdrop', 'swal2-iosfix', 'ion-no-scroll'];
+      cls.forEach((c) => {
+        document.body.classList.remove(c);
+        document.documentElement.classList.remove(c);
+      });
+      document.body.style.overflow = '';
+      document.documentElement.style.overflow = '';
+      document.body.style.removeProperty('padding-right');
+      document.documentElement.style.removeProperty('padding-right');
+    };
+    const recoverAfterNativeDialog = (successMessage?: string) => {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          try {
+            releaseUiLocks();
+            void document.body.offsetHeight;
+            window.dispatchEvent(new Event('resize'));
+            if (successMessage) toast.success(successMessage);
+            updateVisibleModal('');
+            if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+            setLayoutKey((k) => k + 1);
+          } catch {
+            if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+          }
+        }, 380);
+      });
+    };
+    const isUserCancelledError = (err: any) => {
+      const msg = String(err?.message || err || '').toLowerCase();
+      return msg.includes('cancel') || msg.includes('canceled') || msg.includes('cancelled') || msg.includes('aborted');
+    };
+
     const result = await f_export_project_csv(project.id);
     if (!result) {
-      Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportError') || 'Failed to export project.', icon: 'error' });
+      Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportError') || 'Failed to export project.', icon: 'error', heightAuto: false });
       return;
     }
     const { csvStr, fileName } = result;
@@ -669,34 +703,27 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       a.download = fileName;
       a.click();
       URL.revokeObjectURL(url);
-    } else if (platformType === 'android') {
+      updateVisibleModal('');
+    } else if (platformType === 'android' || platformType === 'ios') {
       try {
         await Filesystem.writeFile({ path: fileName, data: csvStr, directory: Directory.Cache, encoding: Encoding.UTF8 });
         const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
         if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
         await Share.share({ url: uri, title: t('Project.Export') || 'Export', dialogTitle: t('Project.Export') || 'Export' });
-        // Defer UI updates so Android WebView can restore layout after share sheet (avoids black screen)
-        requestAnimationFrame(() => {
-          setTimeout(() => {
-            void document.body.offsetHeight;
-            window.dispatchEvent(new Event('resize'));
-            toast.success(t('Project.ExportSuccess') || 'Project exported successfully.');
-            updateVisibleModal('');
-            if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
-            setLayoutKey((k) => k + 1);
-          }, 400);
-        });
+        recoverAfterNativeDialog(t('Project.ExportSuccess') || 'Project exported successfully.');
       } catch (err) {
-        console.error('Project export (Android):', err);
+        if (isUserCancelledError(err)) {
+          recoverAfterNativeDialog();
+          return;
+        }
+        console.error('Project export (native):', err);
         if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
-        Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportError') || 'Failed to export project.', icon: 'error' });
+        Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportError') || 'Failed to export project.', icon: 'error', heightAuto: false });
         updateVisibleModal('');
       }
     } else {
       await Filesystem.writeFile({ path: fileName, data: csvStr, directory: Directory.Documents, encoding: Encoding.UTF8 });
-      Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportSuccess') || 'Project exported successfully.', icon: 'success' });
-    }
-    if (platformType !== 'android') {
+      Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportSuccess') || 'Project exported successfully.', icon: 'success', heightAuto: false });
       updateVisibleModal('');
     }
   };

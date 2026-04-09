@@ -58,12 +58,13 @@ const App: React.FC = () => {
         route: window.location.pathname,
       }, "APP");
 
+        // Native share/email flows set this flag so we skip resume alerts, but we must still run
+        // WebView recovery logic below (reflow/resize/optional reload) to avoid black background.
         if (
           typeof sessionStorage !== "undefined" &&
           sessionStorage.getItem("skipResumeAlert") === "1"
         ) {
           sessionStorage.removeItem("skipResumeAlert");
-          return;
         }
 
         // Android WebView can come back with a "white screen" after the renderer was killed
