@@ -32,6 +32,7 @@ import SuccessModal from '../components/Modals/SuccessModal';
 import ProjectListModal from '../components/Modals/ProjectListModal';
 import ProofTestModal from '../components/Modals/ProofTestModal';
 import SelectDeviceModal from '../components/Modals/SelectDeviceModal';
+import BleDeviceListModal from '../components/Modals/BleDeviceListModal';
 import TotalizerModal from '../components/Modals/TotalizerModal';
 import DocumentModal from '../components/Modals/DocumentModal';
 import ProjectInformationModal from '../components/Modals/ProjectInformationModal';
@@ -50,7 +51,14 @@ import { faBatteryEmpty, faBatteryQuarter, faBatteryHalf, faBatteryThreeQuarters
 import { format, getTime, getUnixTime } from 'date-fns';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import { FilePicker } from '@capawesome/capacitor-file-picker';
+// COORDINATION (iOS Mac branch / Android Windows branch): BLE + native CSV import logic
+// lives in `src/helper/nativeBleScan.ts` and `nativeProjectCsvImport.ts`. Prefer editing
+// those files for platform rules so merges between branches stay small. / Coordinación:
+// reglas nativas en los helpers, no duplicar aquí.
+import { checkNativeBleScanPrerequisites } from '../helper/nativeBleScan';
+import { pickProjectCsvText, shouldUseNativeCsvPickerForImport } from '../helper/nativeProjectCsvImport';
+import { BLE_CONNECT_TIMEOUT_MS } from '../helper/bleConstants';
+import { collectBleDevicesForService, type BleDiscoveredDevice } from '../helper/bleLeScanCollection';
 import { toast } from 'react-toastify';
 import useFunctions from '../hooks/useFunctions';
 
@@ -87,14 +95,26 @@ interface CommonLayoutProps {
 const LC_DISPLAY_BATCH_MS_DEFAULT = 100;
 
 const getLcDisplayBatchMs = (platformType: string | undefined, lcCount: number): number => {
-  const isAndroid = String(platformType).toLowerCase() === 'android';
-  if (!isAndroid) return LC_DISPLAY_BATCH_MS_DEFAULT;
-  // More LCs => fewer flushes to keep WebView renderer stable.
-  if (lcCount >= 75) return 333; // ~3 FPS
-  if (lcCount >= 50) return 250; // ~4 FPS
-  if (lcCount >= 25) return 150; // ~6 FPS
-  return LC_DISPLAY_BATCH_MS_DEFAULT; // 10 FPS
+  const p = String(platformType).toLowerCase();
+  const isAndroid = p === 'android';
+  const isIos = p === 'ios';
+  // More LCs => fewer flushes to keep WebView renderer stable (Android + iPad).
+  if (isAndroid || isIos) {
+    if (lcCount >= 75) return 333;
+    if (lcCount >= 50) return 250;
+    if (lcCount >= 25) return 150;
+  }
+  if (isAndroid) return LC_DISPLAY_BATCH_MS_DEFAULT;
+  return LC_DISPLAY_BATCH_MS_DEFAULT;
 };
+
+/**
+ * PRR + many LCs: per-LC "no fresh sample" before Tr.Err in ifConnection (must exceed slowest expected inter-sample gap).
+ * Global silence below must be greater than a full slow reporting round (e.g. 75× @ ~1 Hz + jitter).
+ */
+const PRR_STALE_LC_MS = 8000;
+/** If no BLE-driven updates hit dataTimeById for this long, declare full link loss and set all LCs to Tr.Err. */
+const PRR_SILENCE_ALL_TRERR_MS = 15000;
 
 type PendingLCDisplay = {
   value?: string;
@@ -188,6 +208,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     f_lc_capacity_id,
     f_lc_by_id,
     f_log_lc_value,
+    f_log_prr_link_event,
     f_log_delete,
     f_load_cells,
     f_insert_lc,
@@ -249,6 +270,11 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const activeAlertsRef = useRef<Set<string>>(new Set());
 
   const [showLocationAlert, setShowLocationAlert] = useState(false);
+  const [blePickerOpen, setBlePickerOpen] = useState(false);
+  const [blePickerScanning, setBlePickerScanning] = useState(false);
+  const [blePickerDevices, setBlePickerDevices] = useState<BleDiscoveredDevice[]>([]);
+  const [blePickerType, setBlePickerType] = useState<'prr' | 'lc' | null>(null);
+  const bleScanAbortRef = useRef(false);
 
   useEffect(() => {
     locationRef.current = location.pathname + location.search + (location.hash || '')
@@ -629,9 +655,43 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   }
 
   const handleExportProject = async (project: IProject) => {
+    const releaseUiLocks = () => {
+      if (typeof document === 'undefined') return;
+      const cls = ['swal2-shown', 'swal2-height-auto', 'swal2-no-backdrop', 'swal2-iosfix', 'ion-no-scroll'];
+      cls.forEach((c) => {
+        document.body.classList.remove(c);
+        document.documentElement.classList.remove(c);
+      });
+      document.body.style.overflow = '';
+      document.documentElement.style.overflow = '';
+      document.body.style.removeProperty('padding-right');
+      document.documentElement.style.removeProperty('padding-right');
+    };
+    const recoverAfterNativeDialog = (successMessage?: string) => {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          try {
+            releaseUiLocks();
+            void document.body.offsetHeight;
+            window.dispatchEvent(new Event('resize'));
+            if (successMessage) toast.success(successMessage);
+            updateVisibleModal('');
+            if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+            setLayoutKey((k) => k + 1);
+          } catch {
+            if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+          }
+        }, 380);
+      });
+    };
+    const isUserCancelledError = (err: any) => {
+      const msg = String(err?.message || err || '').toLowerCase();
+      return msg.includes('cancel') || msg.includes('canceled') || msg.includes('cancelled') || msg.includes('aborted');
+    };
+
     const result = await f_export_project_csv(project.id);
     if (!result) {
-      Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportError') || 'Failed to export project.', icon: 'error' });
+      Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportError') || 'Failed to export project.', icon: 'error', heightAuto: false });
       return;
     }
     const { csvStr, fileName } = result;
@@ -643,34 +703,27 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       a.download = fileName;
       a.click();
       URL.revokeObjectURL(url);
-    } else if (platformType === 'android') {
+      updateVisibleModal('');
+    } else if (platformType === 'android' || platformType === 'ios') {
       try {
         await Filesystem.writeFile({ path: fileName, data: csvStr, directory: Directory.Cache, encoding: Encoding.UTF8 });
         const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
         if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
         await Share.share({ url: uri, title: t('Project.Export') || 'Export', dialogTitle: t('Project.Export') || 'Export' });
-        // Defer UI updates so Android WebView can restore layout after share sheet (avoids black screen)
-        requestAnimationFrame(() => {
-          setTimeout(() => {
-            void document.body.offsetHeight;
-            window.dispatchEvent(new Event('resize'));
-            toast.success(t('Project.ExportSuccess') || 'Project exported successfully.');
-            updateVisibleModal('');
-            if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
-            setLayoutKey((k) => k + 1);
-          }, 400);
-        });
+        recoverAfterNativeDialog(t('Project.ExportSuccess') || 'Project exported successfully.');
       } catch (err) {
-        console.error('Project export (Android):', err);
+        if (isUserCancelledError(err)) {
+          recoverAfterNativeDialog();
+          return;
+        }
+        console.error('Project export (native):', err);
         if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
-        Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportError') || 'Failed to export project.', icon: 'error' });
+        Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportError') || 'Failed to export project.', icon: 'error', heightAuto: false });
         updateVisibleModal('');
       }
     } else {
       await Filesystem.writeFile({ path: fileName, data: csvStr, directory: Directory.Documents, encoding: Encoding.UTF8 });
-      Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportSuccess') || 'Project exported successfully.', icon: 'success' });
-    }
-    if (platformType !== 'android') {
+      Swal.fire({ title: t('Project.Export') || 'Export', text: t('Project.ExportSuccess') || 'Project exported successfully.', icon: 'success', heightAuto: false });
       updateVisibleModal('');
     }
   };
@@ -790,24 +843,14 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   };
 
   const handleImportProject = async () => {
-    if (platformType === 'android') {
+    if (shouldUseNativeCsvPickerForImport()) {
       try {
-        const result = await FilePicker.pickFiles({
-          types: ['text/csv', 'application/csv', 'text/comma-separated-values'],
-          readData: true,
-        });
-        const file = result.files?.[0];
-        if (!file?.data) {
-          return;
-        }
-        const binary = atob(file.data);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const text = new TextDecoder().decode(bytes);
+        const text = await pickProjectCsvText();
+        if (text == null) return;
         await runImportWithCsvText(text);
       } catch (err) {
         if (String(err).includes('cancel') || (err as any)?.message?.toLowerCase?.().includes('cancel')) return;
-        console.error('Import project (Android):', err);
+        console.error('Import project (native):', err);
         Swal.fire({ title: t('Project.Import') || 'Import', text: t('Project.ImportError') || 'Failed to import project.', icon: 'error', heightAuto: false });
       }
       return;
@@ -861,68 +904,49 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
 
   const handleStartScan = async (type: string) => {
   try {
-    // 1. ¡CRUCIAL! Inicializar el plugin antes de usarlo
-    
-    
     await BleClient.initialize();
 
-    if (Capacitor.getPlatform() !== 'web') {
-
-    // 1. Verificamos si el Bluetooth está encendido (Corregido)
-    const bluetoothEnabled = await BleClient.isEnabled();
-    if (!bluetoothEnabled) {
-      updateErrStr("Please, turn on Bluetooth.");
-      return;
-    }
-
-    // 2. Verificamos la Ubicación (GPS) usando la función real de la librería
-    const locationEnabled = await BleClient.isLocationEnabled();
-    if (!locationEnabled) {
-      setShowLocationAlert(true); // El modal que creamos
-      return;
-    }
-  } else {
+    if (Capacitor.getPlatform() === 'web') {
       console.warn("Status: Platform is web. Skipping native hardware checks.");
+    } else {
+      const pre = await checkNativeBleScanPrerequisites();
+      if (!pre.ok) {
+        if (pre.reason === 'bluetooth_off') {
+          updateErrStr("Please, turn on Bluetooth.");
+          return;
+        }
+        setShowLocationAlert(true);
+        return;
+      }
     }
 
-    
-    // 3. Si todo está OK, llamamos al escaneo original
     bt_scan(type);
   } catch (error) {
     console.error("Error al verificar requisitos:", error);
   }
 };
 
-  const bt_scan = async (type: string) => {
-    void logEvent("INFO", "BLE scan started", {}, "BLE");
-    // no device paired yet
+  const bleConnectToDevice = async (deviceId: string, type: string, displayName?: string) => {
     const s = (type == "prr") ? numberToUUID(0xfff0) : '0bd51666-e7cb-469b-8e4d-2742f1ba77cc';
     const c = (type == "prr") ? numberToUUID(0xfff4) : 'e7add780-b042-4876-aae1-112855353cc1';
-
-  
     try {
-      //await BleClient.initialize();
-
-      const device = await BleClient.requestDevice({
-        services: [s],
-        optionalServices: []
+      await BleClient.connect(deviceId, (did) => bt_disconnect(did), {
+        timeout: BLE_CONNECT_TIMEOUT_MS,
       });
-
-      //  connect to device, the bt_disconnect callback is optional
-      await BleClient.connect(device.deviceId, (deviceId) => bt_disconnect(deviceId));
+      if (type === 'prr') {
+        prrBleDeviceIdRef.current = deviceId;
+        prrBleDisplayNameRef.current =
+          (displayName && displayName.trim()) || deviceId;
+      }
       updateBleConnected(true);
-
-      const services = await BleClient.getServices(device.deviceId);
-      //console.log('services: ', services)
-      void logEvent("INFO", "BLE device connected", { device, name }, "BLE");
+      await BleClient.getServices(deviceId);
+      void logEvent("INFO", "BLE device connected", { deviceId, type }, "BLE");
       await BleClient.startNotifications(
-        device.deviceId,
+        deviceId,
         s,
         c,
         (value) => {
-          // //console.log('[BT] Received notification at:', new Date().toISOString(), 'buffer length:', value.buffer.byteLength);
           bt_parse(new Uint8Array(value.buffer));
-          // //console.log('[BT] After bt_parse, value:', value)
         }
       );
     } catch (error) {
@@ -930,7 +954,89 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       void logEvent("ERROR", "BLE notification setup failed", { error }, "BLE");
       updateBleConnected(false);
     }
-  }
+  };
+
+  const runBleDevicePickerFlow = async (kind: "prr" | "lc") => {
+    const s =
+      kind === "prr"
+        ? numberToUUID(0xfff0)
+        : "0bd51666-e7cb-469b-8e4d-2742f1ba77cc";
+    bleScanAbortRef.current = false;
+    setBlePickerType(kind);
+    setBlePickerDevices([]);
+    setBlePickerScanning(true);
+    setBlePickerOpen(true);
+    try {
+      const devices = await collectBleDevicesForService(
+        s,
+        null,
+        [],
+        bleScanAbortRef,
+        (liveDevices) => {
+          setBlePickerDevices(liveDevices);
+        }
+      );
+      if (bleScanAbortRef.current) {
+        return;
+      }
+      setBlePickerDevices(devices);
+    } catch (error) {
+      console.error(error);
+      void logEvent("ERROR", "BLE scan collection failed", { error }, "BLE");
+      updateErrStr(t("ConnectDevice.ScanFailed") || "Bluetooth scan failed.");
+      setBlePickerOpen(false);
+    } finally {
+      setBlePickerScanning(false);
+    }
+  };
+
+  const handleBlePickerClose = () => {
+    bleScanAbortRef.current = true;
+    void BleClient.stopLEScan().catch(() => undefined);
+    setBlePickerOpen(false);
+    setBlePickerScanning(false);
+    setBlePickerDevices([]);
+    setBlePickerType(null);
+  };
+
+  const handleBlePickerConnect = async (deviceId: string, displayName?: string) => {
+    const kind = blePickerType;
+    bleScanAbortRef.current = true;
+    void BleClient.stopLEScan().catch(() => undefined);
+    setBlePickerOpen(false);
+    setBlePickerScanning(false);
+    setBlePickerDevices([]);
+    setBlePickerType(null);
+    if (!kind) {
+      return;
+    }
+    await bleConnectToDevice(deviceId, kind, displayName);
+  };
+
+  const bt_scan = async (type: string) => {
+    void logEvent("INFO", "BLE scan started", {}, "BLE");
+    const s = (type == "prr") ? numberToUUID(0xfff0) : '0bd51666-e7cb-469b-8e4d-2742f1ba77cc';
+
+    if (Capacitor.getPlatform() === "web") {
+      try {
+        const device = await BleClient.requestDevice({
+          services: [s],
+          optionalServices: [],
+        });
+        await bleConnectToDevice(device.deviceId, type, device.name?.trim() || undefined);
+      } catch (error) {
+        console.error(error);
+        void logEvent("ERROR", "BLE notification setup failed", { error }, "BLE");
+        updateBleConnected(false);
+      }
+      return;
+    }
+
+    if (type !== "prr" && type !== "lc") {
+      return;
+    }
+    await runBleDevicePickerFlow(type);
+  };
 
   const bt_connect = () => {
     //console.log('===bt_connect===')
@@ -940,7 +1046,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const idsWithStaleData = new Set<string>();
     for (const item of dataTimeById) {
       const timeDiff = Math.abs(realTime - item.realTime);
-      if (timeDiff > 6000) idsWithStaleData.add(String(item.id));  // cambie de 4000 a 6000 para dar un poco más de margen antes de marcar como error, considerando posibles retrasos en la llegada de datos
+      if (timeDiff > PRR_STALE_LC_MS) idsWithStaleData.add(String(item.id));
     }
     const updatedLcs = lcs.map((lcItem) => {
       const existsInDataTimeById = dataTimeById.some(item => item.id === lcItem.id);
@@ -961,7 +1067,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const currentTime = Date.now();
     const filteredData = dataTimeById.filter(item => {
       const timeDifference = Math.abs(item.realTime - currentTime);
-      return timeDifference <= 6000; // cambiar de 4000 a 6000 para dar un poco más de margen antes de marcar como error, considerando posibles retrasos en la llegada de datos
+      return timeDifference <= PRR_STALE_LC_MS;
     });
     updateLiveLC(filteredData)
   }
@@ -1029,7 +1135,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       if (currentDataTimeById.length > 0) {
         mostRecentDataTime = Math.max(...currentDataTimeById.map(item => item.realTime || 0));
         const timeSinceMostRecent = Math.abs(now - mostRecentDataTime);
-        hasRecentData = timeSinceMostRecent <= 4000;
+        hasRecentData = timeSinceMostRecent <= PRR_SILENCE_ALL_TRERR_MS;
         if (mostRecentDataTime > lastUpdatedRef.current) {
           lastUpdatedRef.current = mostRecentDataTime;
           timeoutHandledRef.current = false;
@@ -1043,13 +1149,13 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       }
       const referenceTime = mostRecentDataTime > 0 ? mostRecentDataTime : lastUpdatedRef.current;
       const timeSinceLastUpdate = now - referenceTime; 
-      if (timeSinceLastUpdate < 4000) {
+      if (timeSinceLastUpdate < PRR_SILENCE_ALL_TRERR_MS) {
         if (timeoutHandledRef.current) {
           timeoutHandledRef.current = false;
         }
         return;
       }
-            if (timeSinceLastUpdate >= 4000 && !timeoutHandledRef.current) {
+      if (timeSinceLastUpdate >= PRR_SILENCE_ALL_TRERR_MS && !timeoutHandledRef.current) {
         timeoutHandledRef.current = true;
         setNoChange(true);
         const lcsArray: any = []
@@ -1061,8 +1167,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
           }
         });
         setTrrLcs(lcsArray)
-        setDataTimeById([])
-        updateLiveLC([])        
+        // Do NOT clear dataTimeById: empty list makes ifConnection treat every LC as "!exists" until the
+        // next full burst — flashes of Tr.Err while data is actually returning (e.g. after PRR resync).
         setTimeout(() => {
           timeoutHandledRef.current = false;
         }, 2000);
@@ -1104,12 +1210,24 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const prevCurProjectIdRef = useRef<string | undefined>(curProject?.id);
   const lcDisplayBufferRef = useRef<Record<string, PendingLCDisplay>>({});
   const lastReportTimeRef = useRef<Record<string, number>>({});
+  /** Last PRR BLE peripheral id (iOS UUID). */
+  const prrBleDeviceIdRef = useRef<string | null>(null);
+  /** Friendly name for PRR report rows (ID column); falls back to deviceId if unnamed. */
+  const prrBleDisplayNameRef = useRef<string | null>(null);
+  const prevBlePrrLogRef = useRef<boolean | null>(null);
   // Keep ref in sync every render so flushLcDisplayBuffer always merges buffer into latest lcs (preserves status_tare/tare)
   currentLcs.current = lcs;
 
   const maybeLogLcValue = (lcId: any, projectId: any, value: any, realval: any, overload: any, underload: any, batteryParam?: number | string) => {
     const proj = active_project;
     if (!proj?.cycle) return;
+    const isTrErrSample =
+      value === 'Tr.Err' ||
+      value === 'Tr. Err' ||
+      value === -99999999 ||
+      realval === -99999999;
+    // PRR offline: still show Tr.Err in UI, but do not write 75× Tr.Err/sec to IndexedDB (was killing UI thread).
+    if (isTrErrSample && !bleConnected) return;
     const intervalSec = Math.max(1, Math.min(86400, proj.report_interval_seconds ?? 60));
     const key = `${projectId}_${lcId}`;
     const now = Date.now();
@@ -1983,6 +2101,28 @@ const lastSoundTimeRef = useRef<number>(0);
     updateBleConnected(false);
   }
 
+  useEffect(() => {
+    const proj = active_project;
+    if (!proj?.id || !proj?.cycle) {
+      prevBlePrrLogRef.current = bleConnected;
+      return;
+    }
+    const devId = prrBleDeviceIdRef.current;
+    const reportLabel = (prrBleDisplayNameRef.current && prrBleDisplayNameRef.current.trim()) || devId;
+    const prev = prevBlePrrLogRef.current;
+    if (prev === null) {
+      prevBlePrrLogRef.current = bleConnected;
+      return;
+    }
+    if (bleConnected && !prev && reportLabel) {
+      f_log_prr_link_event(proj.id, 'connected', reportLabel);
+    }
+    if (!bleConnected && prev && reportLabel) {
+      f_log_prr_link_event(proj.id, 'disconnected', reportLabel);
+    }
+    prevBlePrrLogRef.current = bleConnected;
+  }, [bleConnected, active_project?.id, active_project?.cycle]);
+
   const usb_scan = () => {
     //console.log('')
   }
@@ -2424,6 +2564,14 @@ const lastSoundTimeRef = useRef<number>(0);
         data={warnLogs}
         onClear={() => handleAlertClear()}
         onClose={() => handleCloseModal()}
+      />
+
+      <BleDeviceListModal
+        isOpen={blePickerOpen}
+        scanning={blePickerScanning}
+        devices={blePickerDevices}
+        onClose={handleBlePickerClose}
+        onConnect={(id, name) => void handleBlePickerConnect(id, name)}
       />
 
       <IonAlert

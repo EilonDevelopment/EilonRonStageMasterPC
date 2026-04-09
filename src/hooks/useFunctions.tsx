@@ -53,6 +53,16 @@ export default function useFunctions() {
   const lastRetentionCleanupAtRef = useRef<number>(0)
   const lastLogIngestTraceAtRef = useRef<number>(0)
   const traceStepRef = useRef<number>(0)
+  /** Batched IndexedDB writes: many LCs @ 1s interval was blocking the main thread with 75 separate adds/sec. */
+  const pendingLogBatchRef = useRef<Array<{ row: any; meta: {
+    lc_id: any; project_id: any; parsedValue: number; parsedRealval: number; storedOverload: any; storedUnderload: any;
+    unit_value: any; battery: number; log_type: string;
+  } }>>([])
+  const logFlushTimerRef = useRef<number | null>(null)
+  /** Coalesce writes: fewer IndexedDB commits/sec under 75 LC @ 1 Hz. */
+  const LOG_FLUSH_MS = 125
+  /** When the queue reaches this size, flush immediately (one transaction per ~1s wave of LCs). */
+  const LOG_BATCH_MAX_BEFORE_FLUSH = 80
 
   const tracePhase = (phase: string, extra?: Record<string, any>) => {
     const step = ++traceStepRef.current;
@@ -82,6 +92,15 @@ export default function useFunctions() {
       if (audioContextRef.current) {
         void audioContextRef.current.close()
         audioContextRef.current = null
+      }
+      if (logFlushTimerRef.current != null) {
+        window.clearTimeout(logFlushTimerRef.current)
+        logFlushTimerRef.current = null
+      }
+      const pending = pendingLogBatchRef.current.splice(0)
+      if (pending.length > 0) {
+        const rows = pending.map((p) => p.row)
+        void db.logs.bulkAdd(rows).catch(() => undefined)
       }
     }
   }, [])
@@ -709,6 +728,316 @@ export default function useFunctions() {
     return currentLcs.find(({ id }) => id === lc_id.toString())
   }
 
+  /** Reserved lc_id for PRR BLE link events in reports (not a real load cell). */
+  const PRR_LOG_LC_ID = -888888
+
+  const runLogRetentionCleanup = async (project_id: any) => {
+    try {
+      const RAW_RETENTION_DAYS = 7
+      const AGG_RETENTION_DAYS = 90
+      const AGG_BUCKET_MS = 5 * 60 * 1000
+      const MAX_LOGS_PER_PROJECT = getDynamicMaxLogsPerProject()
+      const now = Date.now()
+      const rawCutoff = now - RAW_RETENTION_DAYS * 24 * 60 * 60 * 1000
+      const aggCutoff = now - AGG_RETENTION_DAYS * 24 * 60 * 60 * 1000
+      const pidNorm = normalizeProjectId(project_id)
+      const pidNum = Number(pidNorm)
+      const pidCandidates: any[] = []
+      if (pidNorm) pidCandidates.push(pidNorm)
+      if (Number.isFinite(pidNum)) pidCandidates.push(pidNum)
+      const OLD_ROWS_CHUNK = 2000
+
+      const aggregateRowsToAggTable = async (rows: any[]) => {
+        if (!rows || rows.length === 0) return
+        const aggMap = new Map<string, any>()
+        for (const row of rows) {
+          const lc = Number(row.lc_id)
+          const t = Number(row.log_date)
+          if (!Number.isFinite(lc) || !Number.isFinite(t)) continue
+          const bucket = Math.floor(t / AGG_BUCKET_MS) * AGG_BUCKET_MS
+          const key = `${pidNorm}|${lc}|${bucket}`
+          const val = Number(row.value)
+          const rval = Number(row.realval)
+          const b = row.battery != null ? Number(row.battery) : undefined
+
+          let a = aggMap.get(key)
+          if (!a) {
+            a = {
+              project_id: pidNorm,
+              lc_id: lc,
+              bucket,
+              log_date: bucket,
+              unit: row.unit,
+              overload: row.overload,
+              underload: row.underload,
+              count: 0,
+              value_sum: 0,
+              value_min: Number.POSITIVE_INFINITY,
+              value_max: Number.NEGATIVE_INFINITY,
+              realval_sum: 0,
+              realval_min: Number.POSITIVE_INFINITY,
+              realval_max: Number.NEGATIVE_INFINITY,
+              last_value: undefined as any,
+              last_realval: undefined as any,
+              last_battery: undefined as any,
+              last_ts: 0,
+              log_type: 'agg',
+            }
+            aggMap.set(key, a)
+          }
+
+          a.count += 1
+          if (Number.isFinite(val)) {
+            a.value_sum += val
+            a.value_min = Math.min(a.value_min, val)
+            a.value_max = Math.max(a.value_max, val)
+          }
+          if (Number.isFinite(rval)) {
+            a.realval_sum += rval
+            a.realval_min = Math.min(a.realval_min, rval)
+            a.realval_max = Math.max(a.realval_max, rval)
+          }
+          if (t >= a.last_ts) {
+            a.last_ts = t
+            a.last_value = row.value
+            a.last_realval = row.realval
+            if (b !== undefined && Number.isFinite(b)) a.last_battery = b
+          }
+        }
+
+        const aggRows = Array.from(aggMap.values()).map((a: any) => {
+          const value_avg = a.count > 0 ? a.value_sum / a.count : undefined
+          const realval_avg = a.count > 0 ? a.realval_sum / a.count : undefined
+          return {
+            project_id: a.project_id,
+            lc_id: a.lc_id,
+            bucket: a.bucket,
+            log_date: a.log_date,
+            unit: a.unit,
+            overload: a.overload,
+            underload: a.underload,
+            value: Number.isFinite(value_avg) ? value_avg : a.last_value,
+            realval: Number.isFinite(realval_avg) ? realval_avg : a.last_realval,
+            battery: a.last_battery,
+            log_type: 'agg',
+            count: a.count,
+            value_min: Number.isFinite(a.value_min) ? a.value_min : undefined,
+            value_max: Number.isFinite(a.value_max) ? a.value_max : undefined,
+            realval_min: Number.isFinite(a.realval_min) ? a.realval_min : undefined,
+            realval_max: Number.isFinite(a.realval_max) ? a.realval_max : undefined,
+          }
+        })
+
+        if (aggRows.length > 0) {
+          await db.logs_agg.bulkPut(aggRows)
+        }
+      }
+
+      let deletedOldRaw = 0
+      for (const pidCandidate of pidCandidates) {
+        let hasMore = true
+        while (hasMore) {
+          const oldRows = await db.logs
+            .where('[project_id+log_date]')
+            .between([pidCandidate, 0], [pidCandidate, rawCutoff], true, false)
+            .limit(OLD_ROWS_CHUNK)
+            .toArray()
+          if (oldRows.length === 0) {
+            hasMore = false
+            continue
+          }
+          await aggregateRowsToAggTable(oldRows)
+          await db.logs.bulkDelete(oldRows.map((r: any) => r.id))
+          deletedOldRaw += oldRows.length
+          hasMore = oldRows.length === OLD_ROWS_CHUNK
+        }
+      }
+
+      let projectRawCount = 0
+      for (const pidCandidate of pidCandidates) {
+        projectRawCount += await db.logs
+          .where('[project_id+log_date]')
+          .between([pidCandidate, 0], [pidCandidate, Number.MAX_SAFE_INTEGER], true, true)
+          .count()
+      }
+      let extraToTrim = Math.max(0, projectRawCount - MAX_LOGS_PER_PROJECT)
+      let deletedByCap = 0
+      if (extraToTrim > 0) {
+        for (const pidCandidate of pidCandidates) {
+          if (extraToTrim <= 0) break
+          const rowsToDelete = await db.logs
+            .where('[project_id+log_date]')
+            .between([pidCandidate, 0], [pidCandidate, Number.MAX_SAFE_INTEGER], true, true)
+            .limit(extraToTrim)
+            .toArray()
+          if (rowsToDelete.length === 0) continue
+          await aggregateRowsToAggTable(rowsToDelete)
+          await db.logs.bulkDelete(rowsToDelete.map((x: any) => x.id))
+          extraToTrim -= rowsToDelete.length
+          deletedByCap += rowsToDelete.length
+        }
+      }
+
+      let deletedAggOld = 0
+      for (const pidCandidate of pidCandidates) {
+        const aggOldKeys = await db.logs_agg
+          .where('[project_id+bucket]')
+          .between([pidCandidate, 0], [pidCandidate, aggCutoff], true, false)
+          .primaryKeys()
+        if (aggOldKeys.length > 0) {
+          await db.logs_agg.bulkDelete(aggOldKeys)
+          deletedAggOld += aggOldKeys.length
+        }
+      }
+      tracePhase('FIN: cleanup_retention', {
+        project_id,
+        deletedOldRaw,
+        deletedByCap,
+        deletedAggOld,
+        maxRawPerProject: MAX_LOGS_PER_PROJECT,
+      })
+    } catch (cleanupErr) {
+      console.warn('[f_log_lc_value] retention cleanup failed:', cleanupErr)
+      tracePhase('ERROR: cleanup_retention', {
+        project_id,
+        error: String((cleanupErr as any)?.message || cleanupErr),
+      })
+    }
+  }
+
+  /** Defer heavy DB work off the ingest hot path (long-run Android/iPad stability). */
+  const scheduleIdleRetentionCleanup = (project_id: any) => {
+    const w = typeof window !== 'undefined' ? (window as any) : undefined
+    const run = () => {
+      void runLogRetentionCleanup(project_id)
+    }
+    if (w && typeof w.requestIdleCallback === 'function') {
+      w.requestIdleCallback(run, { timeout: 10_000 })
+    } else {
+      setTimeout(run, 0)
+    }
+  }
+
+  const flushPendingLogBatch = () => {
+    logFlushTimerRef.current = null
+    const batch = pendingLogBatchRef.current.splice(0)
+    if (batch.length === 0) return
+    const lastEntry = batch[batch.length - 1]
+    const project_id = lastEntry.meta.project_id
+
+    let lastId: number | undefined
+    void db
+      .transaction('rw', db.logs, async () => {
+        for (const { row } of batch) {
+          lastId = (await db.logs.add(row)) as number
+        }
+      })
+      .then(() => {
+        logInsertCounterRef.current += batch.length
+        const nowTs = Date.now()
+        const shouldRunRetentionCleanup =
+          logInsertCounterRef.current % 2000 === 0 &&
+          nowTs - lastRetentionCleanupAtRef.current >= 60_000
+        if (shouldRunRetentionCleanup) {
+          lastRetentionCleanupAtRef.current = nowTs
+          tracePhase('INICIO: cleanup_retention', { project_id, insertCounter: logInsertCounterRef.current })
+          scheduleIdleRetentionCleanup(project_id)
+        }
+        const m = lastEntry.meta
+        if (nowTs - lastLogUiUpdateAtRef.current >= 1000) {
+          lastLogUiUpdateAtRef.current = nowTs
+          updateLogs({
+            id: lastId != null ? String(lastId) : '',
+            lc_id: parseInt(String(m.lc_id), 10) + '',
+            project_id: m.project_id,
+            log_date: getTime(new Date()) + '',
+            value: m.parsedValue,
+            realval: m.parsedRealval + '',
+            overload: m.storedOverload,
+            underload: m.storedUnderload,
+            unit: m.unit_value,
+            battery: m.battery.toString(),
+            log_type: m.log_type,
+          } as ILog)
+        }
+      })
+      .catch(function (error: any) {
+      console.error('Error inserting log batch: ' + error)
+      logEvent(
+        'ERROR',
+        'Failed to insert report log batch',
+        {
+          error: String(error?.message || error),
+          project_id,
+          batchSize: batch.length,
+        },
+        'REPORTS_DB'
+      )
+    })
+  }
+
+  const scheduleLogFlush = () => {
+    if (logFlushTimerRef.current != null) return
+    logFlushTimerRef.current = window.setTimeout(() => flushPendingLogBatch(), LOG_FLUSH_MS)
+  }
+
+  /** Flush immediately when a full LC wave (e.g. 75) is queued — one transaction instead of several. */
+  const maybeFlushLogBatchBySize = () => {
+    if (pendingLogBatchRef.current.length >= LOG_BATCH_MAX_BEFORE_FLUSH) {
+      if (logFlushTimerRef.current != null) {
+        window.clearTimeout(logFlushTimerRef.current)
+        logFlushTimerRef.current = null
+      }
+      flushPendingLogBatch()
+    }
+  }
+
+  /**
+   * One row when PRR connects or disconnects (BLE). `reportIdLabel` is shown in the report ID column (device name preferred).
+   */
+  const f_log_prr_link_event = (project_id: any, kind: 'connected' | 'disconnected', reportIdLabel: string) => {
+    const proj = curProjectRef.current
+    if (!proj?.cycle || !reportIdLabel) return
+    const log_type = kind === 'connected' ? 'prr_connected' : 'prr_disconnected'
+    void db.logs
+      .add({
+        lc_id: PRR_LOG_LC_ID,
+        project_id,
+        log_date: getTime(new Date()),
+        value: 0,
+        realval: 0,
+        overload: 0,
+        underload: 0,
+        unit: String(reportIdLabel).slice(0, 200),
+        battery: 0,
+        log_type,
+      })
+      .then((id) => {
+        logInsertCounterRef.current += 1
+        const nowTs = Date.now()
+        if (nowTs - lastLogUiUpdateAtRef.current >= 1000) {
+          lastLogUiUpdateAtRef.current = nowTs
+          updateLogs({
+            id,
+            lc_id: String(PRR_LOG_LC_ID),
+            project_id,
+            log_date: getTime(new Date()) + '',
+            value: 0,
+            realval: '0',
+            overload: 0,
+            underload: 0,
+            unit: String(reportIdLabel).slice(0, 200),
+            battery: '0',
+            log_type,
+          } as ILog)
+        }
+      })
+      .catch((error: any) => {
+        console.error('Error inserting PRR link log: ' + error)
+        logEvent('ERROR', 'Failed to insert PRR link log', { error: String(error?.message || error), project_id }, 'REPORTS_DB')
+      })
+  }
+
   const f_log_lc_value = (lc_id: any, project_id: any, value: any, realval: any, overload: any, underload: any, batteryParam?: number | string) => {
     const traceNow = Date.now();
     if (traceNow - lastLogIngestTraceAtRef.current >= 1000) {
@@ -742,248 +1071,34 @@ export default function useFunctions() {
     const storedOverload = overload != null && String(overload).trim() !== '' ? overload : numOver;
     const storedUnderload = underload != null && String(underload).trim() !== '' ? underload : numUnder;
 
-    db.logs
-      .add({
-        lc_id: parseInt(lc_id),
-        project_id: project_id,
-        log_date: getTime(new Date()),
-        value: parsedValue,
-        realval: parsedRealval,
-        overload: storedOverload,
-        underload: storedUnderload,
-        unit: unit_value,
-        battery: battery,
+    const row = {
+      lc_id: parseInt(String(lc_id), 10),
+      project_id: project_id,
+      log_date: getTime(new Date()),
+      value: parsedValue,
+      realval: parsedRealval,
+      overload: storedOverload,
+      underload: storedUnderload,
+      unit: unit_value,
+      battery: battery,
+      log_type,
+    };
+    pendingLogBatchRef.current.push({
+      row,
+      meta: {
+        lc_id,
+        project_id,
+        parsedValue,
+        parsedRealval,
+        storedOverload,
+        storedUnderload,
+        unit_value,
+        battery,
         log_type,
-      })
-      .then(function (id) {
-        logInsertCounterRef.current += 1;
-        const nowTs = Date.now();
-        const shouldRunRetentionCleanup =
-          logInsertCounterRef.current % 2000 === 0 &&
-          nowTs - lastRetentionCleanupAtRef.current >= 60_000;
-        if (shouldRunRetentionCleanup) {
-          lastRetentionCleanupAtRef.current = nowTs;
-          tracePhase('INICIO: cleanup_retention', { project_id, insertCounter: logInsertCounterRef.current });
-          // Background retention cleanup to keep IndexedDB size bounded on tablets.
-          void (async () => {
-            try {
-              // Keep raw per-second logs only for a short window.
-              // Older data is summarized into logs_agg (time buckets) and raw rows are removed.
-              const RAW_RETENTION_DAYS = 7;
-              const AGG_RETENTION_DAYS = 90;
-              const AGG_BUCKET_MS = 5 * 60 * 1000; // 5-minute buckets (keeps 90d feasible for high rates)
-              const MAX_LOGS_PER_PROJECT = getDynamicMaxLogsPerProject();
-              const now = Date.now();
-              const rawCutoff = now - RAW_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-              const aggCutoff = now - AGG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-              const pidNorm = normalizeProjectId(project_id);
-              const pidNum = Number(pidNorm);
-              const pidCandidates: any[] = [];
-              if (pidNorm) pidCandidates.push(pidNorm);
-              if (Number.isFinite(pidNum)) pidCandidates.push(pidNum);
-              const OLD_ROWS_CHUNK = 2000;
-
-              const aggregateRowsToAggTable = async (rows: any[]) => {
-                if (!rows || rows.length === 0) return;
-                const aggMap = new Map<string, any>();
-                for (const row of rows) {
-                  const lc = Number(row.lc_id);
-                  const t = Number(row.log_date);
-                  if (!Number.isFinite(lc) || !Number.isFinite(t)) continue;
-                  const bucket = Math.floor(t / AGG_BUCKET_MS) * AGG_BUCKET_MS;
-                  const key = `${pidNorm}|${lc}|${bucket}`;
-                  const val = Number(row.value);
-                  const rval = Number(row.realval);
-                  const b = row.battery != null ? Number(row.battery) : undefined;
-
-                  let a = aggMap.get(key);
-                  if (!a) {
-                    a = {
-                      project_id: pidNorm,
-                      lc_id: lc,
-                      bucket,
-                      // Report/export-compatible fields:
-                      log_date: bucket,
-                      unit: row.unit,
-                      overload: row.overload,
-                      underload: row.underload,
-                      count: 0,
-                      value_sum: 0,
-                      value_min: Number.POSITIVE_INFINITY,
-                      value_max: Number.NEGATIVE_INFINITY,
-                      realval_sum: 0,
-                      realval_min: Number.POSITIVE_INFINITY,
-                      realval_max: Number.NEGATIVE_INFINITY,
-                      last_value: undefined as any,
-                      last_realval: undefined as any,
-                      last_battery: undefined as any,
-                      last_ts: 0,
-                      log_type: 'agg',
-                    };
-                    aggMap.set(key, a);
-                  }
-
-                  a.count += 1;
-                  if (Number.isFinite(val)) {
-                    a.value_sum += val;
-                    a.value_min = Math.min(a.value_min, val);
-                    a.value_max = Math.max(a.value_max, val);
-                  }
-                  if (Number.isFinite(rval)) {
-                    a.realval_sum += rval;
-                    a.realval_min = Math.min(a.realval_min, rval);
-                    a.realval_max = Math.max(a.realval_max, rval);
-                  }
-                  if (t >= a.last_ts) {
-                    a.last_ts = t;
-                    a.last_value = row.value;
-                    a.last_realval = row.realval;
-                    if (b !== undefined && Number.isFinite(b)) a.last_battery = b;
-                  }
-                }
-
-                const aggRows = Array.from(aggMap.values()).map((a: any) => {
-                  const value_avg = a.count > 0 ? a.value_sum / a.count : undefined;
-                  const realval_avg = a.count > 0 ? a.realval_sum / a.count : undefined;
-                  return {
-                    project_id: a.project_id,
-                    lc_id: a.lc_id,
-                    bucket: a.bucket,
-                    log_date: a.log_date,
-                    unit: a.unit,
-                    overload: a.overload,
-                    underload: a.underload,
-                    value: Number.isFinite(value_avg) ? value_avg : a.last_value,
-                    realval: Number.isFinite(realval_avg) ? realval_avg : a.last_realval,
-                    battery: a.last_battery,
-                    log_type: 'agg',
-                    count: a.count,
-                    value_min: Number.isFinite(a.value_min) ? a.value_min : undefined,
-                    value_max: Number.isFinite(a.value_max) ? a.value_max : undefined,
-                    realval_min: Number.isFinite(a.realval_min) ? a.realval_min : undefined,
-                    realval_max: Number.isFinite(a.realval_max) ? a.realval_max : undefined,
-                  };
-                });
-
-                if (aggRows.length > 0) {
-                  await db.logs_agg.bulkPut(aggRows);
-                }
-              };
-
-              // Incremental raw retention cleanup by indexed range (avoid full-table scans in one pass).
-              let deletedOldRaw = 0;
-              for (const pidCandidate of pidCandidates) {
-                let hasMore = true;
-                while (hasMore) {
-                  const oldRows = await db.logs
-                    .where('[project_id+log_date]')
-                    .between([pidCandidate, 0], [pidCandidate, rawCutoff], true, false)
-                    .limit(OLD_ROWS_CHUNK)
-                    .toArray();
-                  if (oldRows.length === 0) {
-                    hasMore = false;
-                    continue;
-                  }
-                  await aggregateRowsToAggTable(oldRows);
-                  await db.logs.bulkDelete(oldRows.map((r: any) => r.id));
-                  deletedOldRaw += oldRows.length;
-                  hasMore = oldRows.length === OLD_ROWS_CHUNK;
-                }
-              }
-
-              // Enforce per-project raw cap using indexed count + oldest-first chunk deletion.
-              let projectRawCount = 0;
-              for (const pidCandidate of pidCandidates) {
-                projectRawCount += await db.logs
-                  .where('[project_id+log_date]')
-                  .between([pidCandidate, 0], [pidCandidate, Number.MAX_SAFE_INTEGER], true, true)
-                  .count();
-              }
-              let extraToTrim = Math.max(0, projectRawCount - MAX_LOGS_PER_PROJECT);
-              let deletedByCap = 0;
-              if (extraToTrim > 0) {
-                for (const pidCandidate of pidCandidates) {
-                  if (extraToTrim <= 0) break;
-                  const rowsToDelete = await db.logs
-                    .where('[project_id+log_date]')
-                    .between([pidCandidate, 0], [pidCandidate, Number.MAX_SAFE_INTEGER], true, true)
-                    .limit(extraToTrim)
-                    .toArray();
-                  if (rowsToDelete.length === 0) continue;
-                  // Aggregate-before-delete so we never lose long-term history under high ingest rates.
-                  await aggregateRowsToAggTable(rowsToDelete);
-                  await db.logs.bulkDelete(rowsToDelete.map((x: any) => x.id));
-                  extraToTrim -= rowsToDelete.length;
-                  deletedByCap += rowsToDelete.length;
-                }
-              }
-
-              // Trim aggregates beyond the long-term retention window.
-              let deletedAggOld = 0;
-              for (const pidCandidate of pidCandidates) {
-                const aggOldKeys = await db.logs_agg
-                  .where('[project_id+bucket]')
-                  .between([pidCandidate, 0], [pidCandidate, aggCutoff], true, false)
-                  .primaryKeys();
-                if (aggOldKeys.length > 0) {
-                  await db.logs_agg.bulkDelete(aggOldKeys);
-                  deletedAggOld += aggOldKeys.length;
-                }
-              }
-              tracePhase('FIN: cleanup_retention', {
-                project_id,
-                deletedOldRaw,
-                deletedByCap,
-                deletedAggOld,
-                maxRawPerProject: MAX_LOGS_PER_PROJECT,
-              });
-            } catch (cleanupErr) {
-              console.warn('[f_log_lc_value] retention cleanup failed:', cleanupErr);
-              tracePhase('ERROR: cleanup_retention', {
-                project_id,
-                error: String((cleanupErr as any)?.message || cleanupErr),
-              });
-            }
-          })();
-        }
-        // Avoid forcing React updates for each incoming report sample (high-frequency path).
-        if (nowTs - lastLogUiUpdateAtRef.current >= 1000) {
-          lastLogUiUpdateAtRef.current = nowTs;
-          updateLogs({
-            id,
-            lc_id: parseInt(lc_id) + '',
-            project_id: project_id,
-            log_date: getTime(new Date()) + '',
-            value: parsedValue,
-            realval: parsedRealval + '',
-            overload: storedOverload,
-            underload: storedUnderload,
-            unit: unit_value,
-            battery: battery.toString(),
-            log_type,
-          } as ILog)
-        }
-        //  console.log('Log inserted successfully');
-      })
-      .catch(function (error: any) {
-        console.error('Error inserting log: ' + error);
-        // Persist error to in-app diagnostics so we can debug on device.
-        logEvent(
-          "ERROR",
-          "Failed to insert report log",
-          {
-            error: String(error?.message || error),
-            project_id,
-            project_id_type: typeof project_id,
-            lc_id,
-            lc_id_type: typeof lc_id,
-            log_date: Date.now(),
-            value,
-            realval,
-          },
-          "REPORTS_DB"
-        );
-      });
+      },
+    });
+    scheduleLogFlush();
+    maybeFlushLogBatchBySize();
   }
 
   const f_log_delete = async () => {
@@ -1255,6 +1370,7 @@ export default function useFunctions() {
     f_lc_capacity_id,
     f_lc_by_id,
     f_log_lc_value,
+    f_log_prr_link_event,
     f_log_delete,
     f_reposition_stage,
     f_export_project_csv,

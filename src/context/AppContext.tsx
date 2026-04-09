@@ -7,7 +7,12 @@ import { db } from '../db';
 import { toast } from 'react-toastify';
 import { logEvent } from '../services/LogService';
 
-const MAX_IN_MEMORY_LOGS = 500;
+/** Bound UI memory during long PRR sessions (live tail + recent history). */
+const MAX_IN_MEMORY_LOGS = 400;
+
+/** Throttle diagnostic log (was firing every burst → read/write app_runtime_logs.json constantly). */
+let lastMassiveLcsBurstLogAt = 0;
+const MASSIVE_LCS_BURST_LOG_COOLDOWN_MS = 60_000;
 
 interface IAppContext {
   mode: 'dark' | 'light';
@@ -301,7 +306,11 @@ export const AppDataProvider = (props: any) => {
 
   const handleLCs = (lc: ILC | ILC[]) => {
     if (Array.isArray(lc) && lc.length > 50) {
-      logEvent("WARN", `Massive Lcs burst received: ${lc.length} cells`);
+      const t = Date.now();
+      if (t - lastMassiveLcsBurstLogAt >= MASSIVE_LCS_BURST_LOG_COOLDOWN_MS) {
+        lastMassiveLcsBurstLogAt = t;
+        void logEvent("INFO", `LC burst: ${lc.length} cells`, undefined, "PRR");
+      }
     }
     if (Array.isArray(lc)) {
       lcsRef.current = lc;

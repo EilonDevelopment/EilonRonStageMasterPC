@@ -68,6 +68,48 @@ async function writeLogs(entries: LogEntry[]): Promise<void> {
   });
 }
 
+/** Coalesce file I/O: one read+write per burst instead of per logEvent (avoids native bridge spam). */
+const logPending: LogEntry[] = [];
+let logFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let logFlushChain: Promise<void> = Promise.resolve();
+const LOG_FILE_FLUSH_DEBOUNCE_MS = 2000;
+
+function cancelScheduledLogFlush() {
+  if (logFlushTimer != null) {
+    clearTimeout(logFlushTimer);
+    logFlushTimer = null;
+  }
+}
+
+async function flushLogPendingToDisk(): Promise<void> {
+  if (logPending.length === 0) return;
+  const batch = logPending.splice(0, logPending.length);
+  const now = Date.now();
+  const cutoff = now - 60 * 60 * 1000;
+  try {
+    const entries = await readLogs();
+    const filtered = entries.filter((entry) => entry.ts >= cutoff);
+    filtered.push(...batch);
+    await writeLogs(filtered);
+  } catch {
+    logPending.unshift(...batch);
+  }
+}
+
+function scheduleLogFileFlush() {
+  cancelScheduledLogFlush();
+  logFlushTimer = setTimeout(() => {
+    logFlushTimer = null;
+    logFlushChain = logFlushChain.then(() => flushLogPendingToDisk());
+  }, LOG_FILE_FLUSH_DEBOUNCE_MS);
+}
+
+function flushLogPendingSerialized(): Promise<void> {
+  cancelScheduledLogFlush();
+  logFlushChain = logFlushChain.then(() => flushLogPendingToDisk());
+  return logFlushChain;
+}
+
 export async function logEvent(
   level: LogLevel,
   message: string,
@@ -75,21 +117,18 @@ export async function logEvent(
   category = "GENERAL"
 ): Promise<void> {
   try {
-    const now = Date.now();
-    const cutoff = now - 60 * 60 * 1000;
-
-    const entries = await readLogs();
-    const filtered = entries.filter((entry) => entry.ts >= cutoff);
-
-    filtered.push({
-      ts: now,
+    logPending.push({
+      ts: Date.now(),
       level,
       category,
       message,
       extra,
     });
-
-    await writeLogs(filtered);
+    if (level === "ERROR") {
+      await flushLogPendingSerialized();
+      return;
+    }
+    scheduleLogFileFlush();
   } catch {
     // nunca romper la app por logging
   }
@@ -97,6 +136,9 @@ export async function logEvent(
 
 export async function clearLogs(): Promise<void> {
   try {
+    cancelScheduledLogFlush();
+    logPending.length = 0;
+    logFlushChain = Promise.resolve();
     await writeLogs([]);
   } catch {
     //
@@ -111,6 +153,8 @@ export async function exportLast60MinutesLogsFile(
   const cutoff = now - 60 * 60 * 1000;
 
   //await trimNativeCrashMarkers(30);
+
+  await flushLogPendingSerialized();
 
   const entries = await readLogs();
   const filtered = entries.filter((entry) => entry.ts >= cutoff);

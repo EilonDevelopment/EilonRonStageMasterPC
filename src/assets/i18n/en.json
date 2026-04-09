@@ -24,6 +24,7 @@
     "Settings": "Settings",
     "Duplicate": "Duplicate",
     "Delete": "Delete",
+    "Refresh": "Refresh",
     "Image": "Image",
     "Search": "Search",
     "From": "From",
@@ -181,7 +182,13 @@
     }
   },
   "ConnectDevice": {
-    "ModalTitle": "Please select your device type"
+    "ModalTitle": "Please select your device type",
+    "AvailableDevices": "Available devices",
+    "Scanning": "Scanning for devices…",
+    "NoDevices": "No devices found. Move closer and try again.",
+    "UnknownDevice": "Unknown device",
+    "Connect": "Connect",
+    "ScanFailed": "Bluetooth scan failed."
   },
   "ProofTest": {
     "Title": "Proof Test",
@@ -252,7 +259,8 @@
     "ExportSuccessFirstOf": "Report exported (first {{first}} of {{total}} logs). Use CSV for full data.",
     "CycleDisabled": "Reports Cycle is disabled",
     "CycleDisabledMessage": "Reports are not available. Please enable Reports Cycle in project settings to view reports.",
-    "PreparingExport": "Preparing export..."
+    "PreparingExport": "Preparing export...",
+    "LoadingReport": "Loading report data..."
   },
   "Msg": {
     "ConfirmSetting": "Project settings successfully updated",

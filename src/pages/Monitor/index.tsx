@@ -92,6 +92,7 @@ const Monitor: FC = () => {
 
   // const [selected, setSelected] = useState<IGroup | null>(null)
   const selectedRef = useRef<IGroup | null>()
+  const lastGroupTapRef = useRef<{ id: string; at: number }>({ id: '', at: 0 })
   const [visibleModal, setVisibleModal] = useState<string>('');
   const [success, setSuccess] = useState<{ title: string; subtitle: string; } | null>(null)
   const [count, setCount] = useState(0);
@@ -1054,7 +1055,6 @@ const Monitor: FC = () => {
     }
     if (turned_off_Devices(group.id)) {
       fire_error('This group contains non-transmitting load cells')
-      return false
     }
 
     if (bleConnected) {
@@ -1063,6 +1063,18 @@ const Monitor: FC = () => {
     } else {
       updateErrStr(t('Msg.ErrConnectPRR'))
     }
+  }
+
+  const handleGroupTap = (group: IGroup) => {
+    const now = Date.now();
+    const prev = lastGroupTapRef.current;
+    const sameGroup = prev.id === String(group.id);
+    if (sameGroup && (now - prev.at) <= 350) {
+      lastGroupTapRef.current = { id: '', at: 0 };
+      handleGroup(group);
+      return;
+    }
+    lastGroupTapRef.current = { id: String(group.id), at: now };
   }
 
 
@@ -1782,6 +1794,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
                 key={index}
                 className={`flex flex-col border-l border-dark cursor-pointer ${index === groups.length - 1 && 'border-r'}`}
                 onDoubleClick={() => handleGroup(item)}
+                onClick={() => handleGroupTap(item)}
               >
                 {/* Título del grupo: Se mantiene Azul (Primary) a menos que haya sobrecarga real */}
                 <Text

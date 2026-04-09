@@ -43,6 +43,12 @@ android/local.properties
 ios/DerivedData/
 ios/Pods/
 ios/App/build/
+ios/build-ipad/
+
+# Local Xcode / Swift driver noise (never commit)
+CompilationCache.noindex/
+ModuleCache.noindex/
+rsm-*/
 
 # Python cache (if any helper scripts exist)
 __pycache__/

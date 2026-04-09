@@ -22,6 +22,7 @@
     "Settings": "設定",
     "Duplicate": "複製",
     "Delete": "削除",
+    "Refresh": "更新",
     "Image": "写真",
     "Search": "Search",
     "From": "から",
@@ -161,7 +162,13 @@
     }
   },
   "ConnectDevice": {
-    "ModalTitle": "デバイスタイプを選択してください"
+    "ModalTitle": "デバイスタイプを選択してください",
+    "AvailableDevices": "利用可能なデバイス",
+    "Scanning": "スキャン中…",
+    "NoDevices": "デバイスが見つかりません。近づいて再試行してください。",
+    "UnknownDevice": "不明なデバイス",
+    "Connect": "接続",
+    "ScanFailed": "Bluetoothスキャンに失敗しました。"
   },
   "ProofTest": {
     "Title": "Proof Test",
@@ -207,7 +214,8 @@
     "ExportSuccessFirstOf": "レポートをエクスポートしました（{{total}}件中{{first}}件）。全文はCSVで取得できます。",
     "CycleDisabled": "Reports Cycle is disabled",
     "CycleDisabledMessage": "Reports are not available. Please enable Reports Cycle in project settings to view reports.",
-    "PreparingExport": "エクスポート準備中..."
+    "PreparingExport": "エクスポート準備中...",
+    "LoadingReport": "レポートを読み込み中..."
   },
   "Msg": {
     "ConfirmSetting": "Project settings successfully updated",

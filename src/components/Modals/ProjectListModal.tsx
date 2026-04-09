@@ -74,6 +74,8 @@ const ProjectListModal: FC<ProjectListModalProps> = props => {
                   type="button"
                   className="p-1.5 shrink-0 text-primary hover:opacity-80 transition-opacity"
                   title={t('Project.Export') || 'Export'}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); onExport(item); }}
                 >
                   <IonIcon icon={downloadSharp} className="w-5 h-5" />
