@@ -57,7 +57,7 @@ import { Share } from '@capacitor/share';
 // reglas nativas en los helpers, no duplicar aquí.
 import { checkNativeBleScanPrerequisites } from '../helper/nativeBleScan';
 import { pickProjectCsvText, shouldUseNativeCsvPickerForImport } from '../helper/nativeProjectCsvImport';
-import { BLE_CONNECT_TIMEOUT_MS, BLE_SCAN_DURATION_MS } from '../helper/bleConstants';
+import { BLE_CONNECT_TIMEOUT_MS } from '../helper/bleConstants';
 import { collectBleDevicesForService, type BleDiscoveredDevice } from '../helper/bleLeScanCollection';
 import { toast } from 'react-toastify';
 import useFunctions from '../hooks/useFunctions';
@@ -967,7 +967,15 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     setBlePickerScanning(true);
     setBlePickerOpen(true);
     try {
-      const devices = await collectBleDevicesForService(s, BLE_SCAN_DURATION_MS, [], bleScanAbortRef);
+      const devices = await collectBleDevicesForService(
+        s,
+        null,
+        [],
+        bleScanAbortRef,
+        (liveDevices) => {
+          setBlePickerDevices(liveDevices);
+        }
+      );
       if (bleScanAbortRef.current) {
         return;
       }

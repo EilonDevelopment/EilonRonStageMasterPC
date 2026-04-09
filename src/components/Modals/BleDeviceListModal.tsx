@@ -44,7 +44,7 @@ const BleDeviceListModal: FC<BleDeviceListModalProps> = ({
       isOpen
       onDidDismiss={onClose}
       className="ble-device-list-modal"
-      backdropDismiss={!scanning}
+      backdropDismiss
     >
       <IonHeader className="ion-no-border">
         <IonToolbar>
@@ -55,7 +55,7 @@ const BleDeviceListModal: FC<BleDeviceListModalProps> = ({
       </IonHeader>
       <IonContent className="ion-padding" scrollY>
         <div className="flex flex-row justify-end mb-3">
-          <IonButton fill="clear" size="small" onClick={onClose} disabled={scanning}>
+          <IonButton fill="clear" size="small" onClick={onClose}>
             {t('Common.Cancel')}
           </IonButton>
         </div>
@@ -67,12 +67,12 @@ const BleDeviceListModal: FC<BleDeviceListModalProps> = ({
             </p>
           </div>
         )}
-        {!scanning && devices.length === 0 && (
+        {devices.length === 0 && !scanning && (
           <p className="text-center py-8 text-dark dark:text-light">
             {t('ConnectDevice.NoDevices')}
           </p>
         )}
-        {!scanning && devices.length > 0 && (
+        {devices.length > 0 && (
           <IonList className="bg-transparent p-0" lines="full">
             {devices.map((d) => (
               <IonItem key={d.deviceId} lines="full">
