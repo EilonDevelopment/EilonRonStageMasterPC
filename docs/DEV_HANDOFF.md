@@ -58,6 +58,7 @@ npm run build && npx cap sync ios
 | 2026-03-29 | ios-development-ai | Mac | Added `docs/DEV_HANDOFF.md` (branches, sync, coordination pointers) | fcc14f0 |
 | 2026-03-29 | development-ai | Windows | Fast-forward merged `origin/ios-development-ai`; adopting repo handoff mailbox | e3f26bd |
 | 2026-04-09 | ios-development-ai | Mac | Shared BLE scan update: no auto-timeout, live discovered-device list while scanning, cancel always enabled. Also bumped app UI version to 1.4.2 and Android `versionCode/versionName` to `20/1.4.2`. Android side: pull shared files (`CommonLayout`, `BleDeviceListModal`, `bleLeScanCollection`, `Menu`, `android/app/build.gradle`) from this commit into `development-ai`. | 67a591e |
+| 2026-04-09 | development-ai | Windows | Pulled latest `ios-development-ai` into `development-ai`, validated on Android tablet over USB, and sent build to QA/testing. | 2b80018 |
 
 *Example:* `2026-03-29 | ios-development-ai | Mac | Info.plist BLE/camera; native CSV on iOS | e250fe7`
 
