@@ -1,4 +1,5 @@
-import React, { DragEventHandler, FC, SyntheticEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { DragEventHandler, FC, SyntheticEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal, flushSync } from 'react-dom';
 import Draggable, { DraggableCore, DraggableData, DraggableEvent } from 'react-draggable';
 import { Resizable, ResizableBox, ResizeCallbackData } from 'react-resizable';
 import { Position, ResizableDelta, Rnd } from 'react-rnd';
@@ -7,7 +8,7 @@ import { arrowUndoOutline, cameraOutline, createOutline, homeOutline, imageOutli
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 
 import { ILC } from '../../helper/types';
-import { IonButton, IonIcon } from '@ionic/react';
+import { IonButton, IonIcon, IonSpinner } from '@ionic/react';
 import { t } from 'i18next';
 import useAppData from '../../hooks/useAppData';
 import useFunctions from '../../hooks/useFunctions';
@@ -16,6 +17,7 @@ import { Line } from 'react-chartjs-2';
 import { db } from '../../db';
 import Swal from 'sweetalert2';
 import BackgroundImageEditorModal from '../Modals/BackgroundImageEditorModal';
+import './MonitorView.css';
 
 interface SizeInfoType {
   width: number,
@@ -32,7 +34,7 @@ interface MonitorViewProps {
   load: boolean;
   tare: boolean;
   onMoveLC: (lcItem: ILC) => void;
-  onReset: (status: boolean) => void;
+  onReset: (status: boolean) => void | Promise<void>;
 }
 
 type MonitorLcBoxProps = {
@@ -164,7 +166,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     // eslint-disable-next-line
     onMoveLC = () => { },
     // eslint-disable-next-line
-    onReset = () => { },
+    onReset = async () => { },
   } = props;
 
   const { bleConnected, curProject, liveLC, updateCurProject, updateProjects, updateLCs, groups, lcs, LCMax, platformType, tareStatus } = useAppData();
@@ -185,8 +187,9 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   /** In home mode: temporary positions while dragging; not saved to DB. Cleared when entering home. */
   const [tempHomePositions, setTempHomePositions] = useState<Record<number, { x: number; y: number }>>({});
 
-  const [reset, setReset] = useState<boolean>(false);
   const [locked, setLocked] = useState<boolean>(false);
+  const [layoutProgress, setLayoutProgress] = useState(false);
+  const [layoutProgressMessageKey, setLayoutProgressMessageKey] = useState('');
   /** Force remount of LC draggable nodes after heavy layout changes (iPad WebView can leave ghost layers). */
   const [lcRenderEpoch, setLcRenderEpoch] = useState(0);
   /** Force remount only of image scene (Rnd), not whole stage container. */
@@ -399,14 +402,6 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     setListData(data)
   }, [data])
 
-  /** Keep reset in sync with display mode so "Restore my positions" toggles to false and triggers restore when coming from default/home */
-  useEffect(() => {
-    setReset(isHomeMode);
-  }, [isHomeMode]);
-
-  useEffect(() => {
-    onReset(reset)
-  }, [reset])
   useEffect(() => {
     if (isHomeMode) {
       setTempHomePositions({});
@@ -478,18 +473,49 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     onMoveLC(updatedItem);
   };
 
-  const forceSceneRepaint = () => {
-    // WKWebView can keep stale composited snapshots after many absolute-position moves.
-    // Remount only the Rnd scene and trigger resize twice to flush compositor caches.
+  const forceSceneRepaint = useCallback(() => {
+    // WKWebView / Android WebView can keep stale composited snapshots after many absolute-position moves.
+    // Remount only the Rnd scene and trigger resize a few times to flush compositor caches.
     setSceneRenderEpoch((v) => v + 1);
+    const nudgeResize = () => window.dispatchEvent(new Event('resize'));
     requestAnimationFrame(() => {
-      window.dispatchEvent(new Event('resize'));
-      requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+      nudgeResize();
+      requestAnimationFrame(() => {
+        nudgeResize();
+        setTimeout(nudgeResize, 0);
+      });
     });
+  }, []);
+
+  /** Home column is unmounted in user+image mode; still bump repaint when toggling modes so WebView drops stale layers. */
+  const prevHomeModeRef = useRef(isHomeMode);
+  useLayoutEffect(() => {
+    const prev = prevHomeModeRef.current;
+    if (prev === isHomeMode) return;
+    prevHomeModeRef.current = isHomeMode;
+    if (!curProject?.p_image) return;
+    flushSync(() => setLcRenderEpoch((v) => v + 1));
+    forceSceneRepaint();
+  }, [isHomeMode, curProject?.p_image, forceSceneRepaint]);
+
+  const awaitDoubleRaf = () =>
+    new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+  const runWithLayoutProgress = async (messageKey: string, action: () => void | Promise<void>) => {
+    setLayoutProgressMessageKey(messageKey);
+    setLayoutProgress(true);
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    try {
+      await Promise.resolve(action());
+      await awaitDoubleRaf();
+    } finally {
+      setLayoutProgress(false);
+      setLayoutProgressMessageKey('');
+    }
   };
 
   const handlePos = async () => {
-    if (!isUserMode || !curProject?.p_image || locked) return;
+    if (!isUserMode || !curProject?.p_image || locked || layoutProgress) return;
 
     const canvasW = Number(sizeInfo?.width ?? 0);
     const canvasH = Number(sizeInfo?.height ?? 0);
@@ -521,6 +547,10 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
 
     if (targetIndices.length === 0) return;
 
+    setLayoutProgressMessageKey('Monitor.LayoutProgressAutoPlace');
+    setLayoutProgress(true);
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
     const maxCols = Math.max(1, Math.floor(availW / LC_BOX_WIDTH));
     const cols = Math.max(1, Math.min(maxCols, Math.ceil(Math.sqrt(targetIndices.length))));
     const rows = Math.ceil(targetIndices.length / cols);
@@ -538,21 +568,28 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       updated[listIndex] = { ...updated[listIndex], view_x: String(x), view_y: String(y) };
     });
 
-    setListData(updated);
-    updateLCs(updated);
-    await db.lcs.bulkPut(updated);
-    // iPad WKWebView sometimes leaves stale composited layers after mass LC moves.
-    // Bump epoch so all LC draggable nodes remount and old ghost layers are dropped.
-    setLcRenderEpoch((v) => v + 1);
-    forceSceneRepaint();
-    void Swal.fire({
-      title: t('Monitor.AutoPlace') || 'Auto place',
-      text: `Placed ${targetIndices.length} cells on the image.`,
-      icon: 'success',
-      heightAuto: false,
-      timer: 1500,
-      showConfirmButton: false,
-    });
+    try {
+      await db.lcs.bulkPut(updated);
+      // Commit layout + LC keys in one paint so WebView does not briefly composite old positions.
+      flushSync(() => {
+        setListData(updated);
+        updateLCs(updated);
+        setLcRenderEpoch((v) => v + 1);
+      });
+      forceSceneRepaint();
+      await awaitDoubleRaf();
+      void Swal.fire({
+        title: t('Monitor.AutoPlace') || 'Auto place',
+        text: `Placed ${targetIndices.length} cells on the image.`,
+        icon: 'success',
+        heightAuto: false,
+        timer: 1500,
+        showConfirmButton: false,
+      });
+    } finally {
+      setLayoutProgress(false);
+      setLayoutProgressMessageKey('');
+    }
   }
 
   const handleImageResize = (_e: MouseEvent | TouchEvent, _dir: string, _elementRef: HTMLElement, _resizeDelta: ResizableDelta, _position: Position) => {
@@ -580,8 +617,10 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     if (_dir === 'top' || _dir === 'topLeft' || _dir === 'topRight') {
       pos.y -= _resizeDelta.height
     }
-    setSizeInfo(size)
-    setPosInfo(pos)
+    flushSync(() => {
+      setSizeInfo(size);
+      setPosInfo(pos);
+    });
     f_update_project_image_size(currProjectRef.current.id, size.width, size.height)
     f_update_project_image_position(currProjectRef.current.id, pos.y, pos.x)
     forceSceneRepaint();
@@ -714,6 +753,9 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     setImageToEdit(null)
   }
 
+  /** Only clip/contain the left strip when it has no LC overlay (user+image). Home column stacks many rows and must overflow visibly past the image box. */
+  const clipEmptyLeftStrip = !!curProject?.p_image && isUserMode;
+
   return (<>
     <div className='flex flex-col'>
       <div
@@ -722,42 +764,51 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
 
         style={undefined}
       >
-        {/* LC column: when no BG image, or in home mode, LCs go here (home = column layout as before) */}
-        <div className="lc-column relative shrink-0" style={{ width: LC_BOX_WIDTH }}>
-          <div key={`lc-col-${lcRenderEpoch}`} className="absolute inset-0 pointer-events-none z-10" aria-hidden>
-            {(!currProjectRef?.current?.p_image || isHomeMode) && displayList.map((item, index) => {
-              const pos = isHomeMode
-                ? (tempHomePositions[index] ?? { x: 0, y: 0 })
-                : { x: parseInt(item.view_x ?? '0'), y: parseInt(item.view_y ?? '0') };
-              const displayPos =
-                pos.x === 0 && pos.y === 0
-                  ? { x: 0, y: index * LC_BOX_HEIGHT }
-                  : pos;
+        {/* LC column: when no BG image, or in home mode, LCs go here (home = column layout as before).
+            In user+image mode do not mount the overlay at all — an empty absolute inset-0 layer leaves Android WebView ghost tiles in the left strip. */}
+        <div
+          className={`lc-column relative shrink-0${clipEmptyLeftStrip ? ' overflow-hidden isolate' : ''}`}
+          style={{
+            width: LC_BOX_WIDTH,
+            ...(clipEmptyLeftStrip ? { contain: 'layout paint' as const } : {}),
+          }}
+        >
+          {(!curProject?.p_image || isHomeMode) && (
+            <div key={`lc-col-${lcRenderEpoch}`} className="absolute inset-0 pointer-events-none z-10" aria-hidden>
+              {displayList.map((item, index) => {
+                const pos = isHomeMode
+                  ? (tempHomePositions[index] ?? { x: 0, y: 0 })
+                  : { x: parseInt(item.view_x ?? '0'), y: parseInt(item.view_y ?? '0') };
+                const displayPos =
+                  pos.x === 0 && pos.y === 0
+                    ? { x: 0, y: index * LC_BOX_HEIGHT }
+                    : pos;
 
-              // Important: include x/y so Draggable remounts after saving a new base position.
-              // Otherwise react-draggable keeps its internal transform and the LC can "jump" on drop (double offset).
-              const key = `${lcRenderEpoch}-${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
-              return (
-                <MonitorLcBox
-                  key={key}
-                  item={item}
-                  index={index}
-                  x={displayPos.x}
-                  y={displayPos.y}
-                  tare={tare}
-                  maxMode={max}
-                  loadMode={load}
-                  bleConnected={bleConnected}
-                  locked={locked}
-                  boundsRight={lcBoundsRight - displayPos.x}
-                  boundsBottom={lcBoundsBottom - displayPos.y}
-                  onStop={(_e, data, idx, baseX, baseY) =>
-                    reposition_lc(_e, { ...data, x: baseX + data.x, y: baseY + data.y }, idx)
-                  }
-                />
-              );
-            })}
-          </div>
+                // Important: include x/y so Draggable remounts after saving a new base position.
+                // Otherwise react-draggable keeps its internal transform and the LC can "jump" on drop (double offset).
+                const key = `${lcRenderEpoch}-${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
+                return (
+                  <MonitorLcBox
+                    key={key}
+                    item={item}
+                    index={index}
+                    x={displayPos.x}
+                    y={displayPos.y}
+                    tare={tare}
+                    maxMode={max}
+                    loadMode={load}
+                    bleConnected={bleConnected}
+                    locked={locked}
+                    boundsRight={lcBoundsRight - displayPos.x}
+                    boundsBottom={lcBoundsBottom - displayPos.y}
+                    onStop={(_e, data, idx, baseX, baseY) =>
+                      reposition_lc(_e, { ...data, x: baseX + data.x, y: baseY + data.y }, idx)
+                    }
+                  />
+                );
+              })}
+            </div>
+          )}
         </div>
         <ResizableBox
           className={`border-black border rnd-container flex-1 min-w-0 overflow-visible`}
@@ -794,70 +845,79 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                 disableDragging={locked}
                 enableResizing={!locked}
               >
+                {/*
+                  Clip LC + image to Rnd bounds. Android WebView can leave "ghost" tiles outside the
+                  shrunken box if ancestors use overflow: visible; paint containment limits damage.
+                */}
                 <div
-                  className="rnd-bg-drag-handle handle box border border-black dark:border-inherit dark:text-white"
-                  style={{
-                    minWidth: '80px',
-                    minHeight: '80px',
-                    width: '100%',
-                    height: '100%',
-                  }}
+                  className="relative h-full w-full overflow-hidden isolate"
+                  style={{ contain: 'layout paint' }}
                 >
-                  <img
-                    src={currProjectRef.current.p_image}
-                    alt=""
-                    decoding="sync"
-                    draggable={false}
+                  <div
+                    className="rnd-bg-drag-handle handle box border border-black dark:border-inherit dark:text-white"
                     style={{
+                      minWidth: '80px',
+                      minHeight: '80px',
                       width: '100%',
                       height: '100%',
-                      objectFit: 'fill',
-                      display: 'block',
-                      imageRendering: 'crisp-edges',
                     }}
-                  />
-                </div>
-                {/* LCs on image only in user mode; in home mode (or default) LCs stay in column */}
-                {isUserMode && (
-                <div key={`lc-img-${lcRenderEpoch}`} className="absolute inset-0 pointer-events-none" style={{ zIndex: 5 }}>
-                  {displayList.map((item, index) => {
-                    const pos = isHomeMode
-                      ? (tempHomePositions[index] ?? { x: 0, y: 0 })
-                      : { x: parseInt(item.view_x ?? '0'), y: parseInt(item.view_y ?? '0') };
-                    const displayPos =
-                      pos.x === 0 && pos.y === 0
-                        ? { x: 0, y: index * LC_BOX_HEIGHT }
-                        : pos;
-                    const imgW = sizeInfo.width ?? 400;
-                    const imgH = sizeInfo.height ?? 300;
-                    const boundsRight = Math.max(-displayPos.x, imgW - LC_BOX_WIDTH - displayPos.x);
-                    const boundsBottom = Math.max(-displayPos.y, imgH - LC_BOX_HEIGHT - displayPos.y);
-                    // Important: include x/y so Draggable remounts after saving a new base position.
-                    const key = `${lcRenderEpoch}-${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
+                  >
+                    <img
+                      src={currProjectRef.current.p_image}
+                      alt=""
+                      decoding="sync"
+                      draggable={false}
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'fill',
+                        display: 'block',
+                        imageRendering: 'crisp-edges',
+                      }}
+                    />
+                  </div>
+                  {/* LCs on image only in user mode; in home mode (or default) LCs stay in column */}
+                  {isUserMode && (
+                  <div key={`lc-img-${lcRenderEpoch}`} className="absolute inset-0 pointer-events-none" style={{ zIndex: 5 }}>
+                    {displayList.map((item, index) => {
+                      const pos = isHomeMode
+                        ? (tempHomePositions[index] ?? { x: 0, y: 0 })
+                        : { x: parseInt(item.view_x ?? '0'), y: parseInt(item.view_y ?? '0') };
+                      const displayPos =
+                        pos.x === 0 && pos.y === 0
+                          ? { x: 0, y: index * LC_BOX_HEIGHT }
+                          : pos;
+                      const imgW = sizeInfo.width ?? 400;
+                      const imgH = sizeInfo.height ?? 300;
+                      const boundsRight = Math.max(-displayPos.x, imgW - LC_BOX_WIDTH - displayPos.x);
+                      const boundsBottom = Math.max(-displayPos.y, imgH - LC_BOX_HEIGHT - displayPos.y);
+                      // Important: include x/y so Draggable remounts after saving a new base position.
+                      const key = `${lcRenderEpoch}-${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
 
-                    return (
-                      <MonitorLcBox
-                        key={key}
-                        item={item}
-                        index={index}
-                        x={displayPos.x}
-                        y={displayPos.y}
-                        tare={tare}
-                        maxMode={max}
-                        loadMode={load}
-                        bleConnected={bleConnected}
-                        locked={locked}
-                        disabled={isHomeMode}
-                        boundsRight={boundsRight}
-                        boundsBottom={boundsBottom}
-                        onStop={(_e, data, idx, baseX, baseY) =>
-                          reposition_lc(_e, { ...data, x: baseX + data.x, y: baseY + data.y }, idx)
-                        }
-                      />
-                    );
-                  })}
+                      return (
+                        <MonitorLcBox
+                          key={key}
+                          item={item}
+                          index={index}
+                          x={displayPos.x}
+                          y={displayPos.y}
+                          tare={tare}
+                          maxMode={max}
+                          loadMode={load}
+                          bleConnected={bleConnected}
+                          locked={locked}
+                          disabled={isHomeMode}
+                          boundsRight={boundsRight}
+                          boundsBottom={boundsBottom}
+                          onStop={(_e, data, idx, baseX, baseY) =>
+                            reposition_lc(_e, { ...data, x: baseX + data.x, y: baseY + data.y }, idx)
+                          }
+                        />
+                      );
+                    })}
+                  </div>
+                  )}
                 </div>
-                )}
               </Rnd>
             }
 
@@ -878,7 +938,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                   <IonIcon slot="icon-only" icon={createOutline} size="small"></IonIcon>
                 </IonButton>
               )}
-              <IonButton color="medium" className="m-0" disabled={locked || !isUserMode || !curProject?.p_image} onClick={() => void handlePos()} title={t('Monitor.AutoPlace') || 'Auto place'}>
+              <IonButton color="medium" className="m-0" disabled={locked || layoutProgress || !isUserMode || !curProject?.p_image} onClick={() => void handlePos()} title={t('Monitor.AutoPlace') || 'Auto place'}>
                 <IonIcon slot="icon-only" icon={locateOutline} size="small"></IonIcon>
               </IonButton>
               <IonButton color="medium" className="m-0" onClick={() => setLocked(v => !v)}>
@@ -888,7 +948,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                 <IonButton
                   color="medium"
                   className="m-0"
-                  disabled={locked}
+                  disabled={locked || layoutProgress}
                   onClick={() => {
                     Swal.fire({
                       title: t('Monitor.Modal.ReturnToHomeTitle'),
@@ -900,8 +960,10 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                       confirmButtonText: t('Common.Confirm'),
                       cancelButtonText: t('Common.Cancel'),
                       heightAuto: false,
-                    }).then((result) => {
-                      if (result.isConfirmed) setReset((v) => !v);
+                    }).then(async (result) => {
+                      if (result.isConfirmed) {
+                        await runWithLayoutProgress('Monitor.LayoutProgressHome', () => onReset(true));
+                      }
                     });
                   }}
                   title={t('Monitor.Modal.SendToHome')}
@@ -913,8 +975,10 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                 <IonButton
                   color="medium"
                   className="m-0"
-                  disabled={locked}
-                  onClick={() => setReset((v) => !v)}
+                  disabled={locked || layoutProgress}
+                  onClick={() =>
+                    void runWithLayoutProgress('Monitor.LayoutProgressUser', () => onReset(false))
+                  }
                   title={t('Monitor.Modal.RestoreMyPositions')}
                 >
                   <IonIcon slot="icon-only" icon={arrowUndoOutline} size="small"></IonIcon>
@@ -958,6 +1022,20 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
         onSave={handleBackgroundEditorSave}
       />
     </div>
+    {layoutProgress && typeof document !== 'undefined'
+      ? createPortal(
+          <div className="monitor-layout-progress-backdrop" role="status" aria-live="polite">
+            <div className="monitor-layout-progress-card">
+              <IonSpinner name="crescent" className="monitor-layout-progress-spinner" />
+              <div className="monitor-layout-progress-bar" aria-hidden />
+              {layoutProgressMessageKey ? (
+                <p className="monitor-layout-progress-text">{t(layoutProgressMessageKey)}</p>
+              ) : null}
+            </div>
+          </div>,
+          document.body
+        )
+      : null}
   </>
   )
 }

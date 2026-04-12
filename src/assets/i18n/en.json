@@ -82,6 +82,9 @@
       "LC": "LC",
       "WarningType": "Warning Type"
     },
+    "LayoutProgressHome": "Moving cells to home layout…",
+    "LayoutProgressUser": "Restoring saved positions…",
+    "LayoutProgressAutoPlace": "Placing cells on the image…",
     "Modal": {
       "GroupAction": "Group Actions",
       "Tare": "TARE",

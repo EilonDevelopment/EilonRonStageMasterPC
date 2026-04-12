@@ -1,0 +1,64 @@
+/* Centered overlay so progress is not hidden under Ionic header / status bar */
+.monitor-layout-progress-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40000;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px))
+    max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  background: rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+.monitor-layout-progress-card {
+  pointer-events: none;
+  max-width: min(340px, 92vw);
+  padding: 22px 26px 20px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.95);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.monitor-layout-progress-spinner {
+  width: 40px;
+  height: 40px;
+  --color: #93c5fd;
+}
+
+.monitor-layout-progress-bar {
+  height: 6px;
+  width: min(260px, 75vw);
+  border-radius: 999px;
+  overflow: hidden;
+  background: linear-gradient(90deg, #3b82f6 0%, #2563eb 40%, #60a5fa 70%, #3b82f6 100%);
+  background-size: 200% 100%;
+  animation: monitor-layout-progress-slide 1.1s linear infinite;
+}
+
+.monitor-layout-progress-text {
+  margin: 0;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1.45;
+  font-weight: 600;
+  color: #f8fafc;
+  text-align: center;
+}
+
+@keyframes monitor-layout-progress-slide {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}

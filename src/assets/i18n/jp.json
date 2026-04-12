@@ -80,6 +80,9 @@
       "LC": "LC",
       "WarningType": "警告タイプ"
     },
+    "LayoutProgressHome": "ホーム配置に移動中…",
+    "LayoutProgressUser": "保存した位置を復元中…",
+    "LayoutProgressAutoPlace": "画像上にセルを配置中…",
     "Modal": {
       "Warnings": "警告",
       "ReturnToHomeTitle": "ホーム位置に戻す",
