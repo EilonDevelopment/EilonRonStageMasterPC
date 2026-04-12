@@ -1,6 +1,6 @@
 import { IonButton, IonIcon, IonModal } from '@ionic/react';
 import { closeOutline } from 'ionicons/icons';
-import React, { FC, ReactElement, useEffect, useRef, useState } from 'react';
+import React, { FC, ReactElement, ReactNode, useEffect, useRef, useState } from 'react';
 
 import './index.css'
 import { useTranslation } from 'react-i18next';
@@ -29,6 +29,8 @@ interface ModalProps {
   onClose?: () => void;
   onPdfAction?: () => void;
   showFooter?: boolean;
+  /** Renders below scrollable body; stays visible when form scrolls or keyboard opens (use with showFooter={false}). */
+  footerSlot?: ReactNode;
 }
 
 const Modal: FC<ModalProps> = props => {
@@ -55,6 +57,7 @@ const Modal: FC<ModalProps> = props => {
     // eslint-disable-next-line
     onPdfAction = () => { },
     showFooter = true,
+    footerSlot,
   } = props;
 
   const { confirmed, weighData, curProject } = useAppData();
@@ -140,8 +143,14 @@ const Modal: FC<ModalProps> = props => {
   }, [visible])
 
   return (
-    <IonModal ref={modal} isOpen={visible} onDidDismiss={onClose} canDismiss={dismiss}>
-      <div className='flex flex-row '>
+    <IonModal
+      ref={modal}
+      isOpen={visible}
+      onDidDismiss={onClose}
+      canDismiss={dismiss}
+      className={footerSlot ? 'ion-modal-sticky-footer' : undefined}
+    >
+      <div className={`flex flex-row ${footerSlot ? 'h-full min-h-0' : ''}`}>
         {confirmed && modalType === 'document' && <div className={`flex flex-col p-1 pt-14${isMobile ? "max-h-80 overflow-auto pt-[50px] px-4 pb-3" : ""}`}>
           <TextInput
             label={t("WeighingDocument.TruckNo")}
@@ -169,9 +178,11 @@ const Modal: FC<ModalProps> = props => {
           />
           <IonButton color="warning" size="small" className={`${isMobile ? "mb-2 mt-3" : ""}`} onClick={handleDownloadPDF}>Download PDF</IonButton>
         </div>}
-        <div className={`wrapper bg-light dark:bg-dark ${classes}`}>
+        <div
+          className={`wrapper bg-light dark:bg-dark ${footerSlot ? 'flex flex-col min-h-0 h-full max-h-full' : ''} ${classes}`}
+        >
           {!headerDisable &&
-            <div className={`flex flex-row items-center border-b border-gray-200 dark:border-gray-600 ${isMobile ? 'px-4 py-2 fixed top-0 left-0 w-full z-[99999] bg-inherit' : ' px-6 py-4 fixed top-0 left-0 w-full z-[99999]'} bg-white dark:bg-dark`}>
+            <div className={`flex flex-row items-center shrink-0 border-b border-gray-200 dark:border-gray-600 ${isMobile ? 'px-4 py-2 fixed top-0 left-0 w-full z-[99999] bg-inherit' : ' px-6 py-4 fixed top-0 left-0 w-full z-[99999]'} bg-white dark:bg-dark`}>
               {header && <h1 className='text-xl font-medium text-black dark:text-white'>{header}</h1>}
               {headerSub}
               <IonIcon
@@ -184,9 +195,19 @@ const Modal: FC<ModalProps> = props => {
               />
             </div>
           }
-          <div className={`flex flex-col p-4 bg-light dark:bg-dark dark:text-white ${isMobile ? "mt-10" : "mt-14"} ${contentClasses}`} style={{'overflowY':'auto',maxHeight:'90vh'}}>
+          <div
+            className={`flex flex-col bg-light dark:bg-dark dark:text-white ${isMobile ? 'mt-10' : 'mt-14'} ${footerSlot ? 'flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-3' : 'p-4'} ${contentClasses}`}
+            style={footerSlot ? undefined : { overflowY: 'auto', maxHeight: '90vh' }}
+          >
             {children}
           </div>
+          {footerSlot && (
+            <div
+              className={`shrink-0 border-t border-gray-200 dark:border-gray-600 bg-white dark:bg-dark ${isMobile ? 'px-3' : 'px-4'} pt-3 pb-[max(12px,env(safe-area-inset-bottom,0px))]`}
+            >
+              {footerSlot}
+            </div>
+          )}
           {showFooter && (
             <div className={`flex flex-row justify-end w-full gap-2  ${isMobile ? "px-4 py-2" : 'pb-3 '}${footerClasses}`}>
               {okTitle && <IonButton color={okColor || 'primary'} onClick={() => onAction()}>{okTitle}</IonButton>}

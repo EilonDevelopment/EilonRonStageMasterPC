@@ -4,15 +4,22 @@ import { useTranslation } from 'react-i18next';
 import { IonCheckbox, IonIcon } from '@ionic/react';
 import { arrowForwardOutline, closeCircleOutline, informationCircleOutline } from 'ionicons/icons';
 import Text from '../Text';
-import { Checkbox } from '@mui/material';
 import Button from '../Buttons/Button';
 import useAppData from '../../hooks/useAppData';
+
+export type GroupActionModalMode = 'full' | 'visualOnly' | 'zeroOnly';
 
 interface GroupActionModalProps {
   visible: boolean;
   tare: boolean;
   onAction: (type: string) => void;
   onClose: () => void;
+  highlightChecked: boolean;
+  onlyGroupChecked: boolean;
+  onHighlightChange: (checked: boolean) => void;
+  onOnlyGroupChange: (checked: boolean) => void;
+  /** full = double-tap dialog; visualOnly = highlight/show-only; zeroOnly = long-press zero confirm */
+  mode?: GroupActionModalMode;
 }
 
 const StepItem = (props: { value: number; active: boolean; }) => (
@@ -32,19 +39,27 @@ const GroupActionModal: FC<GroupActionModalProps> = props => {
     tare,
     onAction,
     onClose,
+    highlightChecked,
+    onlyGroupChecked,
+    onHighlightChange,
+    onOnlyGroupChange,
+    mode = 'full',
   } = props;
   const { t } = useTranslation();
 
-  const [checked, setChecked] = useState<boolean>(false)
   const [status, setStatus] = useState<string>('group')
   const [confirmed, setConfirmed] = useState<number>(1)
   const { isMobile } = useAppData()
 
+  const isFull = mode === 'full'
+  const isVisualOnly = mode === 'visualOnly'
+  const isZeroOnly = mode === 'zeroOnly'
+
   useEffect(() => {
-    setChecked(false)
-    setStatus('group')
+    if (!visible) return
     setConfirmed(1)
-  }, [visible])
+    setStatus(isZeroOnly ? 'zero' : 'group')
+  }, [visible, isZeroOnly])
 
   const handleTare = () => {
     onAction('tare')
@@ -70,7 +85,7 @@ const GroupActionModal: FC<GroupActionModalProps> = props => {
       footerClasses='!py-0'
       onClose={() => onClose()}
     >
-      {status === 'group' ? <>
+      {status === 'group' && isFull ? <>
         <IonIcon color='primary' icon={informationCircleOutline} className='text-[96px]' />
         <Text classes='text-danger !text-3xl font-medium' label={t('Monitor.Modal.GroupAction')} />
         <div className='flex flex-row justify-center items-center gap-2'>
@@ -78,9 +93,40 @@ const GroupActionModal: FC<GroupActionModalProps> = props => {
           <Button classes='px-6 py-3 bg-danger rounded-lg' textClasses='text-white font-semibold' title={t('Monitor.Modal.Zero')} onAction={() => handleZero()} />
         </div>
         <hr className='w-full border-gray-300' />
-        <div className='flex flex-row justify-center items-center gap-1' onClick={() => setChecked(v => !v)}>
-          <IonCheckbox checked={checked} />
-          <Text label={t('Monitor.Modal.HighlightLC')} />
+        <div className='flex flex-col w-full gap-2 px-2'>
+          <div className='flex flex-row items-center gap-2'>
+            <IonCheckbox
+              checked={highlightChecked}
+              onIonChange={(e) => onHighlightChange(!!e.detail.checked)}
+            />
+            <Text label={t('Monitor.Modal.HighlightLC')} />
+          </div>
+          <div className='flex flex-row items-center gap-2'>
+            <IonCheckbox
+              checked={onlyGroupChecked}
+              onIonChange={(e) => onOnlyGroupChange(!!e.detail.checked)}
+            />
+            <Text label={t('Monitor.Modal.ShowOnlyGroupLcs')} />
+          </div>
+        </div>
+      </> : status === 'group' && isVisualOnly ? <>
+        <IonIcon color='primary' icon={informationCircleOutline} className='text-[72px]' />
+        <Text classes='text-danger !text-2xl font-medium' label={t('Monitor.Modal.GroupDisplayOptions')} />
+        <div className='flex flex-col w-full gap-2 px-2'>
+          <div className='flex flex-row items-center gap-2'>
+            <IonCheckbox
+              checked={highlightChecked}
+              onIonChange={(e) => onHighlightChange(!!e.detail.checked)}
+            />
+            <Text label={t('Monitor.Modal.HighlightLC')} />
+          </div>
+          <div className='flex flex-row items-center gap-2'>
+            <IonCheckbox
+              checked={onlyGroupChecked}
+              onIonChange={(e) => onOnlyGroupChange(!!e.detail.checked)}
+            />
+            <Text label={t('Monitor.Modal.ShowOnlyGroupLcs')} />
+          </div>
         </div>
       </> : <>
         <div className='flex flex-row items-center justify-center w-full'>

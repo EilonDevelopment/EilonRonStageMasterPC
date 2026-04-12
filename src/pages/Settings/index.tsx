@@ -29,7 +29,7 @@ enum CalibrationModalMode {
 const Settings: FC = () => {
   const { t } = useTranslation();
   const { curProject, lcs, groups, activeToastCount, updateErrStr, updateLCs, updateGroups, updateCreatingLCs } = useAppData();
-  const { f_edit_lc, f_verify_lc_id, f_check_lc_in_project, f_insert_lc, f_save_group, f_project_groups, f_delete_lc, f_reset_empty_groups_after_delete } = useFunctions()
+  const { f_edit_lc, f_verify_lc_id, f_check_lc_in_project, f_insert_lcs_bulk, f_save_group, f_project_groups, f_delete_lc, f_reset_empty_groups_after_delete } = useFunctions()
 
   const [dbHanlder, setDBHandler] = useState(null)
 
@@ -295,27 +295,23 @@ const Settings: FC = () => {
           }, 0);
         };
         try {
-          const newLCList: Partial<ILC>[] = [];
-          for (const id of valid_ids) {
-            const newLC = {
-              id,
-              title,
-              psw,
-              underload,
-              overload,
-              total_sum,
-              groups: lcGroups,
-              project_id: normalizeProjectId(curProject.id),
-              lc_id: lc.lc_id,
-              capacity: capacity
-            };
-            updateLCs({ ...newLC });
-            newLCList.push(newLC);
-            if (lc.id) {
-              await f_edit_lc(lc);
-            } else {
-              await f_insert_lc(newLC);
-            }
+          const newLCList: Partial<ILC>[] = valid_ids.map((id) => ({
+            id,
+            title,
+            psw,
+            underload,
+            overload,
+            total_sum,
+            groups: lcGroups,
+            project_id: normalizeProjectId(curProject.id),
+            lc_id: lc.lc_id,
+            capacity,
+          }));
+
+          if (lc.id) {
+            await f_edit_lc(lc);
+          } else {
+            await f_insert_lcs_bulk(newLCList);
           }
 
           const groups_list = lcGroups.split(',');

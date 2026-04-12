@@ -313,6 +313,18 @@ ion-modal {
   --backdrop-opacity: 0.3;
 }
 
+/* New LC / forms: fixed height shell so body scrolls and footer (Save) stays above keyboard */
+ion-modal.ion-modal-sticky-footer {
+  --width: min(96vw, 520px);
+  --height: 88dvh;
+  --max-height: 88dvh;
+  --border-radius: 12px;
+}
+
+ion-modal.ion-modal-sticky-footer .wrapper {
+  max-height: 100%;
+}
+
 ion-modal.modal-default.show-modal~ion-modal.modal-default {
   --backdrop-opacity: 0.6;
 }

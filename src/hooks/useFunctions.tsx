@@ -264,6 +264,44 @@ export default function useFunctions() {
     }
   }
 
+  /**
+   * Insert many LCs in one IndexedDB transaction, then refresh context once.
+   * Avoids per-row f_insert_lc → f_load_cells (N full table reads + N React updates).
+   */
+  const f_insert_lcs_bulk = async (lcRecords: Partial<ILC>[]) => {
+    if (!lcRecords.length || !curProject.id) return
+    const pid = normalizeProjectId(curProject.id)
+    const idSet = new Set(lcRecords.map((r) => String(r.id)))
+    const existing = await db.lcs
+      .filter((row) => idSet.has(String(row.id)) && normalizeProjectId(row.project_id) === pid)
+      .toArray()
+    const rows = lcRecords.map((lc) => ({
+      id: lc.id ?? '',
+      title: lc.title ?? '',
+      psw: lc.psw ?? '',
+      underload: lc.underload ?? '',
+      overload: lc.overload ?? '',
+      total_sum: lc.total_sum,
+      groups: lc.groups ?? '',
+      project_id: normalizeProjectId(lc.project_id ?? ''),
+      tare: '',
+      zero: '',
+      capacity: lc.capacity ?? {},
+    }))
+    try {
+      await db.transaction('rw', db.lcs, async () => {
+        if (existing.length > 0) {
+          await db.lcs.bulkDelete(existing.map((x) => x.lc_id))
+        }
+        await db.lcs.bulkAdd(rows)
+      })
+      await f_load_cells()
+      f_update_project_last_change()
+    } catch (error) {
+      console.error('Error bulk-adding LCs: ' + error)
+    }
+  }
+
   const f_load_cells = async () => {
     if (!curProject.id) return
     const pid = normalizeProjectId(curProject.id);
@@ -1346,6 +1384,7 @@ export default function useFunctions() {
     f_update_project_last_change,
     f_load_cells,
     f_insert_lc,
+    f_insert_lcs_bulk,
     f_edit_lc,
     f_update_lcs,
     f_delete_lc,

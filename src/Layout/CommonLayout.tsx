@@ -85,6 +85,8 @@ interface CommonLayoutProps {
   maxStatusToggle?: (value: boolean) => void;
   loadStatusToggle?: (value: boolean) => void;
   tareStatusToggle?: () => void;
+  /** When set (e.g. Monitor), toolbar Tare uses this instead of tareStatusToggle */
+  toolbarTareClick?: () => void;
   onWarning?: (value: boolean) => void;
   onDBHandler?: (handler: any) => void;
   onTareAction?: (type: string, group_id: string) => void;
@@ -137,6 +139,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     loadStatus: load = true,
     // tareStatus from AppContext; tareStatusToggle from Monitor so toolbar uses same flow (tare_off/tare_on)
     tareStatusToggle,
+    toolbarTareClick,
     // eslint-disable-next-line
     maxStatusToggle = () => { },
     // eslint-disable-next-line
@@ -2371,7 +2374,17 @@ const lastSoundTimeRef = useRef<number>(0);
                   onClick={() => updateMonitorStatus()}
                 />
                 <IonImg src={max ? maxActiveIcon : maxIcon} className='h-10 w-10 cursor-pointer' onClick={() => maxStatusToggle(!max)} />
-                <IonImg src={tareStatus ? tareActiveIcon : tareIcon} className='h-10 w-10 cursor-pointer' onClick={() => (tareStatusToggle ? tareStatusToggle() : updateTareStatus(!tareStatus))} />
+                <IonImg
+                  src={tareStatus ? tareActiveIcon : tareIcon}
+                  className='h-10 w-10 cursor-pointer'
+                  onClick={() =>
+                    toolbarTareClick
+                      ? toolbarTareClick()
+                      : tareStatusToggle
+                        ? tareStatusToggle()
+                        : updateTareStatus(!tareStatus)
+                  }
+                />
                 <IonImg src={load ? loadIcon : battIcon} className='h-10 w-10 cursor-pointer' onClick={() => loadStatusToggle(!load)} />
               </div>
               {/* <IonTitle>{title || "Projects"}</IonTitle> */}

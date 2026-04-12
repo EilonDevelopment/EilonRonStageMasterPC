@@ -26,8 +26,13 @@ import { logEvent } from "../../services/LogService";
 
 const MonitorModals = {
   GroupAction: 'action',
+  GroupVisual: 'groupVisual',
+  GroupZero: 'groupZero',
   Zero: 'zero',
 }
+
+const SINGLE_TAP_DELAY_MS = 350
+const GROUP_LONG_PRESS_MS = 600
 const Monitor: FC = () => {
   const heartbeatRef = useRef<number | null>(null);
   const monitorStartRef = useRef<number>(Date.now());
@@ -93,6 +98,23 @@ const Monitor: FC = () => {
   // const [selected, setSelected] = useState<IGroup | null>(null)
   const selectedRef = useRef<IGroup | null>()
   const lastGroupTapRef = useRef<{ id: string; at: number }>({ id: '', at: 0 })
+  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const suppressGroupClickRef = useRef(false)
+
+  const clearSingleTapTimer = () => {
+    if (singleTapTimerRef.current) {
+      clearTimeout(singleTapTimerRef.current)
+      singleTapTimerRef.current = null
+    }
+  }
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+  }
   const [visibleModal, setVisibleModal] = useState<string>('');
   const [success, setSuccess] = useState<{ title: string; subtitle: string; } | null>(null)
   const [count, setCount] = useState(0);
@@ -113,6 +135,9 @@ const Monitor: FC = () => {
   const [zeroProgress, setZeroProgress] = useState(0);
   const [totalToZero, setTotalToZero] = useState(0);
 
+  type GroupVisualState = { groupId: string; highlight: boolean; only: boolean };
+  const [groupVisual, setGroupVisual] = useState<GroupVisualState | null>(null);
+
   const curProjectRef=useRef(curProject)
 
 
@@ -126,6 +151,15 @@ const Monitor: FC = () => {
     // Clearing the interval
     return () => clearInterval(interval)
   }, [])
+
+  useEffect(() => {
+    setGroupVisual(null);
+  }, [curProject?.id]);
+
+  useEffect(() => () => {
+    if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current)
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current)
+  }, []);
 
   useEffect(() => {
     monitorStartRef.current = Date.now();
@@ -1017,6 +1051,9 @@ const Monitor: FC = () => {
             tare={tareStatus}
             onMoveLC={handleMoveLC}
             onReset={handleReset}
+            groupVisualGroupId={groupVisual?.groupId ?? null}
+            groupVisualHighlight={!!groupVisual?.highlight}
+            groupVisualOnly={!!groupVisual?.only}
           />
         )
       case 'list':
@@ -1065,17 +1102,107 @@ const Monitor: FC = () => {
     }
   }
 
+  const openGroupVisualModal = (group: IGroup) => {
+    if (!unique_group_lcs(group.id)) {
+      fire_error('This group contain non unique load cells');
+      return;
+    }
+    if (turned_off_Devices(group.id)) {
+      fire_error('This group contains non-transmitting load cells')
+    }
+    selectedRef.current = group
+    setVisibleModal(MonitorModals.GroupVisual)
+  }
+
+  const openGroupZeroModal = (group: IGroup) => {
+    if (!unique_group_lcs(group.id)) {
+      fire_error('This group contain non unique load cells');
+      return;
+    }
+    if (turned_off_Devices(group.id)) {
+      fire_error('This group contains non-transmitting load cells')
+    }
+    if (!bleConnected) {
+      updateErrStr(t('Msg.ErrConnectPRR'))
+      return
+    }
+    selectedRef.current = group
+    setVisibleModal(MonitorModals.GroupZero)
+  }
+
+  const onGroupPointerDown = (group: IGroup) => () => {
+    clearLongPressTimer()
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null
+      suppressGroupClickRef.current = true
+      clearSingleTapTimer()
+      lastGroupTapRef.current = { id: '', at: 0 }
+      openGroupZeroModal(group)
+    }, GROUP_LONG_PRESS_MS)
+  }
+
+  const onGroupPointerUp = () => {
+    clearLongPressTimer()
+  }
+
   const handleGroupTap = (group: IGroup) => {
+    if (suppressGroupClickRef.current) {
+      suppressGroupClickRef.current = false
+      return
+    }
     const now = Date.now();
     const prev = lastGroupTapRef.current;
     const sameGroup = prev.id === String(group.id);
-    if (sameGroup && (now - prev.at) <= 350) {
+    if (sameGroup && (now - prev.at) <= SINGLE_TAP_DELAY_MS) {
+      clearSingleTapTimer()
       lastGroupTapRef.current = { id: '', at: 0 };
       handleGroup(group);
       return;
     }
     lastGroupTapRef.current = { id: String(group.id), at: now };
+    clearSingleTapTimer()
+    singleTapTimerRef.current = setTimeout(() => {
+      singleTapTimerRef.current = null
+      lastGroupTapRef.current = { id: '', at: 0 }
+      openGroupVisualModal(group)
+    }, SINGLE_TAP_DELAY_MS)
   }
+
+  const handleGroupHighlightChange = (checked: boolean) => {
+    const gid = String(selectedRef.current?.id ?? '');
+    if (!gid) return;
+    setGroupVisual((prev) => {
+      if (!checked) {
+        if (!prev || prev.groupId !== gid) return prev;
+        if (prev.only) return { ...prev, highlight: false };
+        return null;
+      }
+      const same = prev?.groupId === gid;
+      return {
+        groupId: gid,
+        highlight: true,
+        only: same ? !!prev?.only : false,
+      };
+    });
+  };
+
+  const handleGroupOnlyLcsChange = (checked: boolean) => {
+    const gid = String(selectedRef.current?.id ?? '');
+    if (!gid) return;
+    setGroupVisual((prev) => {
+      if (!checked) {
+        if (!prev || prev.groupId !== gid) return prev;
+        if (prev.highlight) return { ...prev, only: false };
+        return null;
+      }
+      const same = prev?.groupId === gid;
+      return {
+        groupId: gid,
+        only: true,
+        highlight: same ? !!prev?.highlight : false,
+      };
+    });
+  };
 
 
 /*  
@@ -1231,9 +1358,9 @@ const updateSumByGroup = async () => {
           // when clicked tare
           let tare_ok = true
           lcs.forEach(lc => {
-            const g = lc.groups?.split(',')
+            const g = lc.groups?.split(',').map((x) => String(x).trim()) ?? []
             const lcId = lc.id
-            if (g?.includes(groupShownId)) {
+            if (g.includes(String(groupShownId))) {
               const live = liveLC.find(item => item.id === lcId)
               const v = strToFloat(live?.value) + strToFloat(live?.zero)
               if (v <= 0) {
@@ -1540,14 +1667,19 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
   }
 
   const tare_group = async (groupShownId: string) => {
+    const gid = String(groupShownId)
+    const groupRow = groups.find((g) => String(g.id) === gid)
+    if (!groupRow) {
+      console.warn('[TARE] Group not found:', gid)
+      return
+    }
     const matchingLCs = lcs.filter(lc => liveLC.some(live => live.id === lc.id));
-    const projectIdNorm = normalizeProjectId(curProject.id);
     try {
       const toUpdate: ILC[] = []
       for (const lc_m of matchingLCs) {
-        const g = lc_m?.groups?.split(',') ?? []
+        const g = lc_m?.groups?.split(',').map((x) => String(x).trim()) ?? []
 
-        if (g.includes(groupShownId)) {
+        if (g.includes(gid)) {
           const live = liveLC.find(live => live.id === lc_m.id)
           if (!live) {
             continue;
@@ -1578,12 +1710,8 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
         void 0; // No LCs to update (e.g. no live data or group mismatch)
       }
 
-      if (!selectedRef.current) {
-        return;
-      }
-
       const updatedGroup: IGroup = {
-        ...selectedRef.current,
+        ...groupRow,
         tare: 'true',
       }
       selectedRef.current = updatedGroup
@@ -1594,18 +1722,12 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
   }
 
   const untare_group = async (groupShownId: string) => {
-    const projectIdNorm = normalizeProjectId(curProject.id);
+    const gid = String(groupShownId)
     try {
-      // Do not turn off global tare mode when untaring one group; only tare_off (toolbar) does that
-      const updates: { key: any; changes: any }[] = []
       const ids: number[] = []
       lcs.forEach((lc, index) => {
-        const g = lc.groups?.split(',').map(item => parseInt(item, 10))
-        if (g?.includes(parseInt(groupShownId))) {
-          updates.push({
-            key: { id: lc.id, project_id: curProject.id },
-            changes: { status_tare: false, tare: '0' }
-          })
+        const g = lc.groups?.split(',').map((x) => String(x).trim()) ?? []
+        if (g.includes(gid)) {
           ids.push(index)
         }
       })
@@ -1615,28 +1737,15 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
         );
         updateLCs(updatedLcs);
       }
-      // Update groups in DB/Context
-      if (!selectedRef.current) return
-      const updatedGroup: IGroup = {
-        ...selectedRef.current,
-        tare: '',
+      const groupRow = groups.find((g) => String(g.id) === gid)
+      if (groupRow) {
+        const merged: IGroup = { ...groupRow, tare: '' }
+        selectedRef.current = merged
+        updateGroups(merged)
       }
-      selectedRef.current = updatedGroup
-      updateGroups(updatedGroup)
-
     } catch (error) {
       console.log('Transaction ERROR: ' + error);
     }
-    const updateGroup = groups.map(g => {
-      if (g.id === groupShownId) {
-        const { tare, ...rest } = g
-        selectedRef.current = rest
-        return rest
-      }
-      return g
-    })
-
-    updateGroups(updateGroup)
   }
 
   const unique_group_lcs = (group_id: string) => {
@@ -1673,6 +1782,62 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
     if (!val)
       setMaxStatus(false)
     setLoadStatus(val)
+  }
+
+  const handleMonitorToolbarTare = () => {
+    if (!bleConnected) {
+      updateErrStr(t('Msg.ErrConnectPRR'))
+      return
+    }
+    const gv = groupVisual
+    if (!gv || (!gv.highlight && !gv.only)) {
+      fire_error(t('Monitor.Modal.SelectGroupForTare'))
+      return
+    }
+    const gid = gv.groupId
+    const groupRow = groups.find((g) => String(g.id) === gid)
+    if (!groupRow) {
+      fire_error(t('Monitor.Modal.SelectGroupForTare'))
+      return
+    }
+    if (groupRow.tare === 'true') {
+      void tare_off()
+      return
+    }
+    if (!unique_group_lcs(gid)) {
+      fire_error('This group contain non unique load cells');
+      return
+    }
+    if (turned_off_Devices(gid)) {
+      fire_error('This group contains non-transmitting load cells')
+    }
+    let tare_ok = true
+    let ifBigger = true
+    lcs.forEach(lc => {
+      const g = lc.groups?.split(',').map((x) => String(x).trim()) ?? []
+      if (g.includes(gid)) {
+        const live = liveLC.find(item => item.id === lc.id)
+        const v = strToFloat(live?.value) + strToFloat(live?.zero)
+        if (v <= 0) {
+          tare_ok = false
+          ifBigger = false
+        }
+      }
+    })
+    if (!tare_ok) {
+      if (!ifBigger) updateErrStr("One or more of your LC's load <= 0")
+      return
+    }
+    void (async () => {
+      await tare_group(gid)
+      const onOk = tare_on(true)
+      if (onOk) {
+        setSuccess({
+          title: t('Monitor.Modal.TareMode'),
+          subtitle: t('Monitor.Modal.TareSubtitle')
+        })
+      }
+    })()
   }
 
   const tareStatusToggle = () => {
@@ -1723,11 +1888,12 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
       maxStatusToggle={handleMaxStatus}
       loadStatusToggle={handleLoadStatus}
       tareStatusToggle={tareStatusToggle}
+      toolbarTareClick={handleMonitorToolbarTare}
       onWarning={setWarning}
       onDBHandler={setDBHandler}
       onTareAction={handleTareAction}
     >
-      <div className='grid grid-cols-16 h-10 w-full'>
+      <div className='grid grid-cols-16 h-10 w-full overflow-visible'>
         {groups.map((item: IGroup, index: number) => {
           // console.log(item);
             let v = parseFloat(item.sum ?? '')
@@ -1788,12 +1954,22 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
               // Un grupo se considera "activo" si tiene definido un límite de sobrecarga (overload)
               const isActive = item.overload && Number(item.overload) > 0;
 
+              const isGroupVisualFocus =
+                !!groupVisual &&
+                (groupVisual.highlight || groupVisual.only) &&
+                groupVisual.groupId === String(item.id);
+
             return (
 
               <div
                 key={index}
-                className={`flex flex-col border-l border-dark cursor-pointer ${index === groups.length - 1 && 'border-r'}`}
-                onDoubleClick={() => handleGroup(item)}
+                className={`flex flex-col border-l border-dark cursor-pointer ${index === groups.length - 1 && 'border-r'} ${
+                  isGroupVisualFocus ? 'relative z-[20] rounded-sm ring-4 ring-primary ring-offset-1' : ''
+                }`}
+                onPointerDown={onGroupPointerDown(item)}
+                onPointerUp={onGroupPointerUp}
+                onPointerCancel={onGroupPointerUp}
+                onPointerLeave={onGroupPointerUp}
                 onClick={() => handleGroupTap(item)}
               >
                 {/* Título del grupo: Se mantiene Azul (Primary) a menos que haya sobrecarga real */}
@@ -1801,6 +1977,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
                   classes={`
                     h-1/2 text-dark !text-xs flex items-center justify-center
                     ${(v > o && o > 0) ? 'bg-danger text-white' : (p > 130 ? 'bg-warning' : 'bg-primary')}
+                    ${isGroupVisualFocus ? 'font-bold' : ''}
                   `}
                   label={item.overload ? item.title : ''}
                 />
@@ -1810,7 +1987,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
                     /* Cuadro de valor: Cambia a Rojo solo si el texto es "Tr. Err" */
                     classes={item.sum === "Tr.Err" 
                       ? 'h-1/2 w-full bg-danger text-white font-bold !text-xs flex items-center justify-center' 
-                      : 'h-1/2 bg-medium text-dark !text-xs flex items-center justify-center'
+                      : `h-1/2 bg-medium text-dark !text-xs flex items-center justify-center${isGroupVisualFocus ? ' font-bold' : ''}`
                     }
                     label={item.sum === "Tr.Err" 
                       ? 
@@ -1838,12 +2015,57 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
       </div>
       {contentView()}
       <GroupActionModal
+        mode="full"
         visible={visibleModal === MonitorModals.GroupAction}
         tare={tareStatus && !!(selectedRef.current && selectedRef.current?.tare === 'true')}
         onAction={(type) => {
           handleGroupActionCall(type);
         }}
         onClose={() => handleCloseModal()}
+        highlightChecked={
+          !!groupVisual &&
+          groupVisual.groupId === String(selectedRef.current?.id ?? '') &&
+          groupVisual.highlight
+        }
+        onlyGroupChecked={
+          !!groupVisual &&
+          groupVisual.groupId === String(selectedRef.current?.id ?? '') &&
+          groupVisual.only
+        }
+        onHighlightChange={handleGroupHighlightChange}
+        onOnlyGroupChange={handleGroupOnlyLcsChange}
+      />
+      <GroupActionModal
+        mode="visualOnly"
+        visible={visibleModal === MonitorModals.GroupVisual}
+        tare={false}
+        onAction={() => {}}
+        onClose={() => handleCloseModal()}
+        highlightChecked={
+          !!groupVisual &&
+          groupVisual.groupId === String(selectedRef.current?.id ?? '') &&
+          groupVisual.highlight
+        }
+        onlyGroupChecked={
+          !!groupVisual &&
+          groupVisual.groupId === String(selectedRef.current?.id ?? '') &&
+          groupVisual.only
+        }
+        onHighlightChange={handleGroupHighlightChange}
+        onOnlyGroupChange={handleGroupOnlyLcsChange}
+      />
+      <GroupActionModal
+        mode="zeroOnly"
+        visible={visibleModal === MonitorModals.GroupZero}
+        tare={false}
+        onAction={(type) => {
+          handleGroupActionCall(type);
+        }}
+        onClose={() => handleCloseModal()}
+        highlightChecked={false}
+        onlyGroupChecked={false}
+        onHighlightChange={() => {}}
+        onOnlyGroupChange={() => {}}
       />
       <SuccessModal
         visible={success ? true : false}

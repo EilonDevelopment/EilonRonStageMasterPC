@@ -35,6 +35,15 @@ interface MonitorViewProps {
   tare: boolean;
   onMoveLC: (lcItem: ILC) => void;
   onReset: (status: boolean) => void | Promise<void>;
+  groupVisualGroupId?: string | null;
+  groupVisualHighlight?: boolean;
+  groupVisualOnly?: boolean;
+}
+
+function lcBelongsToGroup(item: ILC, groupId: string): boolean {
+  if (!groupId) return false;
+  const parts = item.groups?.split(',').map((g) => String(g).trim()).filter(Boolean) ?? [];
+  return parts.includes(String(groupId));
 }
 
 type MonitorLcBoxProps = {
@@ -50,6 +59,7 @@ type MonitorLcBoxProps = {
   disabled?: boolean;
   boundsRight: number;
   boundsBottom: number;
+  groupHighlight?: boolean;
   onStop: (e: DraggableEvent, data: DraggableData, index: number, x: number, y: number) => void;
 };
 
@@ -67,6 +77,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     disabled,
     boundsRight,
     boundsBottom,
+    groupHighlight,
     onStop,
   } = props;
 
@@ -113,7 +124,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
         onStop={(e, data) => onStop(e, data, index, x, y)}
       >
         <div
-          className="handle monitor-lc-handle border w-20 h-10.5 flex flex-col text-xs rounded cursor-pointer shrink-0"
+          className={`handle monitor-lc-handle border w-20 h-10.5 flex flex-col text-xs rounded cursor-pointer shrink-0${groupHighlight ? ' ring-4 ring-primary ring-offset-1 z-[20] relative' : ''}`}
           style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none' }}
         >
           <div className="top-side bg-black text-white text-center rounded-t-sm py-0.5">{title ? title : id}</div>
@@ -151,7 +162,8 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     prev.locked === next.locked &&
     prev.disabled === next.disabled &&
     prev.boundsRight === next.boundsRight &&
-    prev.boundsBottom === next.boundsBottom
+    prev.boundsBottom === next.boundsBottom &&
+    prev.groupHighlight === next.groupHighlight
   );
 });
 
@@ -167,6 +179,9 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     onMoveLC = () => { },
     // eslint-disable-next-line
     onReset = async () => { },
+    groupVisualGroupId = null,
+    groupVisualHighlight = false,
+    groupVisualOnly = false,
   } = props;
 
   const { bleConnected, curProject, liveLC, updateCurProject, updateProjects, updateLCs, groups, lcs, LCMax, platformType, tareStatus } = useAppData();
@@ -216,6 +231,20 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       };
     });
   }, [list, lcs]);
+
+  const lcBoxesToRender = useMemo(() => {
+    const gid = groupVisualGroupId ?? '';
+    const only = groupVisualOnly && !!gid;
+    return displayList
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => {
+        if (!only) return true;
+        return lcBelongsToGroup(item, gid);
+      });
+  }, [displayList, groupVisualGroupId, groupVisualOnly]);
+
+  const groupVid = groupVisualGroupId ?? '';
+  const highlightActive = groupVisualHighlight && !!groupVid;
 
   /** Cap graph size to avoid unbounded growth and crashes with many LCs / long run times */
   const MAX_GRAPH_POINTS = 1000;
@@ -775,7 +804,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
         >
           {(!curProject?.p_image || isHomeMode) && (
             <div key={`lc-col-${lcRenderEpoch}`} className="absolute inset-0 pointer-events-none z-10" aria-hidden>
-              {displayList.map((item, index) => {
+              {lcBoxesToRender.map(({ item, index }) => {
                 const pos = isHomeMode
                   ? (tempHomePositions[index] ?? { x: 0, y: 0 })
                   : { x: parseInt(item.view_x ?? '0'), y: parseInt(item.view_y ?? '0') };
@@ -801,6 +830,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                     locked={locked}
                     boundsRight={lcBoundsRight - displayPos.x}
                     boundsBottom={lcBoundsBottom - displayPos.y}
+                    groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
                     onStop={(_e, data, idx, baseX, baseY) =>
                       reposition_lc(_e, { ...data, x: baseX + data.x, y: baseY + data.y }, idx)
                     }
@@ -879,7 +909,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                   {/* LCs on image only in user mode; in home mode (or default) LCs stay in column */}
                   {isUserMode && (
                   <div key={`lc-img-${lcRenderEpoch}`} className="absolute inset-0 pointer-events-none" style={{ zIndex: 5 }}>
-                    {displayList.map((item, index) => {
+                    {lcBoxesToRender.map(({ item, index }) => {
                       const pos = isHomeMode
                         ? (tempHomePositions[index] ?? { x: 0, y: 0 })
                         : { x: parseInt(item.view_x ?? '0'), y: parseInt(item.view_y ?? '0') };
@@ -909,6 +939,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                           disabled={isHomeMode}
                           boundsRight={boundsRight}
                           boundsBottom={boundsBottom}
+                          groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
                           onStop={(_e, data, idx, baseX, baseY) =>
                             reposition_lc(_e, { ...data, x: baseX + data.x, y: baseY + data.y }, idx)
                           }

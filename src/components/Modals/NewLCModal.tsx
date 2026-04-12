@@ -121,14 +121,69 @@ const NewLCModal: FC<NewLCModalProps> = props => {
       setGroups(value)
   }
 
+  const formGrid = `grid w-full grid-cols-1 sm:grid-cols-2 gap-3 ${isMobile ? '' : 'sm:gap-4'}`;
+
   return (
     <Modal
       header={lc?.lc_id ? t("Setting.EditLC") : t("Setting.AddLC")}
       visible={visible}
-      classes={` overflow-auto ${isMobile ? 'w-[450px] h-80' : 'w-[650px]'} `}
-      contentClasses={`grid grid-cols-2 ${isMobile ? 'py-4 gap-3' : 'px-6 gap-5'} `}
+      showFooter={false}
+      classes={`w-full max-w-full overflow-hidden ${isMobile ? '' : 'sm:max-w-[650px]'}`}
+      contentClasses={formGrid}
       footerClasses='!py-0'
       onClose={() => onClose()}
+      footerSlot={(
+        <div className="flex flex-col gap-3 w-full">
+          {lc.lc_id &&
+            !Number.isNaN(parseInt(String(lc.lc_id), 10)) &&
+            parseInt(String(lc.lc_id), 10) > 10 && (
+              <div className="flex flex-wrap justify-end gap-2 w-full">
+                <Button
+                  classes="px-3 py-2 border border-primary rounded min-h-[44px]"
+                  textClasses="font-medium text-sm"
+                  title={t('Setting.Calibration')}
+                  onAction={() => onAction('calibration')}
+                />
+                <Button
+                  classes="px-3 py-2 border border-gray-500 dark:border-gray-400 rounded min-h-[44px]"
+                  textClasses="font-medium text-sm"
+                  title={t('Setting.DeleteCalibration')}
+                  onAction={() => onAction('calibration-delete')}
+                />
+              </div>
+            )}
+          <div className="flex flex-wrap justify-end gap-2 w-full">
+            <Button
+              classes="px-4 py-2 border border-gray-400 dark:border-gray-500 rounded min-h-[44px]"
+              textClasses="font-medium text-sm"
+              title={t('Common.Cancel')}
+              onAction={() => onClose()}
+            />
+            {lc.lc_id ? (
+              <>
+                <Button
+                  classes="px-4 py-2 bg-gray-500 text-white rounded min-h-[44px]"
+                  textClasses="text-white font-medium text-sm"
+                  title={t('Common.Duplicate')}
+                  onAction={() => handleDupllicate()}
+                />
+                <Button
+                  classes="px-4 py-2 bg-danger text-white rounded min-h-[44px]"
+                  textClasses="text-white font-medium text-sm"
+                  title={t('Common.Delete')}
+                  onAction={() => onAction('delete')}
+                />
+              </>
+            ) : null}
+            <Button
+              classes="px-5 py-2.5 bg-success text-white rounded min-h-[44px] min-w-[96px]"
+              textClasses="text-white font-semibold text-sm"
+              title={t('Common.Save')}
+              onAction={() => onAction('save', lcRef.current)}
+            />
+          </div>
+        </div>
+      )}
     >
       <TextInput
         label={t("Setting.Name")}
@@ -155,89 +210,61 @@ const NewLCModal: FC<NewLCModalProps> = props => {
         inputClasses='w-full'
         onChange={e => handleChangeProject('overload', e.target.value)}
       />
-      <div className='col-span-2 flex flex-row items-center gap-2'>
+      <div className='col-span-1 sm:col-span-2 flex flex-row items-center gap-3 py-1'>
         <IonToggle
           enableOnOffLabels={true}
           checked={lc.total_sum || false}
-          onIonChange={e => handleChangeProject('total_sum', e.target.checked)}
-        ></IonToggle>
+          onIonChange={e => handleChangeProject('total_sum', e.detail.checked)}
+        />
         <Text label={t('Setting.TotalSum')} />
       </div>
 
-      {SetvisibleCapacityRef.current === true &&
-        <>
-          <TextInput
-            label={`${t("Setting.Capacity")}`}
-            type='text'
-            value={lc.capacity && unitKey.current in lc.capacity ? parseFloat(lc.capacity[unitKey.current]).toFixed(fxRef.current) : '0.00'}
+      {SetvisibleCapacityRef.current === true && (
+        <TextInput
+          label={`${t("Setting.Capacity")}`}
+          type='text'
+          value={lc.capacity && unitKey.current in lc.capacity ? parseFloat(lc.capacity[unitKey.current]).toFixed(fxRef.current) : '0.00'}
+          readOnly
+        />
+      )}
 
-            readOnly
-          /></>}
-
-      <TextInput
-        inputRef={refIDInput}
-        classes='col-span-2'
-        label={`${t("Setting.Units")}`}
-        value={lc.id ? lc.id : (lc.unitList || '')}
-        readOnly={lc.lc_id ? true : false}
-        onChange={e => handleChangeProject('unitList', e.target.value)}
-      />
-      <div className='col-span-2 grid grid-cols-3 gap-y-4'>
+      <div className="col-span-1 sm:col-span-2 space-y-1">
+        <TextInput
+          inputRef={refIDInput}
+          classes="w-full"
+          label={t('Setting.LcIds')}
+          value={lc.id ? lc.id : (lc.unitList || '')}
+          readOnly={!!lc.lc_id}
+          onChange={e => handleChangeProject('unitList', e.target.value)}
+        />
+        <p className="text-xs text-gray-500 dark:text-gray-400 leading-snug px-0.5">
+          {t('Setting.LcIdsHint')}
+        </p>
+      </div>
+      <div className='col-span-1 sm:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-3 pt-1'>
         {visibleGroups && Array(16).fill(0).map((item, index) => (
           <div
             key={index}
-            className='flex flex-row items-center gap-2'
+            className='flex flex-row items-center gap-2 min-h-[40px]'
             onClick={() => handleChangeGroup((index + 1).toString())}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleChangeGroup((index + 1).toString());
+              }
+            }}
+            role="button"
+            tabIndex={0}
           >
             <IonToggle
               enableOnOffLabels={true}
               checked={groups.split(',').includes((index + 1).toString())}
-            ></IonToggle>
+            />
             <Text label={`${t('Setting.Group')} ${index + 1}`} />
           </div>
         ))}
       </div>
-      <div className={`col-span-2 flex flex-row items-center justify-end gap-4 w-full pt-3 ${lc.lc_id && 'border-t'}`}>
-        <Button
-          classes='px-4 py-2 bg-success flex-row-reverse text-white rounded'
-          textClasses='text-white font-medium'
-          title={t('Common.Save')}
-          onAction={() => onAction('save', lcRef.current)}
-        />
-        {lc.lc_id && <>
-          <Button
-            classes='px-4 py-2 bg-gray-500 flex-row-reverse text-white rounded'
-            textClasses='text-white font-medium'
-            title={t('Common.Duplicate')}
-            onAction={() => handleDupllicate()}
-          />
-          <Button
-            classes='px-4 py-2 bg-danger rounded'
-            textClasses='text-white font-medium'
-            title={t('Common.Delete')}
-            onAction={() => onAction('delete')}
-          />
-        </>}
-      </div>
-      {
-        lc.lc_id && !Number.isNaN(parseInt(lc.lc_id)) && parseInt(lc.lc_id) > 10 && <>
-          <div className='col-span-2 flex flex-row items-center justify-end gap-4 w-full border-t pt-3'>
-            <Button
-              classes='px-4 py-2 border border-primary rounded'
-              textClasses='font-medium'
-              title={t('Setting.Calibration')}
-              onAction={() => onAction('calibration')}
-            />
-            <Button
-              classes='px-4 py-2 border border-dark flex-row-reverse text-white rounded'
-              textClasses='font-medium'
-              title={t('Setting.DeleteCalibration')}
-              onAction={() => onAction('calibration-delete')}
-            />
-          </div>
-        </>
-      }
-    </Modal >
+    </Modal>
   )
 }
 

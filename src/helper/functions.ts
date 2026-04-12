@@ -210,8 +210,11 @@ const isNumber = (str: any) => {
 }
 
 const getLCsByGroup = (lcs: ILC[], group_id: string) => {
-  const filtered = lcs.filter(item => item.groups && item.groups.split(',').includes(group_id));
-  return filtered
+  const gid = String(group_id).trim()
+  return lcs.filter((item) => {
+    const parts = item.groups?.split(',').map((g) => String(g).trim()) ?? []
+    return parts.includes(gid)
+  })
 }
 
 const strToFloat = (str: any) => {
