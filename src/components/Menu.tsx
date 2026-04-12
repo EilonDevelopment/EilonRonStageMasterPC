@@ -403,7 +403,7 @@ const Menu: React.FC = () => {
           
 
 
-          <h1>version-1.4.2</h1>
+          <h1>version-1.4.3</h1>
         </IonContent>
       </IonMenu>
     </>

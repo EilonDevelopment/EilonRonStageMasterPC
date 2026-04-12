@@ -1,4 +1,4 @@
-import React, { DragEventHandler, FC, SyntheticEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { Dispatch, FC, SetStateAction, SyntheticEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import Draggable, { DraggableCore, DraggableData, DraggableEvent } from 'react-draggable';
 import { Resizable, ResizableBox, ResizeCallbackData } from 'react-resizable';
@@ -28,13 +28,22 @@ interface PosInfoType {
   y: number,
 }
 
+type LayoutSnapshot = Record<string, { view_x: string; view_y: string }>;
+
+export type LayoutUndoEntry = {
+  positions: LayoutSnapshot;
+  tempColumn: Record<number, { x: number; y: number }>;
+};
+
 interface MonitorViewProps {
   data: ILC[],
   max: boolean;
   load: boolean;
   tare: boolean;
   onMoveLC: (lcItem: ILC) => void;
-  onReset: (status: boolean) => void | Promise<void>;
+  /** Lives in Monitor page so undo survives switching view/list/prog/stop (MonitorView unmounts). */
+  layoutUndoStack: LayoutUndoEntry[];
+  setLayoutUndoStack: Dispatch<SetStateAction<LayoutUndoEntry[]>>;
   groupVisualGroupId?: string | null;
   groupVisualHighlight?: boolean;
   groupVisualOnly?: boolean;
@@ -44,6 +53,290 @@ function lcBelongsToGroup(item: ILC, groupId: string): boolean {
   if (!groupId) return false;
   const parts = item.groups?.split(',').map((g) => String(g).trim()).filter(Boolean) ?? [];
   return parts.includes(String(groupId));
+}
+
+const MAX_LAYOUT_UNDO = 10;
+
+function lcLayoutKey(item: ILC): string {
+  return `${item.id}-${normalizeProjectId(item.project_id)}`;
+}
+
+function snapshotFromList(lcList: ILC[]): LayoutSnapshot {
+  const s: LayoutSnapshot = {};
+  lcList.forEach((item) => {
+    s[lcLayoutKey(item)] = {
+      view_x: String(item.view_x ?? '0'),
+      view_y: String(item.view_y ?? '0'),
+    };
+  });
+  return s;
+}
+
+function applyLayoutSnapshot(lcList: ILC[], snap: LayoutSnapshot): ILC[] {
+  return lcList.map((item) => {
+    const pos = snap[lcLayoutKey(item)];
+    if (!pos) return item;
+    return { ...item, view_x: pos.view_x, view_y: pos.view_y };
+  });
+}
+
+/** Stored coords (0,0) = show in left column; non-zero = on background image */
+function lcInColumnSlot(item: ILC): boolean {
+  const x = parseInt(String(item.view_x ?? '0'), 10) || 0;
+  const y = parseInt(String(item.view_y ?? '0'), 10) || 0;
+  return x === 0 && y === 0;
+}
+
+function layoutCoordsEqual(a: ILC, b: ILC): boolean {
+  return String(a.view_x ?? '0') === String(b.view_x ?? '0') && String(a.view_y ?? '0') === String(b.view_y ?? '0');
+}
+
+/** True when every LC has the same view_x/view_y at the same list index. */
+function listLayoutUnchangedByIndex(before: ILC[], after: ILC[]): boolean {
+  if (before.length !== after.length) return false;
+  return before.every((b, i) => layoutCoordsEqual(b, after[i]));
+}
+
+/**
+ * Auto-place target LCs on the image in a grid (pixel coords in image box, same as drag).
+ * Prefers LCs still in the column (0,0); if none, re-grids every LC.
+ */
+function computeAutoPlacedList(
+  layoutList: ILC[],
+  canvasW: number,
+  canvasH: number,
+  lcW: number,
+  lcH: number,
+  margin: number
+): { updated: ILC[]; targetCount: number } {
+  const pendingIndices = layoutList
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => lcInColumnSlot(item))
+    .map(({ index }) => index);
+
+  const targetIndices =
+    pendingIndices.length > 0 ? pendingIndices : layoutList.map((_, index) => index);
+
+  if (targetIndices.length === 0) {
+    return { updated: layoutList.map((item) => ({ ...item })), targetCount: 0 };
+  }
+
+  const availW = canvasW - margin * 2;
+  const availH = canvasH - margin * 2;
+  const maxCols = Math.max(1, Math.floor(availW / lcW));
+  const n = targetIndices.length;
+  const cols = Math.max(1, Math.min(maxCols, Math.ceil(Math.sqrt(n))));
+  const rows = Math.ceil(n / cols);
+  const maxX = Math.max(0, canvasW - lcW - margin);
+  const maxY = Math.max(0, canvasH - lcH - margin);
+  const stepX = cols <= 1 ? 0 : Math.max(2, Math.floor((availW - lcW) / (cols - 1)));
+  const stepY = rows <= 1 ? 0 : Math.max(2, Math.floor((availH - lcH) / (rows - 1)));
+
+  const updated = layoutList.map((item) => ({ ...item }));
+  targetIndices.forEach((listIndex, order) => {
+    const col = order % cols;
+    const row = Math.floor(order / cols);
+    const x = Math.min(maxX, Math.max(margin, margin + col * stepX));
+    const y = Math.min(maxY, Math.max(margin, margin + row * stepY));
+    updated[listIndex] = { ...updated[listIndex], view_x: String(x), view_y: String(y) };
+  });
+
+  return { updated, targetCount: targetIndices.length };
+}
+
+function cloneTempColumn(t: Record<number, { x: number; y: number }>): Record<number, { x: number; y: number }> {
+  const o: Record<number, { x: number; y: number }> = {};
+  Object.keys(t).forEach((k) => {
+    const n = Number(k);
+    const v = t[n];
+    if (v) o[n] = { x: v.x, y: v.y };
+  });
+  return o;
+}
+
+function pushLayoutUndoEntry(stack: LayoutUndoEntry[], entry: LayoutUndoEntry): LayoutUndoEntry[] {
+  const next = [...stack, entry];
+  if (next.length > MAX_LAYOUT_UNDO) next.shift();
+  return next;
+}
+
+function getClientPoint(e: unknown): { x: number; y: number } | null {
+  if (e == null || typeof e !== 'object') return null;
+  const ev = e as { clientX?: number; clientY?: number; changedTouches?: TouchList };
+  if (ev.changedTouches && ev.changedTouches.length > 0) {
+    const t = ev.changedTouches[0];
+    return { x: t.clientX, y: t.clientY };
+  }
+  if (typeof ev.clientX === 'number' && typeof ev.clientY === 'number') {
+    return { x: ev.clientX, y: ev.clientY };
+  }
+  return null;
+}
+
+/** `baseX + data.x` must never use string concat (WebView sometimes gives string deltas). */
+function absoluteFromDraggableStop(
+  baseX: number,
+  baseY: number,
+  data: Partial<DraggableData>
+): { x: number; y: number } {
+  const dx = Number(data.x ?? 0);
+  const dy = Number(data.y ?? 0);
+  return {
+    x: Math.round(baseX + (Number.isFinite(dx) ? dx : 0)),
+    y: Math.round(baseY + (Number.isFinite(dy) ? dy : 0)),
+  };
+}
+
+function clampLcToImageRect(
+  x: number,
+  y: number,
+  imgW: number,
+  imgH: number,
+  lcW: number,
+  lcH: number
+): { x: number; y: number } {
+  const nx = Math.max(0, Math.min(Math.max(0, imgW - lcW), x));
+  const ny = Math.max(0, Math.min(Math.max(0, imgH - lcH), y));
+  return nudgeOffColumnSentinel(nx, ny);
+}
+
+/** When react-draggable’s x/y match DB but the node actually moved (WKWebView), use DOM geometry. */
+function positionFromDragNodeInStage(
+  data: DraggableData,
+  stage: HTMLElement | null,
+  imgW: number,
+  imgH: number,
+  lcW: number,
+  lcH: number
+): { x: number; y: number } | null {
+  const node = data.node as HTMLElement | undefined;
+  if (!node?.getBoundingClientRect || !stage) return null;
+  const nr = node.getBoundingClientRect();
+  const sr = stage.getBoundingClientRect();
+  const x = Math.round(nr.left - sr.left);
+  const y = Math.round(nr.top - sr.top);
+  return clampLcToImageRect(x, y, imgW, imgH, lcW, lcH);
+}
+
+/** Draggable’s `data.node` is unreliable on WKWebView after remounts (e.g. auto-place); use the real handle in the tree. */
+function lcHandleStageXYFromDomId(
+  lcId: string | number,
+  stage: HTMLElement | null,
+  imgW: number,
+  imgH: number,
+  lcW: number,
+  lcH: number
+): { x: number; y: number } | null {
+  if (typeof document === 'undefined' || !stage) return null;
+  const inner = document.getElementById(`monitor${lcId}`);
+  const handle = inner?.parentElement;
+  if (!handle?.getBoundingClientRect) return null;
+  const nr = handle.getBoundingClientRect();
+  const sr = stage.getBoundingClientRect();
+  const x = Math.round(nr.left - sr.left);
+  const y = Math.round(nr.top - sr.top);
+  return clampLcToImageRect(x, y, imgW, imgH, lcW, lcH);
+}
+
+function lcHandleOffsetInColumnFromDomId(
+  lcId: string | number,
+  columnEl: HTMLElement | null,
+  boundsRight: number,
+  boundsBottom: number
+): { x: number; y: number } | null {
+  if (typeof document === 'undefined' || !columnEl) return null;
+  const inner = document.getElementById(`monitor${lcId}`);
+  const handle = inner?.parentElement;
+  if (!handle?.getBoundingClientRect) return null;
+  const nr = handle.getBoundingClientRect();
+  const cr = columnEl.getBoundingClientRect();
+  const x = Math.round(nr.left - cr.left);
+  const y = Math.round(nr.top - cr.top);
+  const nx = Math.max(0, Math.min(Math.max(0, boundsRight), x));
+  const ny = Math.max(0, Math.min(Math.max(0, boundsBottom), y));
+  return { x: nx, y: ny };
+}
+
+/** WKWebView: column drags can report stale x/y vs `prevDisplay` even though the handle moved. */
+function positionFromDragNodeInColumn(
+  data: DraggableData,
+  columnEl: HTMLElement | null,
+  boundsRight: number,
+  boundsBottom: number
+): { x: number; y: number } | null {
+  const node = data.node as HTMLElement | undefined;
+  if (!node?.getBoundingClientRect || !columnEl) return null;
+  const nr = node.getBoundingClientRect();
+  const cr = columnEl.getBoundingClientRect();
+  const x = Math.round(nr.left - cr.left);
+  const y = Math.round(nr.top - cr.top);
+  const nx = Math.max(0, Math.min(Math.max(0, boundsRight), x));
+  const ny = Math.max(0, Math.min(Math.max(0, boundsBottom), y));
+  return { x: nx, y: ny };
+}
+
+/**
+ * When draggable reports stale x/y on drag end, derive position from the handle in the stage (WKWebView).
+ * Any integer mismatch vs stored layout counts (avoids missing 1px moves).
+ */
+function imagePositionFromDomIfChanged(
+  data: DraggableData,
+  storedX: number,
+  storedY: number,
+  stage: HTMLElement | null,
+  imgW: number,
+  imgH: number,
+  lcW: number,
+  lcH: number
+): { x: number; y: number } | null {
+  const geom = positionFromDragNodeInStage(data, stage, imgW, imgH, lcW, lcH);
+  if (!geom) return null;
+  if (geom.x !== storedX || geom.y !== storedY) return geom;
+  return null;
+}
+
+function columnPositionFromDomIfChanged(
+  data: DraggableData,
+  prevDisplay: { x: number; y: number },
+  columnEl: HTMLElement | null,
+  boundsRight: number,
+  boundsBottom: number
+): { x: number; y: number } | null {
+  const geom = positionFromDragNodeInColumn(data, columnEl, boundsRight, boundsBottom);
+  if (!geom) return null;
+  if (geom.x !== prevDisplay.x || geom.y !== prevDisplay.y) return geom;
+  return null;
+}
+
+function columnStackDefaultY(index: number, lcBoxHeight: number): { x: number; y: number } {
+  return { x: 0, y: index * lcBoxHeight };
+}
+
+function columnDisplayPosition(
+  index: number,
+  temp: Record<number, { x: number; y: number }>,
+  lcBoxHeight: number
+): { x: number; y: number } {
+  const pos = temp[index] ?? { x: 0, y: 0 };
+  if (pos.x === 0 && pos.y === 0) return columnStackDefaultY(index, lcBoxHeight);
+  return pos;
+}
+
+/** Persisted temp: (0,0) means “use stacked slot” for this index */
+function tempFromAbsoluteColumnPosition(
+  index: number,
+  abs: { x: number; y: number },
+  lcBoxHeight: number
+): { x: number; y: number } {
+  const def = columnStackDefaultY(index, lcBoxHeight);
+  if (abs.x === def.x && abs.y === def.y) return { x: 0, y: 0 };
+  return abs;
+}
+
+/** (0,0) is reserved for column; nudge so on-image layout does not collapse into column slot */
+function nudgeOffColumnSentinel(nx: number, ny: number): { x: number; y: number } {
+  if (nx === 0 && ny === 0) return { x: 1, y: 1 };
+  return { x: nx, y: ny };
 }
 
 type MonitorLcBoxProps = {
@@ -60,7 +353,14 @@ type MonitorLcBoxProps = {
   boundsRight: number;
   boundsBottom: number;
   groupHighlight?: boolean;
-  onStop: (e: DraggableEvent, data: DraggableData, index: number, x: number, y: number) => void;
+  onStop: (
+    e: DraggableEvent,
+    data: DraggableData,
+    index: number,
+    x: number,
+    y: number,
+    dragGestureSeen: boolean
+  ) => void;
 };
 
 const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
@@ -80,6 +380,10 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     groupHighlight,
     onStop,
   } = props;
+
+  /** WKWebView often sends wrong x/y on onStop after heavy layout (e.g. auto-place); onDrag still updates. */
+  const lastDragPosRef = useRef({ x: 0, y: 0 });
+  const dragMovedRef = useRef(false);
 
   const {
     id,
@@ -121,7 +425,32 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
           right: boundsRight,
           bottom: boundsBottom,
         }}
-        onStop={(e, data) => onStop(e, data, index, x, y)}
+        onStart={() => {
+          lastDragPosRef.current = { x: 0, y: 0 };
+          dragMovedRef.current = false;
+        }}
+        onDrag={(_e, d) => {
+          dragMovedRef.current = true;
+          lastDragPosRef.current = { x: d.x, y: d.y };
+        }}
+        onStop={(e, data) => {
+          if (!dragMovedRef.current) {
+            onStop(e, data, index, x, y, false);
+            return;
+          }
+          const lx = lastDragPosRef.current.x;
+          const ly = lastDragPosRef.current.y;
+          const ddx = Number(data.deltaX);
+          const ddy = Number(data.deltaY);
+          const stopDeltasDead =
+            (!Number.isFinite(ddx) || Math.abs(ddx) < 0.5) &&
+            (!Number.isFinite(ddy) || Math.abs(ddy) < 0.5);
+          const nudged =
+            stopDeltasDead && (lx !== 0 || ly !== 0)
+              ? { ...data, x: lx, y: ly, deltaX: 1, deltaY: 0 }
+              : { ...data, x: lx, y: ly };
+          onStop(e, nudged, index, x, y, true);
+        }}
       >
         <div
           className={`handle monitor-lc-handle border w-20 h-10.5 flex flex-col text-xs rounded cursor-pointer shrink-0${groupHighlight ? ' ring-4 ring-primary ring-offset-1 z-[20] relative' : ''}`}
@@ -177,8 +506,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     tare: tareProp,
     // eslint-disable-next-line
     onMoveLC = () => { },
-    // eslint-disable-next-line
-    onReset = async () => { },
+    layoutUndoStack,
+    setLayoutUndoStack,
     groupVisualGroupId = null,
     groupVisualHighlight = false,
     groupVisualOnly = false,
@@ -197,10 +526,14 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   const DEFAULT_UPLOAD_CANVAS_W = 319
   const DEFAULT_UPLOAD_CANVAS_H = 198
 
-  const [list, setListData] = useState<ILC[]>([]);
-  const [prevState, setPrevState] = useState<Partial<ILC>[]>([]);
-  /** In home mode: temporary positions while dragging; not saved to DB. Cleared when entering home. */
+  /** Single source of truth: parent `lcs` via `data`. */
+  const list = data;
+  const listRef = useRef<ILC[]>([]);
+
+  /** No background image: LCs live in the left column; drags are temporary until we add image layout. */
   const [tempHomePositions, setTempHomePositions] = useState<Record<number, { x: number; y: number }>>({});
+  const tempHomePositionsRef = useRef(tempHomePositions);
+  tempHomePositionsRef.current = tempHomePositions;
 
   const [locked, setLocked] = useState<boolean>(false);
   const [layoutProgress, setLayoutProgress] = useState(false);
@@ -210,9 +543,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   /** Force remount only of image scene (Rnd), not whole stage container. */
   const [sceneRenderEpoch, setSceneRenderEpoch] = useState(0);
 
-  /** Default to home when lc_display_mode is undefined or not 'user' */
-  const isUserMode = curProject?.lc_display_mode === 'user';
-  const isHomeMode = !isUserMode;
+  const hasBackgroundImage = !!curProject?.p_image;
 
   /** Merge lcs (context) into list so tare/weightnotare/value always reflect latest; use for display in all modes */
   const displayList = useMemo(() => {
@@ -232,6 +563,9 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     });
   }, [list, lcs]);
 
+  /** Same rows/indices as `lcBoxesToRender` / `MonitorLcBox` props (not raw `list` vs merged `lcs` skew). */
+  listRef.current = displayList;
+
   const lcBoxesToRender = useMemo(() => {
     const gid = groupVisualGroupId ?? '';
     const only = groupVisualOnly && !!gid;
@@ -242,6 +576,11 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
         return lcBelongsToGroup(item, gid);
       });
   }, [displayList, groupVisualGroupId, groupVisualOnly]);
+
+  /** (0,0) = left column; non-zero = on image. Strip stays while any visible LC is still in column. */
+  const hasUnplacedInColumn =
+    hasBackgroundImage && lcBoxesToRender.some(({ item }) => lcInColumnSlot(item));
+  const columnStripVisible = !hasBackgroundImage || hasUnplacedInColumn;
 
   const groupVid = groupVisualGroupId ?? '';
   const highlightActive = groupVisualHighlight && !!groupVid;
@@ -276,6 +615,10 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   /** So we only set size from container once per project (avoids infinite setState loop). */
   const didSetSizeFromContainerRef = useRef<string | number | null>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
+  /** Image stage (same coord system as view_x / view_y on the photo) */
+  const imageStageRef = useRef<HTMLDivElement>(null)
+  /** Column strip inner layer (same coord system as column `left` / `top` on LCs). */
+  const lcColumnRef = useRef<HTMLDivElement>(null)
   const [lcBoundsRight, setLcBoundsRight] = useState(3000)
   const [lcBoundsBottom, setLcBoundsBottom] = useState(2000)
   /** Bounds for background image: restrict top/left/right like LCs; no bottom restriction. */
@@ -428,14 +771,11 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   }, [flag.current])
 
   useEffect(() => {
-    setListData(data)
-  }, [data])
-
-  useEffect(() => {
-    if (isHomeMode) {
+    if (!hasBackgroundImage) {
       setTempHomePositions({});
     }
-  }, [isHomeMode]);
+  }, [hasBackgroundImage]);
+
 /*
   useLayoutEffect(() => {
     const el = wrapperRef.current;
@@ -489,17 +829,166 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     return () => ro.disconnect();
   }, []);
 
-  const reposition_lc = (_e: Partial<DragEventHandler>, data: Partial<DraggableData>, index: number) => {
-    if (isHomeMode) {
-      setTempHomePositions(prev => ({ ...prev, [index]: { x: data.x ?? 0, y: data.y ?? 0 } }));
+  const reposition_lc = (
+    e: DraggableEvent,
+    data: Partial<DraggableData>,
+    index: number,
+    dragGestureSeen = false
+  ) => {
+    if (locked || layoutProgress) return;
+    const layoutList = listRef.current;
+    const cur = layoutList[index];
+    if (!cur) return;
+
+    let newAbs = { x: Math.round(Number(data.x ?? 0)), y: Math.round(Number(data.y ?? 0)) };
+    if (!Number.isFinite(newAbs.x) || !Number.isFinite(newAbs.y)) return;
+
+    const resolveColumnAbs = (
+      prevDisplay: { x: number; y: number },
+      abs: { x: number; y: number }
+    ): { x: number; y: number } => {
+      if (abs.x !== prevDisplay.x || abs.y !== prevDisplay.y) return abs;
+      const fromDom = columnPositionFromDomIfChanged(
+        data as DraggableData,
+        prevDisplay,
+        lcColumnRef.current,
+        lcBoundsRight,
+        lcBoundsBottom
+      );
+      if (fromDom) return fromDom;
+      if (dragGestureSeen) {
+        const byId = lcHandleOffsetInColumnFromDomId(cur.id, lcColumnRef.current, lcBoundsRight, lcBoundsBottom);
+        if (byId && (byId.x !== prevDisplay.x || byId.y !== prevDisplay.y)) return byId;
+      }
+      return abs;
+    };
+
+    if (!hasBackgroundImage || lcInColumnSlot(cur)) {
+      if (!hasBackgroundImage) {
+        const prevDisplay = columnDisplayPosition(index, tempHomePositions, LC_BOX_HEIGHT);
+        const colAbs = resolveColumnAbs(prevDisplay, newAbs);
+        if (colAbs.x === prevDisplay.x && colAbs.y === prevDisplay.y) return;
+        flushSync(() => {
+          setLayoutUndoStack((stack) =>
+            pushLayoutUndoEntry(stack, {
+              positions: snapshotFromList(layoutList),
+              tempColumn: cloneTempColumn(tempHomePositionsRef.current),
+            })
+          );
+          setTempHomePositions((prev) => ({
+            ...prev,
+            [index]: tempFromAbsoluteColumnPosition(index, colAbs, LC_BOX_HEIGHT),
+          }));
+        });
+        return;
+      }
+
+      const pt = getClientPoint(e);
+      const stage = imageStageRef.current;
+      const imgW = sizeInfo.width ?? 400;
+      const imgH = sizeInfo.height ?? 300;
+
+      if (pt && stage) {
+        const rect = stage.getBoundingClientRect();
+        if (pt.x >= rect.left && pt.x <= rect.right && pt.y >= rect.top && pt.y <= rect.bottom) {
+          let nx = Math.round(pt.x - rect.left - LC_BOX_WIDTH / 2);
+          let ny = Math.round(pt.y - rect.top - LC_BOX_HEIGHT / 2);
+          nx = Math.max(0, Math.min(Math.max(0, imgW - LC_BOX_WIDTH), nx));
+          ny = Math.max(0, Math.min(Math.max(0, imgH - LC_BOX_HEIGHT), ny));
+          const nudged = nudgeOffColumnSentinel(nx, ny);
+          nx = nudged.x;
+          ny = nudged.y;
+
+          const updatedItem: ILC = { ...cur, view_x: String(nx), view_y: String(ny) };
+          flushSync(() => {
+            setLayoutUndoStack((stack) =>
+              pushLayoutUndoEntry(stack, {
+                positions: snapshotFromList(layoutList),
+                tempColumn: cloneTempColumn(tempHomePositionsRef.current),
+              })
+            );
+            setTempHomePositions((prev) => {
+              const next = { ...prev };
+              delete next[index];
+              return next;
+            });
+            onMoveLC(updatedItem);
+          });
+          return;
+        }
+      }
+
+      const prevDisplay = columnDisplayPosition(index, tempHomePositions, LC_BOX_HEIGHT);
+      const colAbs = resolveColumnAbs(prevDisplay, newAbs);
+      if (colAbs.x === prevDisplay.x && colAbs.y === prevDisplay.y) return;
+      flushSync(() => {
+        setLayoutUndoStack((stack) =>
+          pushLayoutUndoEntry(stack, {
+            positions: snapshotFromList(layoutList),
+            tempColumn: cloneTempColumn(tempHomePositionsRef.current),
+          })
+        );
+        setTempHomePositions((prev) => ({
+          ...prev,
+          [index]: tempFromAbsoluteColumnPosition(index, colAbs, LC_BOX_HEIGHT),
+        }));
+      });
       return;
     }
-    const updatedItem: ILC = { ...list[index], view_x: data.x + '', view_y: data.y + '' };
-    setListData(v => v.map((item, idx) => {
-      if (idx === index) return updatedItem;
-      return item;
-    }));
-    onMoveLC(updatedItem);
+
+    let nx = newAbs.x;
+    let ny = newAbs.y;
+    const nudged = nudgeOffColumnSentinel(nx, ny);
+    nx = nudged.x;
+    ny = nudged.y;
+    const ox = parseInt(String(cur.view_x ?? '0'), 10) || 0;
+    const oy = parseInt(String(cur.view_y ?? '0'), 10) || 0;
+
+    const imgWOn = sizeInfo.width ?? 400;
+    const imgHOn = sizeInfo.height ?? 300;
+    const fullDrag = data as DraggableData;
+    if (nx === ox && ny === oy) {
+      const fromDom = imagePositionFromDomIfChanged(
+        fullDrag,
+        ox,
+        oy,
+        imageStageRef.current,
+        imgWOn,
+        imgHOn,
+        LC_BOX_WIDTH,
+        LC_BOX_HEIGHT
+      );
+      if (fromDom) {
+        nx = fromDom.x;
+        ny = fromDom.y;
+      } else if (dragGestureSeen) {
+        const byId = lcHandleStageXYFromDomId(
+          cur.id,
+          imageStageRef.current,
+          imgWOn,
+          imgHOn,
+          LC_BOX_WIDTH,
+          LC_BOX_HEIGHT
+        );
+        if (byId && (byId.x !== ox || byId.y !== oy)) {
+          nx = byId.x;
+          ny = byId.y;
+        }
+      }
+    }
+
+    if (nx === ox && ny === oy) return;
+
+    flushSync(() => {
+      setLayoutUndoStack((stack) =>
+        pushLayoutUndoEntry(stack, {
+          positions: snapshotFromList(layoutList),
+          tempColumn: cloneTempColumn(tempHomePositionsRef.current),
+        })
+      );
+      const updatedItem: ILC = { ...layoutList[index], view_x: String(nx), view_y: String(ny) };
+      onMoveLC(updatedItem);
+    });
   };
 
   const forceSceneRepaint = useCallback(() => {
@@ -516,16 +1005,18 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     });
   }, []);
 
-  /** Home column is unmounted in user+image mode; still bump repaint when toggling modes so WebView drops stale layers. */
-  const prevHomeModeRef = useRef(isHomeMode);
+  /** Column ↔ on-image: bump repaint so WebView drops stale layers. */
+  const onImageCount = useMemo(
+    () => (hasBackgroundImage ? displayList.filter((item) => !lcInColumnSlot(item)).length : 0),
+    [displayList, hasBackgroundImage]
+  );
+  const prevOnImageCountRef = useRef(onImageCount);
   useLayoutEffect(() => {
-    const prev = prevHomeModeRef.current;
-    if (prev === isHomeMode) return;
-    prevHomeModeRef.current = isHomeMode;
-    if (!curProject?.p_image) return;
+    if (prevOnImageCountRef.current === onImageCount) return;
+    prevOnImageCountRef.current = onImageCount;
     flushSync(() => setLcRenderEpoch((v) => v + 1));
     forceSceneRepaint();
-  }, [isHomeMode, curProject?.p_image, forceSceneRepaint]);
+  }, [onImageCount, forceSceneRepaint]);
 
   const awaitDoubleRaf = () =>
     new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
@@ -544,7 +1035,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   };
 
   const handlePos = async () => {
-    if (!isUserMode || !curProject?.p_image || locked || layoutProgress) return;
+    if (!hasBackgroundImage || locked || layoutProgress) return;
 
     const canvasW = Number(sizeInfo?.width ?? 0);
     const canvasH = Number(sizeInfo?.height ?? 0);
@@ -561,65 +1052,152 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       return;
     }
 
-    const pendingIndices = list
-      .map((item, index) => ({ item, index }))
-      .filter(({ item, index }) => {
-        const x = parseInt(String(item.view_x ?? '0'), 10) || 0;
-        const y = parseInt(String(item.view_y ?? '0'), 10) || 0;
-        return x === 0 && (y === 0 || y === index * LC_BOX_HEIGHT);
-      })
-      .map(({ index }) => index);
-
-    const targetIndices = pendingIndices.length > 0
-      ? pendingIndices
-      : list.map((_, index) => index);
-
-    if (targetIndices.length === 0) return;
-
     setLayoutProgressMessageKey('Monitor.LayoutProgressAutoPlace');
     setLayoutProgress(true);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
 
-    const maxCols = Math.max(1, Math.floor(availW / LC_BOX_WIDTH));
-    const cols = Math.max(1, Math.min(maxCols, Math.ceil(Math.sqrt(targetIndices.length))));
-    const rows = Math.ceil(targetIndices.length / cols);
-    const maxX = Math.max(0, canvasW - LC_BOX_WIDTH - margin);
-    const maxY = Math.max(0, canvasH - LC_BOX_HEIGHT - margin);
-    const stepX = cols <= 1 ? 0 : Math.max(2, Math.floor((availW - LC_BOX_WIDTH) / (cols - 1)));
-    const stepY = rows <= 1 ? 0 : Math.max(2, Math.floor((availH - LC_BOX_HEIGHT) / (rows - 1)));
+    const layoutList = listRef.current;
+    if (layoutList.length === 0) {
+      setLayoutProgress(false);
+      setLayoutProgressMessageKey('');
+      return;
+    }
 
-    const updated = list.map((item) => ({ ...item }));
-    targetIndices.forEach((listIndex, order) => {
-      const col = order % cols;
-      const row = Math.floor(order / cols);
-      const x = Math.min(maxX, Math.max(margin, margin + col * stepX));
-      const y = Math.min(maxY, Math.max(margin, margin + row * stepY));
-      updated[listIndex] = { ...updated[listIndex], view_x: String(x), view_y: String(y) };
-    });
+    const beforeSnap = snapshotFromList(layoutList);
+    const beforeTemp = cloneTempColumn(tempHomePositionsRef.current);
+
+    const { updated, targetCount } = computeAutoPlacedList(
+      layoutList,
+      canvasW,
+      canvasH,
+      LC_BOX_WIDTH,
+      LC_BOX_HEIGHT,
+      margin
+    );
+
+    if (targetCount === 0) {
+      setLayoutProgress(false);
+      setLayoutProgressMessageKey('');
+      return;
+    }
+
+    if (listLayoutUnchangedByIndex(layoutList, updated)) {
+      setLayoutProgress(false);
+      setLayoutProgressMessageKey('');
+      void Swal.fire({
+        title: t('Monitor.AutoPlace') || 'Auto place',
+        text: t('Monitor.AutoPlaceNoop') || 'Cell positions already match the auto grid.',
+        icon: 'info',
+        heightAuto: false,
+        timer: 1500,
+        showConfirmButton: false,
+      });
+      return;
+    }
 
     try {
       await db.lcs.bulkPut(updated);
-      // Commit layout + LC keys in one paint so WebView does not briefly composite old positions.
+      // Same atomic pattern as drag end: undo entry + context + remount in one commit (avoids WebView / batch races).
       flushSync(() => {
-        setListData(updated);
+        setLayoutUndoStack((stack) =>
+          pushLayoutUndoEntry(stack, {
+            positions: beforeSnap,
+            tempColumn: beforeTemp,
+          })
+        );
         updateLCs(updated);
+        setTempHomePositions({});
         setLcRenderEpoch((v) => v + 1);
       });
       forceSceneRepaint();
       await awaitDoubleRaf();
       void Swal.fire({
         title: t('Monitor.AutoPlace') || 'Auto place',
-        text: `Placed ${targetIndices.length} cells on the image.`,
+        text: t('Monitor.AutoPlaceDone', { count: targetCount }) || `Placed ${targetCount} cells on the image.`,
         icon: 'success',
         heightAuto: false,
         timer: 1500,
         showConfirmButton: false,
+      });
+    } catch (err) {
+      console.error('[MonitorView] Auto place failed:', err);
+      void Swal.fire({
+        title: t('Monitor.AutoPlace') || 'Auto place',
+        text: t('Monitor.AutoPlaceError') || 'Could not save layout.',
+        icon: 'error',
+        heightAuto: false,
       });
     } finally {
       setLayoutProgress(false);
       setLayoutProgressMessageKey('');
     }
   }
+
+  const handleUndoLayout = async () => {
+    if (!hasBackgroundImage || locked || layoutProgress || layoutUndoStack.length === 0) return;
+    const entry = layoutUndoStack[layoutUndoStack.length - 1];
+    const nextStack = layoutUndoStack.slice(0, -1);
+    const merged = applyLayoutSnapshot(listRef.current, entry.positions);
+    try {
+      await db.lcs.bulkPut(merged);
+      flushSync(() => {
+        setLayoutUndoStack(nextStack);
+        setTempHomePositions(cloneTempColumn(entry.tempColumn ?? {}));
+        updateLCs(merged);
+        setLcRenderEpoch((v) => v + 1);
+      });
+      forceSceneRepaint();
+      await awaitDoubleRaf();
+    } catch (err) {
+      console.error('[MonitorView] Undo layout failed:', err);
+    }
+  };
+
+  const handleHomeLayoutClick = () => {
+    if (!hasBackgroundImage || locked || layoutProgress) return;
+    const layoutList = listRef.current;
+    const anyOnImage = layoutList.some((item) => !lcInColumnSlot(item));
+    const hasTemp = Object.keys(tempHomePositions).length > 0;
+    if (!anyOnImage && !hasTemp) return;
+
+    const doHome = async () => {
+      await runWithLayoutProgress('Monitor.LayoutProgressHome', async () => {
+        const base = listRef.current;
+        const homeItems = base.map((item) => ({ ...item, view_x: '0', view_y: '0' }));
+        setLayoutUndoStack((stack) =>
+          pushLayoutUndoEntry(stack, {
+            positions: snapshotFromList(base),
+            tempColumn: cloneTempColumn(tempHomePositionsRef.current),
+          })
+        );
+        await db.lcs.bulkPut(homeItems);
+        flushSync(() => {
+          updateLCs(homeItems);
+          setTempHomePositions({});
+          setLcRenderEpoch((v) => v + 1);
+        });
+        forceSceneRepaint();
+      });
+    };
+
+    if (anyOnImage) {
+      void Swal.fire({
+        title: t('Monitor.Modal.ReturnToHomeTitle'),
+        text: t('Monitor.Modal.ReturnToHomeConfirm'),
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#3085d6',
+        cancelButtonColor: '#d33',
+        confirmButtonText: t('Common.Confirm'),
+        cancelButtonText: t('Common.Cancel'),
+        heightAuto: false,
+      }).then((result) => {
+        if (result.isConfirmed) void doHome();
+      });
+    } else {
+      void doHome();
+    }
+  };
 
   const handleImageResize = (_e: MouseEvent | TouchEvent, _dir: string, _elementRef: HTMLElement, _resizeDelta: ResizableDelta, _position: Position) => {
     console.log('--- onResizeStop ---')
@@ -759,7 +1337,14 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     const { dataUrl, canvasWidth, canvasHeight } = result
     const newSize = { width: canvasWidth, height: canvasHeight }
     const currentPos = posInfoRef.current ?? { x: 0, y: 0 }
-    const updatedProject = { ...curProject, p_image: dataUrl, p_image_w: canvasWidth, p_image_h: canvasHeight, p_image_l: currentPos.x, p_image_t: currentPos.y }
+    const updatedProject = {
+      ...curProject,
+      p_image: dataUrl,
+      p_image_w: canvasWidth,
+      p_image_h: canvasHeight,
+      p_image_l: currentPos.x,
+      p_image_t: currentPos.y,
+    }
     updateCurProject(updatedProject)
     updateProjects(updatedProject)
     await db.projects.update(curProject.id, {
@@ -769,6 +1354,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       p_image_l: currentPos.x,
       p_image_t: currentPos.y,
     })
+    setLayoutUndoStack([])
+    setTempHomePositions({})
     f_update_project_last_change()
     f_update_project_image_size(curProject.id, canvasWidth, canvasHeight)
     f_update_project_image_position(curProject.id, currentPos.y, currentPos.x)
@@ -782,8 +1369,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     setImageToEdit(null)
   }
 
-  /** Only clip/contain the left strip when it has no LC overlay (user+image). Home column stacks many rows and must overflow visibly past the image box. */
-  const clipEmptyLeftStrip = !!curProject?.p_image && isUserMode;
+  /** Clip left strip when every LC is on the image (column has nothing to show). */
+  const clipEmptyLeftStrip = hasBackgroundImage && !hasUnplacedInColumn;
 
   return (<>
     <div className='flex flex-col'>
@@ -793,25 +1380,25 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
 
         style={undefined}
       >
-        {/* LC column: when no BG image, or in home mode, LCs go here (home = column layout as before).
-            In user+image mode do not mount the overlay at all — an empty absolute inset-0 layer leaves Android WebView ghost tiles in the left strip. */}
+        {/* LC column: only when there is no background image. With an image, LCs render on the picture. */}
         <div
           className={`lc-column relative shrink-0${clipEmptyLeftStrip ? ' overflow-hidden isolate' : ''}`}
           style={{
-            width: LC_BOX_WIDTH,
+            width: columnStripVisible ? LC_BOX_WIDTH : 0,
             ...(clipEmptyLeftStrip ? { contain: 'layout paint' as const } : {}),
           }}
         >
-          {(!curProject?.p_image || isHomeMode) && (
-            <div key={`lc-col-${lcRenderEpoch}`} className="absolute inset-0 pointer-events-none z-10" aria-hidden>
-              {lcBoxesToRender.map(({ item, index }) => {
-                const pos = isHomeMode
-                  ? (tempHomePositions[index] ?? { x: 0, y: 0 })
-                  : { x: parseInt(item.view_x ?? '0'), y: parseInt(item.view_y ?? '0') };
-                const displayPos =
-                  pos.x === 0 && pos.y === 0
-                    ? { x: 0, y: index * LC_BOX_HEIGHT }
-                    : pos;
+          {columnStripVisible && (
+            <div
+              ref={lcColumnRef}
+              key={`lc-col-${lcRenderEpoch}`}
+              className="absolute inset-0 pointer-events-none z-10"
+              aria-hidden
+            >
+              {lcBoxesToRender
+                .filter(({ item }) => !hasBackgroundImage || lcInColumnSlot(item))
+                .map(({ item, index }) => {
+                const displayPos = columnDisplayPosition(index, tempHomePositions, LC_BOX_HEIGHT);
 
                 // Important: include x/y so Draggable remounts after saving a new base position.
                 // Otherwise react-draggable keeps its internal transform and the LC can "jump" on drop (double offset).
@@ -831,8 +1418,13 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                     boundsRight={lcBoundsRight - displayPos.x}
                     boundsBottom={lcBoundsBottom - displayPos.y}
                     groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
-                    onStop={(_e, data, idx, baseX, baseY) =>
-                      reposition_lc(_e, { ...data, x: baseX + data.x, y: baseY + data.y }, idx)
+                    onStop={(_e, data, idx, baseX, baseY, dragGestureSeen = false) =>
+                      reposition_lc(
+                        _e,
+                        { ...data, ...absoluteFromDraggableStop(baseX, baseY, data) },
+                        idx,
+                        dragGestureSeen
+                      )
                     }
                   />
                 );
@@ -880,6 +1472,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                   shrunken box if ancestors use overflow: visible; paint containment limits damage.
                 */}
                 <div
+                  ref={imageStageRef}
                   className="relative h-full w-full overflow-hidden isolate"
                   style={{ contain: 'layout paint' }}
                 >
@@ -906,17 +1499,15 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                       }}
                     />
                   </div>
-                  {/* LCs on image only in user mode; in home mode (or default) LCs stay in column */}
-                  {isUserMode && (
+                  {hasBackgroundImage && (
                   <div key={`lc-img-${lcRenderEpoch}`} className="absolute inset-0 pointer-events-none" style={{ zIndex: 5 }}>
-                    {lcBoxesToRender.map(({ item, index }) => {
-                      const pos = isHomeMode
-                        ? (tempHomePositions[index] ?? { x: 0, y: 0 })
-                        : { x: parseInt(item.view_x ?? '0'), y: parseInt(item.view_y ?? '0') };
-                      const displayPos =
-                        pos.x === 0 && pos.y === 0
-                          ? { x: 0, y: index * LC_BOX_HEIGHT }
-                          : pos;
+                    {lcBoxesToRender
+                      .filter(({ item }) => !lcInColumnSlot(item))
+                      .map(({ item, index }) => {
+                      const displayPos = {
+                        x: parseInt(String(item.view_x ?? '0'), 10) || 0,
+                        y: parseInt(String(item.view_y ?? '0'), 10) || 0,
+                      };
                       const imgW = sizeInfo.width ?? 400;
                       const imgH = sizeInfo.height ?? 300;
                       const boundsRight = Math.max(-displayPos.x, imgW - LC_BOX_WIDTH - displayPos.x);
@@ -936,12 +1527,17 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                           loadMode={load}
                           bleConnected={bleConnected}
                           locked={locked}
-                          disabled={isHomeMode}
+                          disabled={false}
                           boundsRight={boundsRight}
                           boundsBottom={boundsBottom}
                           groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
-                          onStop={(_e, data, idx, baseX, baseY) =>
-                            reposition_lc(_e, { ...data, x: baseX + data.x, y: baseY + data.y }, idx)
+                          onStop={(_e, data, idx, baseX, baseY, dragGestureSeen = false) =>
+                            reposition_lc(
+                              _e,
+                              { ...data, ...absoluteFromDraggableStop(baseX, baseY, data) },
+                              idx,
+                              dragGestureSeen
+                            )
                           }
                         />
                       );
@@ -969,51 +1565,33 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                   <IonIcon slot="icon-only" icon={createOutline} size="small"></IonIcon>
                 </IonButton>
               )}
-              <IonButton color="medium" className="m-0" disabled={locked || layoutProgress || !isUserMode || !curProject?.p_image} onClick={() => void handlePos()} title={t('Monitor.AutoPlace') || 'Auto place'}>
+              <IonButton color="medium" className="m-0" disabled={locked || layoutProgress || !hasBackgroundImage} onClick={() => void handlePos()} title={t('Monitor.AutoPlace') || 'Auto place'}>
                 <IonIcon slot="icon-only" icon={locateOutline} size="small"></IonIcon>
               </IonButton>
               <IonButton color="medium" className="m-0" onClick={() => setLocked(v => !v)}>
                 <IonIcon slot="icon-only" icon={locked ? lockClosedOutline : lockOpenOutline} size="small"></IonIcon>
               </IonButton>
-              {isUserMode && (
-                <IonButton
-                  color="medium"
-                  className="m-0"
-                  disabled={locked || layoutProgress}
-                  onClick={() => {
-                    Swal.fire({
-                      title: t('Monitor.Modal.ReturnToHomeTitle'),
-                      text: t('Monitor.Modal.ReturnToHomeConfirm'),
-                      icon: 'question',
-                      showCancelButton: true,
-                      confirmButtonColor: '#3085d6',
-                      cancelButtonColor: '#d33',
-                      confirmButtonText: t('Common.Confirm'),
-                      cancelButtonText: t('Common.Cancel'),
-                      heightAuto: false,
-                    }).then(async (result) => {
-                      if (result.isConfirmed) {
-                        await runWithLayoutProgress('Monitor.LayoutProgressHome', () => onReset(true));
-                      }
-                    });
-                  }}
-                  title={t('Monitor.Modal.SendToHome')}
-                >
-                  <IonIcon slot="icon-only" icon={homeOutline} size="small"></IonIcon>
-                </IonButton>
-              )}
-              {isHomeMode && (
-                <IonButton
-                  color="medium"
-                  className="m-0"
-                  disabled={locked || layoutProgress}
-                  onClick={() =>
-                    void runWithLayoutProgress('Monitor.LayoutProgressUser', () => onReset(false))
-                  }
-                  title={t('Monitor.Modal.RestoreMyPositions')}
-                >
-                  <IonIcon slot="icon-only" icon={arrowUndoOutline} size="small"></IonIcon>
-                </IonButton>
+              {hasBackgroundImage && (
+                <>
+                  <IonButton
+                    color="medium"
+                    className="m-0"
+                    disabled={locked || layoutProgress}
+                    onClick={() => handleHomeLayoutClick()}
+                    title={t('Monitor.Modal.SendToHome')}
+                  >
+                    <IonIcon slot="icon-only" icon={homeOutline} size="small"></IonIcon>
+                  </IonButton>
+                  <IonButton
+                    color="medium"
+                    className="m-0"
+                    disabled={locked || layoutProgress || layoutUndoStack.length === 0}
+                    onClick={() => void handleUndoLayout()}
+                    title={t('Monitor.UndoLayout')}
+                  >
+                    <IonIcon slot="icon-only" icon={arrowUndoOutline} size="small"></IonIcon>
+                  </IonButton>
+                </>
               )}
             </div>
           </div>

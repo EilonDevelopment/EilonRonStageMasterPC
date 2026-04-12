@@ -83,6 +83,11 @@
     "LayoutProgressHome": "ホーム配置に移動中…",
     "LayoutProgressUser": "保存した位置を復元中…",
     "LayoutProgressAutoPlace": "画像上にセルを配置中…",
+    "AutoPlace": "自動配置",
+    "AutoPlaceNoop": "セルはすでに自動グリッドと同じ位置です。",
+    "AutoPlaceDone": "{{count}} 個のセルを画像上に配置しました。",
+    "AutoPlaceError": "レイアウトを保存できませんでした。",
+    "UndoLayout": "レイアウトを元に戻す（最大10回）",
     "Modal": {
       "HighlightLC": "LCを強調表示",
       "ShowOnlyGroupLcs": "このグループのLCのみ表示",

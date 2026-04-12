@@ -1,10 +1,11 @@
 import React, { FC, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import CommonLayout from "../../Layout/CommonLayout";
 import './index.css';
 import { IGroup, ILC } from "../../helper/types";
 
 import useAppData from "../../hooks/useAppData";
-import MonitorView from "../../components/Monitor/MonitorView";
+import MonitorView, { type LayoutUndoEntry } from "../../components/Monitor/MonitorView";
 import MonitorList from "../../components/Monitor/MonitorList";
 import MonitorProg from "../../components/Monitor/MonitorProg";
 import MonitorStop from "../../components/Monitor/MonitorStop";
@@ -89,7 +90,8 @@ const Monitor: FC = () => {
   const [dbHanlder, setDBHandler] = useState(null)
 
   const [list, setListData] = useState<ILC[]>([]);
-  const [prevState, setPrevState] = useState<Partial<ILC>[]>([]);
+  /** Survives MonitorView unmount when switching view/list/prog/stop */
+  const [monitorLayoutUndoStack, setMonitorLayoutUndoStack] = useState<LayoutUndoEntry[]>([]);
   const [battState, setBattState] = useState<boolean>(false)
   const [maxStatus, setMaxStatus] = useState<boolean>(false)
   const [loadStatus, setLoadStatus] = useState<boolean>(true)
@@ -154,6 +156,11 @@ const Monitor: FC = () => {
 
   useEffect(() => {
     setGroupVisual(null);
+  }, [curProject?.id]);
+
+  /** Only project switch — do NOT depend on `p_image` (curProject is often recreated; same image must not wipe undo). New image clears stack in MonitorView editor save / image flows. */
+  useEffect(() => {
+    setMonitorLayoutUndoStack([]);
   }, [curProject?.id]);
 
   useEffect(() => () => {
@@ -963,40 +970,10 @@ const Monitor: FC = () => {
    */ 
   
   const handleMoveLC = async (lcItem: ILC) => {
-    updateLCs(lcItem);
+    flushSync(() => {
+      updateLCs(lcItem);
+    });
     await db.lcs.put(lcItem);
-  }
-
-  const handleReset = async (reset: boolean) => {
-    if (lcs.length > 0) {
-      const lcIds = lcs.map(item => item.lc_id)
-      if (reset) {
-        setPrevState(lcs);
-        // Do not update state to 0,0; home is applied only at display time in MonitorView
-        const nextProject = { ...curProject, lc_display_mode: 'home' as const };
-        updateCurProject(nextProject);
-        updateProjects(projects.map(p => p.id === curProject.id ? { ...p, lc_display_mode: 'home' } : p));
-        await db.projects.update(curProject.id, { lc_display_mode: 'home' });
-      } else {
-        if (prevState.length > 0) {
-          const updated = lcs.map(item => {
-            if (lcIds.includes(item.lc_id)) {
-              const findItem = prevState.find(pItem => pItem.lc_id === item.lc_id)
-              return { ...item, ...findItem };
-            } else
-              return item
-          })
-          updateLCs(updated)
-          await db.lcs.bulkPut(updated)
-        } else {
-          await load_lcs();
-        }
-        const nextProject = { ...curProject, lc_display_mode: 'user' as const };
-        updateCurProject(nextProject);
-        updateProjects(projects.map(p => p.id === curProject.id ? { ...p, lc_display_mode: 'user' } : p));
-        await db.projects.update(curProject.id, { lc_display_mode: 'user' });
-      }
-    }
   }
 
  /* const contentView = () => {
@@ -1009,7 +986,6 @@ const Monitor: FC = () => {
             load={loadStatus}
             tare={tareStatus}
             onMoveLC={handleMoveLC}
-            onReset={handleReset}
           />
         )
       case 'list':
@@ -1050,7 +1026,8 @@ const Monitor: FC = () => {
             load={loadStatus}
             tare={tareStatus}
             onMoveLC={handleMoveLC}
-            onReset={handleReset}
+            layoutUndoStack={monitorLayoutUndoStack}
+            setLayoutUndoStack={setMonitorLayoutUndoStack}
             groupVisualGroupId={groupVisual?.groupId ?? null}
             groupVisualHighlight={!!groupVisual?.highlight}
             groupVisualOnly={!!groupVisual?.only}

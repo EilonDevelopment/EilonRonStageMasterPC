@@ -85,6 +85,11 @@
     "LayoutProgressHome": "Moving cells to home layout…",
     "LayoutProgressUser": "Restoring saved positions…",
     "LayoutProgressAutoPlace": "Placing cells on the image…",
+    "AutoPlace": "Auto place",
+    "AutoPlaceNoop": "Cell positions already match the auto grid.",
+    "AutoPlaceDone": "Placed {{count}} cells on the image.",
+    "AutoPlaceError": "Could not save layout.",
+    "UndoLayout": "Undo last layout (up to 10 steps)",
     "Modal": {
       "GroupAction": "Group Actions",
       "Tare": "TARE",
