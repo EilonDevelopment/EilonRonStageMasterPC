@@ -8,6 +8,7 @@ import { normalizeProjectId } from "../helper/functions";
 import { format, getTime } from "date-fns";
 import { useEffect, useRef } from "react";
 import { logEvent } from "../services/LogService";
+import { playAlarmBeep } from "../services/alarmFeedback";
 
 
 export default function useFunctions() {
@@ -46,8 +47,6 @@ export default function useFunctions() {
   } = useAppData()
   const { t } = useTranslation()
   const curProjectRef = useRef<any>(curProject)
-  const audioContextRef = useRef<AudioContext | null>(null)
-  const audioSuspendTimerRef = useRef<number | null>(null)
   const logInsertCounterRef = useRef<number>(0)
   const lastLogUiUpdateAtRef = useRef<number>(0)
   const lastRetentionCleanupAtRef = useRef<number>(0)
@@ -86,13 +85,6 @@ export default function useFunctions() {
 
   useEffect(() => {
     return () => {
-      if (audioSuspendTimerRef.current != null) {
-        window.clearTimeout(audioSuspendTimerRef.current)
-      }
-      if (audioContextRef.current) {
-        void audioContextRef.current.close()
-        audioContextRef.current = null
-      }
       if (logFlushTimerRef.current != null) {
         window.clearTimeout(logFlushTimerRef.current)
         logFlushTimerRef.current = null
@@ -538,70 +530,7 @@ export default function useFunctions() {
     f_update_project_last_change()
   }
 
-  const getAudioContext = async (): Promise<AudioContext | null> => {
-    try {
-      if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-        const Ctx = window.AudioContext || (window as any).webkitAudioContext
-        if (!Ctx) return null
-        audioContextRef.current = new Ctx()
-      }
-      if (audioContextRef.current.state === 'suspended') {
-        await audioContextRef.current.resume()
-      }
-      return audioContextRef.current
-    } catch (error) {
-      console.warn('Audio context unavailable:', error)
-      return null
-    }
-  }
-
-  const scheduleAudioSuspend = () => {
-    if (audioSuspendTimerRef.current != null) {
-      window.clearTimeout(audioSuspendTimerRef.current)
-    }
-    audioSuspendTimerRef.current = window.setTimeout(() => {
-      const ctx = audioContextRef.current
-      if (ctx && ctx.state === 'running') {
-        void ctx.suspend()
-      }
-    }, 3000)
-  }
-
-  const play_beep = (count = 1, frequency = 800, duration = 200) => {
-    for (let i = 0; i < count; i++) {
-      setTimeout(() => {
-        void (async () => {
-          const audioContext = await getAudioContext()
-          if (!audioContext) return
-
-          const oscillator = audioContext.createOscillator()
-          const gainNode = audioContext.createGain()
-
-          oscillator.connect(gainNode)
-          gainNode.connect(audioContext.destination)
-
-          oscillator.frequency.value = frequency
-          oscillator.type = 'sine'
-
-          gainNode.gain.setValueAtTime(0.3, audioContext.currentTime)
-          gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + duration / 1000)
-
-          oscillator.onended = () => {
-            try {
-              oscillator.disconnect()
-              gainNode.disconnect()
-            } catch {
-              // no-op: nodes may already be disconnected
-            }
-          }
-
-          oscillator.start(audioContext.currentTime)
-          oscillator.stop(audioContext.currentTime + duration / 1000)
-          scheduleAudioSuspend()
-        })()
-      }, i * (duration + 100))
-    }
-  }
+  const play_beep = playAlarmBeep
 
   // const f_update_project_settings = async (project_id: any, updateData: Partial<IProject>) => {
 

@@ -1331,6 +1331,18 @@ const updateSumByGroup = async () => {
     switch (type) {
       case 'tare':
         if (!groupShownId) return
+        {
+          const gid = String(groupShownId)
+          // Important: selectedRef can be stale when group state changes during Tr.Err periods.
+          // Always read current tare flag from `groups` to decide between tare/untare.
+          const latestGroup = groups.find((g) => String(g.id) === gid)
+          const isCurrentlyTared = latestGroup?.tare === 'true'
+          if (isCurrentlyTared) {
+            await untare_group(gid)
+            setVisibleModal('')
+            break
+          }
+        }
         if (selectedRef.current?.tare !== 'true') {
           // when clicked tare
           let tare_ok = true
@@ -1693,6 +1705,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
       }
       selectedRef.current = updatedGroup
       updateGroups(updatedGroup)
+      updateTareStatus(true)
     } catch (error) {
       console.error('[TARE] Error updating tare value:', error);
     }
@@ -1701,6 +1714,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
   const untare_group = async (groupShownId: string) => {
     const gid = String(groupShownId)
     try {
+      let nextLcs = lcs
       const ids: number[] = []
       lcs.forEach((lc, index) => {
         const g = lc.groups?.split(',').map((x) => String(x).trim()) ?? []
@@ -1712,6 +1726,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
         const updatedLcs = lcs.map((lc, idx) =>
           ids.includes(idx) ? { ...lc, status_tare: false, tare: 0, weightnotare: undefined } : lc
         );
+        nextLcs = updatedLcs
         updateLCs(updatedLcs);
       }
       const groupRow = groups.find((g) => String(g.id) === gid)
@@ -1720,6 +1735,9 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
         selectedRef.current = merged
         updateGroups(merged)
       }
+      // Determine global tare state from LC flags, which is more reliable than group.tare snapshots.
+      const hasAnyTaredLc = nextLcs.some((lc: any) => lc.status_tare === true)
+      updateTareStatus(hasAnyTaredLc)
     } catch (error) {
       console.log('Transaction ERROR: ' + error);
     }
@@ -1778,7 +1796,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
       return
     }
     if (groupRow.tare === 'true') {
-      void tare_off()
+      void untare_group(gid)
       return
     }
     if (!unique_group_lcs(gid)) {

@@ -35,6 +35,7 @@ import { t } from "i18next";
 import Chart from "chart.js/auto";
 import { CategoryScale } from "chart.js";
 import { logEvent } from "./services/LogService";
+import { initAlarmAudioPriming, resumeAlarmAudioIfPossible } from "./services/alarmFeedback";
 
 Chart.register(CategoryScale);
 
@@ -49,6 +50,10 @@ const App: React.FC = () => {
   const { i18n } = useTranslation();
 
   useEffect(() => {
+    initAlarmAudioPriming();
+  }, []);
+
+  useEffect(() => {
     let resumeAlertHandle: any;
     let pauseHandle: any;
 
@@ -57,6 +62,8 @@ const App: React.FC = () => {
         logEvent("INFO", "App resumed (Foreground)", {
         route: window.location.pathname,
       }, "APP");
+
+        void resumeAlarmAudioIfPossible();
 
         // Native share/email flows set this flag so we skip resume alerts, but we must still run
         // WebView recovery logic below (reflow/resize/optional reload) to avoid black background.

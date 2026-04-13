@@ -229,6 +229,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
 
   const [projectList, setProjectList] = useState<IProject[]>([])
   const [active_project, setSelectProject] = useState<IProject>({} as IProject);
+  const activeProjectRef = useRef<IProject>({} as IProject);
   const [groupList, setGroupList] = useState<IGroup[]>([])
 
   const [visibleBeforeAlert, setVisibleBeforeAlert] = useState<boolean>(false);
@@ -291,13 +292,11 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     warnListRef.current = warnList;
   }, [warnList]);
 
-  useEffect(() => {
-    const unregister = CapApp.addListener('resume', () => {
-      const path = locationRef.current
-      if (path) history.replace(path)
-    })
-    return () => { unregister.then((u) => u.remove()) }
-  }, [history])
+  // NOTE:
+  // Do not register per-page resume route restores here.
+  // Ionic keeps previous pages mounted in the outlet cache, so each cached page
+  // would fire its own `history.replace(...)` on app resume (after native share),
+  // causing route jumps/crossed navigation (e.g. Reports <-> Settings).
 
   useEffect(() => {
     if (importChooseName) {
@@ -520,6 +519,9 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   useEffect(() => {
     setSelectProject(curProject)
   }, [curProject])
+  useEffect(() => {
+    activeProjectRef.current = active_project;
+  }, [active_project])
 
   useEffect(() => {
     if (visibleModal === ModalNames.NewProject) {
@@ -632,6 +634,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const weight = (curProject.windmeter_units !== project.windmeter_units) ? convert_wind_speed(curProject.windmeter_units, project.windmeter_units) : 1;
     const { id, ...rest } = project;
     await f_use_update_project_setting(id, rest, multiply, weight);
+    setSelectProject(project);
+    activeProjectRef.current = project;
     setVisibleSetting(false);
     updateSuccessStr(t("Msg.ConfirmSetting"));
   }
@@ -646,7 +650,9 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   }
 
   const get_project = async (id: string, replace?: boolean) => {
-    const project = projectList.find(item => item.id === id)
+    const project = projectList.find(
+      (item) => normalizeProjectId(item.id) === normalizeProjectId(id)
+    )
     if (project) {
       if (replace)
         updateCurProject(project, true)
@@ -680,7 +686,6 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
             if (successMessage) toast.success(successMessage);
             updateVisibleModal('');
             if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
-            setLayoutKey((k) => k + 1);
           } catch {
             if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
           }
@@ -1222,8 +1227,22 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   currentLcs.current = lcs;
 
   const maybeLogLcValue = (lcId: any, projectId: any, value: any, realval: any, overload: any, underload: any, batteryParam?: number | string) => {
-    const proj = active_project;
-    if (!proj?.cycle) return;
+    const pid = normalizeProjectId(projectId);
+    const curProj = curProjectRef.current ?? curProject;
+    const activeProj = activeProjectRef.current?.id ? activeProjectRef.current : active_project;
+    const curPid = normalizeProjectId(curProj?.id);
+    const activePid = normalizeProjectId(activeProj?.id);
+    const proj =
+      (pid && pid === curPid && curProj?.id != null) ? curProj :
+      (pid && pid === activePid && activeProj?.id != null) ? activeProj :
+      (curProj?.id != null ? curProj : activeProj);
+    const cycleRaw = (proj as any)?.cycle;
+    const cycleEnabled =
+      cycleRaw === true ||
+      cycleRaw === 'true' ||
+      cycleRaw === 1 ||
+      cycleRaw === '1';
+    if (!cycleEnabled) return;
     const isTrErrSample =
       value === 'Tr.Err' ||
       value === 'Tr. Err' ||
@@ -1231,7 +1250,11 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       realval === -99999999;
     // PRR offline: still show Tr.Err in UI, but do not write 75× Tr.Err/sec to IndexedDB (was killing UI thread).
     if (isTrErrSample && !bleConnected) return;
-    const intervalSec = Math.max(1, Math.min(86400, proj.report_interval_seconds ?? 60));
+    const intervalSecRaw = Number(proj?.report_interval_seconds ?? 60);
+    const intervalSec = Math.max(
+      1,
+      Math.min(86400, Number.isFinite(intervalSecRaw) ? intervalSecRaw : 60)
+    );
     const key = `${projectId}_${lcId}`;
     const now = Date.now();
     if (now - (lastReportTimeRef.current[key] ?? 0) < intervalSec * 1000) return;
@@ -1917,7 +1940,6 @@ const lastSoundTimeRef = useRef<number>(0);
               project_id: curProjectRef.current.id
             };
             toast.error(`Total Sum: OVERLOAD! Value: ${(u === 'mton') ? totalSumValue.toFixed(3) : totalSumValue.toFixed(0)}`);
-            play_beep(4);
 
             const updatedList = [newWarning, ...warnListRef.current];
 

@@ -248,23 +248,39 @@ export const AppDataProvider = (props: any) => {
     if (Array.isArray(project)) {
       setProjects(project)
     } else {
-      let ids: string[] = []
-      if (projects.length > 0) ids = projects.map(item => item.id)
+      const pidNorm =
+        project.id != null && String(project.id).trim() !== ''
+          ? normalizeProjectId(project.id)
+          : '';
 
-      if (project.id && ids.includes(project.id)) {
-        setProjects(v => v.map(item => {
-          if (item.id === project.id) return ({ ...item, ...project })
-          else return item;
-        }))
-      } else {
-        setProjects((prevProjects: any) => {
-          const projectExists = prevProjects.some((p: { title: string | undefined; }) => p.title === project.title);
-          if (projectExists) {
-            return prevProjects; // return the same array if the project already exists
+      if (pidNorm) {
+        setProjects((prevProjects: IProject[]) => {
+          const idx = prevProjects.findIndex(
+            (p) => normalizeProjectId(p.id) === pidNorm
+          );
+          if (idx >= 0) {
+            const next = [...prevProjects];
+            next[idx] = { ...next[idx], ...project };
+            return next;
           }
-          return [...prevProjects, project];
+          const projectExists = prevProjects.some(
+            (p) => p.title === project.title
+          );
+          if (projectExists) {
+            return prevProjects;
+          }
+          return [...prevProjects, project as IProject];
         });
-        // setProjects(v => [...v, project as IProject])
+      } else {
+        setProjects((prevProjects: IProject[]) => {
+          const projectExists = prevProjects.some(
+            (p) => p.title === project.title
+          );
+          if (projectExists) {
+            return prevProjects;
+          }
+          return [...prevProjects, project as IProject];
+        });
       }
     }
   }

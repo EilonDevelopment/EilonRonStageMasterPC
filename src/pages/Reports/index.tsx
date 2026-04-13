@@ -612,7 +612,7 @@ const Report: FC = () => {
     return isErr ? 'Tr.Err' : `${log.value ?? ''} ${log.unit ?? ''}`.trim();
   };
 
-  /** One row per log, same as example.js: Unit (title or id), Load, Battery, Time */
+  /** One row per log for exports: Name + ID + metrics */
   const formatBattery = (b: any) => {
     if (b == null || String(b).trim() === '') return '';
     return `${String(b).trim()}%`;
@@ -622,7 +622,8 @@ const Report: FC = () => {
       const plt = String(log.log_type || '').toLowerCase();
       if (plt === 'prr_connected' || plt === 'prr_disconnected') {
         return {
-          Unit: plt === 'prr_connected' ? 'PRR connected' : 'PRR disconnected',
+          Name: plt === 'prr_connected' ? 'PRR connected' : 'PRR disconnected',
+          ID: log.unit != null ? String(log.unit) : '',
           Load: log.unit != null ? String(log.unit) : '',
           Battery: '',
           Time: format(new Date(log.log_date), 'yyyy-MM-dd HH:mm:ss'),
@@ -630,7 +631,8 @@ const Report: FC = () => {
       }
       const lc = lcs.find((c: any) => c.id === log.lc_id?.toString());
       return {
-        Unit: (lc?.title || log.lc_id || '').toString(),
+        Name: (lc?.title || '').toString(),
+        ID: (lc?.id || log.lc_id || '').toString(),
         Load: formatLogLoad(log),
         Battery: formatBattery(log.battery),
         Time: format(new Date(log.log_date), 'yyyy-MM-dd HH:mm:ss'),
@@ -640,8 +642,8 @@ const Report: FC = () => {
   const openMailtoFallback = (subject: string, logData: any[]) => {
     const project = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
     const reportRows = getReportRows(logData);
-    const lines = reportRows.slice(0, 50).map((r) => `${r.Unit}\t${r.Load}\t${r.Battery}\t${r.Time}`);
-    const body = `Report: ${project?.title ?? ''}\nDate range: ${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}\nTotal rows: ${logData.length}\n\nUnit\tLoad\tBattery\tTime\n${lines.join('\n')}${logData.length > 50 ? '\n...' : ''}`;
+    const lines = reportRows.slice(0, 50).map((r) => `${r.Name}\t${r.ID}\t${r.Load}\t${r.Battery}\t${r.Time}`);
+    const body = `Report: ${project?.title ?? ''}\nDate range: ${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}\nTotal rows: ${logData.length}\n\nName\tID\tLoad\tBattery\tTime\n${lines.join('\n')}${logData.length > 50 ? '\n...' : ''}`;
     const mailto = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     window.location.href = mailto;
   };
@@ -764,8 +766,8 @@ const Report: FC = () => {
             return s;
           };
           const reportRows = getReportRows(logData);
-          const rows: string[] = ['Unit,Load,Battery,Time'];
-          reportRows.forEach((r) => rows.push([r.Unit, r.Load, r.Battery, r.Time].map(escapeCsv).join(',')));
+          const rows: string[] = ['Name,ID,Load,Battery,Time'];
+          reportRows.forEach((r) => rows.push([r.Name, r.ID, r.Load, r.Battery, r.Time].map(escapeCsv).join(',')));
           const csvStr = rows.join('\r\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
 
@@ -779,9 +781,9 @@ const Report: FC = () => {
             URL.revokeObjectURL(url);
           } else if (platformType === 'android' || platformType === 'ios') {
                 const reportRows = getReportRows(logData);
-                const csvChunks: string[] = ['\uFEFFUnit,Load,Battery,Time\r\n'];
+                const csvChunks: string[] = ['\uFEFFName,ID,Load,Battery,Time\r\n'];
                 reportRows.forEach((r) => {
-                  csvChunks.push([r.Unit, r.Load, r.Battery, r.Time].map(escapeCsv).join(',') + '\r\n');
+                  csvChunks.push([r.Name, r.ID, r.Load, r.Battery, r.Time].map(escapeCsv).join(',') + '\r\n');
                 });
                 await writeTextFileInChunks(fileName, csvChunks);
             const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
@@ -889,7 +891,7 @@ const Report: FC = () => {
               const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.sql`;
               const sqlChunks: string[] = [];
               reportRows.forEach((r) => {
-                sqlChunks.push(`INSERT INTO logs (\`Unit\`,\`Load\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Unit)},${escape(r.Load)},${escape(r.Battery)},${escape(r.Time)});\n`);
+                sqlChunks.push(`INSERT INTO logs (\`Name\`,\`ID\`,\`Load\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Name)},${escape(r.ID)},${escape(r.Load)},${escape(r.Battery)},${escape(r.Time)});\n`);
               });
               await writeTextFileInChunks(fileName, sqlChunks);
               const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
@@ -916,7 +918,7 @@ const Report: FC = () => {
             return `'${s}'`;
           };
           const lines: string[] = reportRows.map(
-            (r) => `INSERT INTO logs (\`Unit\`,\`Load\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Unit)},${escape(r.Load)},${escape(r.Battery)},${escape(r.Time)});`
+            (r) => `INSERT INTO logs (\`Name\`,\`ID\`,\`Load\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Name)},${escape(r.ID)},${escape(r.Load)},${escape(r.Battery)},${escape(r.Time)});`
           );
           const sqlStr = lines.join('\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.sql`;
@@ -958,7 +960,7 @@ const Report: FC = () => {
               const doc = new jsPDF('p', 'mm', 'a4');
               const pageW = doc.internal.pageSize.getWidth();
               const margin = 10;
-              const colWidths = [50, 40, 35, 52];
+              const colWidths = [42, 26, 32, 24, 56];
               const rowHeight = 7;
               let y = margin;
               doc.setFontSize(14);
@@ -969,7 +971,7 @@ const Report: FC = () => {
               y += 6;
               doc.text(`${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}`, margin, y);
               y += 10;
-              const headers = ['Unit', t('Report.Load'), t('Report.Battery'), t('Report.Time')];
+              const headers = ['Name', 'ID', t('Report.Load'), t('Report.Battery'), t('Report.Time')];
               doc.setFontSize(8);
               doc.setFillColor(240, 240, 240);
               doc.rect(margin, y, pageW - 2 * margin, rowHeight, 'F');
@@ -997,7 +999,7 @@ const Report: FC = () => {
                   y += rowHeight;
                 }
                 const r = rowsForPdf[i];
-                const row = [r.Unit.slice(0, 24), r.Load.slice(0, 14), r.Battery.slice(0, 8), r.Time.slice(0, 19)];
+                const row = [r.Name.slice(0, 18), r.ID.slice(0, 12), r.Load.slice(0, 14), r.Battery.slice(0, 8), r.Time.slice(0, 19)];
                 row.forEach((cell, ii) => {
                   doc.text(cell, margin + (ii === 0 ? 2 : colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2), y + 5);
                 });
@@ -1041,7 +1043,7 @@ const Report: FC = () => {
           const doc = new jsPDF('p', 'mm', 'a4');
           const pageW = doc.internal.pageSize.getWidth();
           const margin = 10;
-          const colWidths = [50, 40, 35, 52];
+          const colWidths = [42, 26, 32, 24, 56];
           const rowHeight = 7;
           let y = margin;
           doc.setFontSize(14);
@@ -1052,7 +1054,7 @@ const Report: FC = () => {
           y += 6;
           doc.text(`${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}`, margin, y);
           y += 10;
-          const headers = ['Unit', t('Report.Load'), t('Report.Battery'), t('Report.Time')];
+          const headers = ['Name', 'ID', t('Report.Load'), t('Report.Battery'), t('Report.Time')];
           doc.setFontSize(8);
           doc.setFillColor(240, 240, 240);
           doc.rect(margin, y, pageW - 2 * margin, rowHeight, 'F');
@@ -1081,7 +1083,7 @@ const Report: FC = () => {
               y += rowHeight;
             }
             const r = reportRowsPdf[i];
-            const row = [r.Unit.slice(0, 24), r.Load.slice(0, 14), r.Battery.slice(0, 8), r.Time.slice(0, 19)];
+            const row = [r.Name.slice(0, 18), r.ID.slice(0, 12), r.Load.slice(0, 14), r.Battery.slice(0, 8), r.Time.slice(0, 19)];
             row.forEach((cell, ii) => {
               doc.text(cell, margin + (ii === 0 ? 2 : colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2), y + 5);
             });
@@ -1121,8 +1123,8 @@ const Report: FC = () => {
             return s;
           };
           const reportRows = getReportRows(logData);
-          const csvRows: string[] = ['Unit,Load,Battery,Time'];
-          reportRows.forEach((r) => csvRows.push([r.Unit, r.Load, r.Battery, r.Time].map(escapeCsv).join(',')));
+          const csvRows: string[] = ['Name,ID,Load,Battery,Time'];
+          reportRows.forEach((r) => csvRows.push([r.Name, r.ID, r.Load, r.Battery, r.Time].map(escapeCsv).join(',')));
           const csvStr = '\uFEFF' + csvRows.join('\r\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
           const bodyText = project?.title
