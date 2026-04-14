@@ -62,18 +62,6 @@ export default function useFunctions() {
   const LOG_FLUSH_MS = 125
   /** When the queue reaches this size, flush immediately (one transaction per ~1s wave of LCs). */
   const LOG_BATCH_MAX_BEFORE_FLUSH = 80
-  /** Safety valve for long-running sessions: keep queue bounded to avoid UI starvation. */
-  const LOG_QUEUE_SOFT_LIMIT = 2500
-  const LOG_QUEUE_HARD_LIMIT = 5000
-  const statusPriority = (status: string): number => {
-    switch (status) {
-      case 'err': return 5
-      case 'danger': return 4
-      case 'overload': return 3
-      case 'underload': return 2
-      default: return 1
-    }
-  }
 
   const tracePhase = (phase: string, extra?: Record<string, any>) => {
     const step = ++traceStepRef.current;
@@ -737,7 +725,6 @@ export default function useFunctions() {
           const key = `${pidNorm}|${lc}|${bucket}`
           const val = Number(row.value)
           const rval = Number(row.realval)
-          const rowStatus = String(row.log_type || row.status_code || 'ok').toLowerCase()
           const b = row.battery != null ? Number(row.battery) : undefined
 
           let a = aggMap.get(key)
@@ -761,13 +748,6 @@ export default function useFunctions() {
               last_realval: undefined as any,
               last_battery: undefined as any,
               last_ts: 0,
-              worst_status: 'ok',
-              status_rank: 1,
-              count_ok: 0,
-              count_underload: 0,
-              count_overload: 0,
-              count_danger: 0,
-              count_err: 0,
               log_type: 'agg',
             }
             aggMap.set(key, a)
@@ -783,16 +763,6 @@ export default function useFunctions() {
             a.realval_sum += rval
             a.realval_min = Math.min(a.realval_min, rval)
             a.realval_max = Math.max(a.realval_max, rval)
-          }
-          if (rowStatus === 'err') a.count_err += 1
-          else if (rowStatus === 'danger') a.count_danger += 1
-          else if (rowStatus === 'overload') a.count_overload += 1
-          else if (rowStatus === 'underload') a.count_underload += 1
-          else a.count_ok += 1
-          const rank = statusPriority(rowStatus)
-          if (rank >= a.status_rank) {
-            a.status_rank = rank
-            a.worst_status = rowStatus
           }
           if (t >= a.last_ts) {
             a.last_ts = t
@@ -817,12 +787,6 @@ export default function useFunctions() {
             realval: Number.isFinite(realval_avg) ? realval_avg : a.last_realval,
             battery: a.last_battery,
             log_type: 'agg',
-            status_code: a.worst_status,
-            count_ok: a.count_ok,
-            count_underload: a.count_underload,
-            count_overload: a.count_overload,
-            count_danger: a.count_danger,
-            count_err: a.count_err,
             count: a.count,
             value_min: Number.isFinite(a.value_min) ? a.value_min : undefined,
             value_max: Number.isFinite(a.value_max) ? a.value_max : undefined,
@@ -1085,17 +1049,7 @@ export default function useFunctions() {
       unit: unit_value,
       battery: battery,
       log_type,
-      status_code: log_type,
     };
-    const queueLen = pendingLogBatchRef.current.length
-    if (queueLen >= LOG_QUEUE_HARD_LIMIT && statusPriority(log_type) <= 2) {
-      // Drop non-critical rows under extreme pressure; keep err/danger/overload flowing.
-      return
-    }
-    if (queueLen >= LOG_QUEUE_SOFT_LIMIT && statusPriority(log_type) === 1) {
-      // Under sustained pressure, trim "ok" rows first.
-      return
-    }
     pendingLogBatchRef.current.push({
       row,
       meta: {

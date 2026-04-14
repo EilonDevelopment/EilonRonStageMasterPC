@@ -396,15 +396,22 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     weightnotare,
   } = item;
 
+  const rawValueStr = String(value ?? '').trim();
+  const hasTransmissionError =
+    rawValueStr === 'Tr.Err' ||
+    rawValueStr === 'Tr. Err' ||
+    rawValueStr === t("Common.TrErr") ||
+    Number(value) === -99999999;
   const numVal = Number(value);
   const numOver = Number(overload);
   const numUnder = Number(underload);
-  const valueForCheck = (tare && status_tare && weightnotare != null && weightnotare !== '') ? Number(weightnotare) : numVal;
+  const useTareValue = !hasTransmissionError && tare && status_tare && weightnotare != null && weightnotare !== '';
+  const valueForCheck = useTareValue ? Number(weightnotare) : numVal;
   const isDanger = !Number.isNaN(valueForCheck) && !Number.isNaN(numOver) && numOver > 0 && valueForCheck >= numOver * 1.3;
   const isOverload = !Number.isNaN(valueForCheck) && !Number.isNaN(numOver) && valueForCheck > numOver;
   const isUnderload = !Number.isNaN(valueForCheck) && !Number.isNaN(numUnder) && valueForCheck < numUnder;
   const displayValue = isDanger ? 'DANGER' : (value ? value : (bleConnected ? value : t("Common.TrErr")));
-  const valueShown = (tare && status_tare && weightnotare != null && weightnotare !== '') ? weightnotare : (value ?? '');
+  const valueShown = useTareValue ? weightnotare : (value ?? '');
   const isZeroValue = valueShown === '0' || parseFloat(String(valueShown).trim()) === 0;
   const showRedValueBg = (isDanger || isOverload || isUnderload) && !isZeroValue;
 
@@ -471,7 +478,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
           >
             {maxMode
               ? (bleConnected ? (item.max ?? 0) : t("Common.TrErr"))
-              : (isDanger ? 'DANGER' : (bleConnected && status_tare && tare
+              : (isDanger ? 'DANGER' : (bleConnected && useTareValue
                   ? weightnotare
                   : (!loadMode ? (bleConnected ? `${battery}%` : t("Common.TrErr")) : displayValue)))}
           </div>

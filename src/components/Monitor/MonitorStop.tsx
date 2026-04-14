@@ -23,20 +23,27 @@ const MonitorStop: FC<MonitorStopProps> = props => {
       `}
     >
       {data.length > 0 && data.map((item: ILC, index: number) => {
+        const rawValueStr = String(item.value ?? '').trim();
+        const hasTransmissionError =
+          rawValueStr === 'Tr.Err' ||
+          rawValueStr === 'Tr. Err' ||
+          Number(item.value) === -99999999;
         const val = Number(item.value);
         const over = Number(item.overload);
         const under = Number(item.underload);
-        const valueForCheck = (tare && item.status_tare && item.weightnotare != null && item.weightnotare !== '') ? Number(item.weightnotare) : val;
+        const useTareValue = !hasTransmissionError && tare && item.status_tare && item.weightnotare != null && item.weightnotare !== '';
+        const valueForCheck = useTareValue ? Number(item.weightnotare) : val;
         const isDanger = !max && !Number.isNaN(valueForCheck) && !Number.isNaN(over) && over > 0 && valueForCheck >= over * 1.3;
         const isOverload = !max && !Number.isNaN(valueForCheck) && !Number.isNaN(over) && valueForCheck > over;
         const isUnderload = !max && !Number.isNaN(valueForCheck) && !Number.isNaN(under) && valueForCheck < under;
         const isAlert = isDanger || isOverload || isUnderload;
-        const displayedValue = (tare && item.status_tare && item.weightnotare != null && item.weightnotare !== '') ? item.weightnotare : (item.value ?? 'Tr.Err');
+        const displayedValue = hasTransmissionError ? 'Tr.Err' : (useTareValue ? item.weightnotare : (item.value ?? 'Tr.Err'));
         const display = isDanger ? 'DANGER' : (max ? (item.max ?? '0') : displayedValue);
+        const displayLabel = String(display ?? '');
         const displayStr = String(display ?? '').trim();
         const isZeroDisplay = displayStr === '0' || (displayStr !== '' && !Number.isNaN(Number(displayStr)) && Number(displayStr) === 0);
         const showAlertStyling = isAlert && !isZeroDisplay;
-        const inTareMode = tare && item.status_tare && item.weightnotare != null && item.weightnotare !== '';
+        const inTareMode = !hasTransmissionError && useTareValue;
         return (
         <div
           key={index}
@@ -49,8 +56,8 @@ const MonitorStop: FC<MonitorStopProps> = props => {
           <Text type='lg-dark' classes='font-medium leading-4' label={item.title || item.id} />
           <Text
             type='white'
-            classes={`leading-4 !text-5xl ${showAlertStyling ? 'font-bold text-red-600' : 'font-medium !text-dark'} ${(display === undefined || display === null || display === '' || display === 'Tr.Err') ? 'bg-danger rounded-bold p-1' : ''}`}
-            label={display}
+            classes={`leading-4 !text-5xl ${showAlertStyling ? 'font-bold text-red-600' : 'font-medium !text-dark'} ${(displayLabel === '' || displayLabel === 'Tr.Err') ? 'bg-danger rounded-bold p-1' : ''}`}
+            label={displayLabel}
           />
         </div>
       );})}

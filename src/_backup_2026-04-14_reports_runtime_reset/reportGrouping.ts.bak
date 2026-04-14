@@ -31,34 +31,28 @@ function makeByFilter(query: ReportGroupQuery) {
   const logType = (log: any) => String(log.log_type).toLowerCase();
   const n = (x: any) => Number(x);
   const isAggRow = (log: any) => String(log?.log_type ?? '').toLowerCase() === 'agg';
-  const status = (log: any) => String(log?.status_code ?? log?.log_type ?? '').toLowerCase();
-  const hasCount = (log: any, key: string) => Number(log?.[key] ?? 0) > 0;
 
   return (log: any) => {
     const valueN = n(log.value);
     const overloadN = n(log.overload);
     const underloadN = n(log.underload);
-    const st = status(log);
 
-    if (isAggRow(log)) {
-      if (trerr && (st === 'err' || hasCount(log, 'count_err') || valueN === -99999999)) return true;
-      if (danger && (st === 'danger' || hasCount(log, 'count_danger'))) return true;
-      if (overload && (st === 'overload' || hasCount(log, 'count_overload'))) return true;
-      if (underload && (st === 'underload' || hasCount(log, 'count_underload'))) return true;
-      if (ok && (st === 'ok' || hasCount(log, 'count_ok'))) return true;
-      if (Number.isNaN(overloadN) || Number.isNaN(underloadN)) return false;
+    if (isAggRow(log) && (Number.isNaN(overloadN) || Number.isNaN(underloadN))) {
+      if (trerr && valueN === -99999999) return true;
+      if (ok) return true;
+      return false;
     }
 
-    if (ok && (hasLogType(log) ? (logType(log) === 'ok' || st === 'ok') : valueN >= underloadN && valueN <= overloadN)) return true;
-    if (overload && (hasLogType(log) ? (logType(log) === 'overload' || st === 'overload') : valueN > overloadN)) return true;
+    if (ok && (hasLogType(log) ? logType(log) === 'ok' : valueN >= underloadN && valueN <= overloadN)) return true;
+    if (overload && (hasLogType(log) ? logType(log) === 'overload' : valueN > overloadN)) return true;
     if (danger) {
-      const isDangerByType = hasLogType(log) && (logType(log) === 'danger' || st === 'danger');
+      const isDangerByType = hasLogType(log) && logType(log) === 'danger';
       const isDangerByValue = overloadN > 0 && valueN >= overloadN * 1.3;
       if (isDangerByType || isDangerByValue) return true;
     }
-    if (underload && (hasLogType(log) ? (logType(log) === 'underload' || st === 'underload') : valueN < underloadN && valueN !== -99999999))
+    if (underload && (hasLogType(log) ? logType(log) === 'underload' : valueN < underloadN && valueN !== -99999999))
       return true;
-    if (trerr && (hasLogType(log) ? (logType(log) === 'err' || st === 'err') : valueN === -99999999)) return true;
+    if (trerr && (hasLogType(log) ? logType(log) === 'err' : valueN === -99999999)) return true;
     return false;
   };
 }

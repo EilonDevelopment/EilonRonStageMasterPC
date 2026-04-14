@@ -22,9 +22,14 @@ const cellStyle = (value: string, overload: string) => {
 }
 
 const displayValue = (item: ILC, tare: boolean) =>
-  (tare && item.status_tare && item.weightnotare != null && item.weightnotare !== '')
+{
+  const raw = String(item.value ?? '').trim();
+  const hasTransmissionError = raw === 'Tr.Err' || raw === 'Tr. Err' || Number(item.value) === -99999999;
+  if (hasTransmissionError) return 'Tr.Err';
+  return (tare && item.status_tare && item.weightnotare != null && item.weightnotare !== '')
     ? item.weightnotare
     : (item.value ?? '');
+};
 
 const MonitorProg: FC<MonitorProgProps> = props => {
   const { data, unit, tare = false, max = false } = props
@@ -56,9 +61,8 @@ const MonitorProg: FC<MonitorProgProps> = props => {
       //const dv = displayValue(item, tare)
       //const danger = isDanger(item)
       const showAlertBorder = isUnderload(item) || isOverload(item)
-      const inTareMode = tare && item.status_tare && item.weightnotare != null && item.weightnotare !== ''
-
       const dv = (max && item.max != null) ? item.max : displayValue(item, tare)
+      const inTareMode = dv !== 'Tr.Err' && dv !== 'Tr. Err' && tare && item.status_tare && item.weightnotare != null && item.weightnotare !== ''
       const danger = !max && isDanger(item) // No mostrar "DANGER" si estamos viendo históricos MAX
       const headerClass = max ? 'bg-cyan2' : (inTareMode ? 'bg-cyan-600' : 'bg-red1');
 

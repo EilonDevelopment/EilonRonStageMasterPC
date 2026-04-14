@@ -15,10 +15,20 @@ const MonitorList: FC<MonitorListProps> = props => {
   const { t } = useTranslation()
   const { curProject, tareStatus } = useAppData();
 
-  const displayValue = (row: ILC) =>
-    (tareStatus && row.status_tare && row.weightnotare != null && row.weightnotare !== '')
-      ? row.weightnotare
-      : (row.value ?? '');
+  const hasTransmissionError = (raw: any) => {
+    const s = String(raw ?? '').trim();
+    return s === 'Tr.Err' || s === 'Tr. Err' || Number(raw) === -99999999;
+  };
+
+  const displayValue = (row: ILC) => {
+    if (hasTransmissionError(row.value)) return 'Tr.Err';
+    const useTareValue =
+      tareStatus &&
+      row.status_tare &&
+      row.weightnotare != null &&
+      row.weightnotare !== '';
+    return useTareValue ? row.weightnotare : (row.value ?? '');
+  };
 
   const columns = [
     {
@@ -58,7 +68,7 @@ const MonitorList: FC<MonitorListProps> = props => {
         const isZeroValue = dv === '0' || parseFloat(String(dv).trim()) === 0;
         const showAlert = (isDanger || isOverload || isUnderload) && !isZeroValue;
         const hasValue = dv && !isTrErr;
-        const inTareMode = tareStatus && row.status_tare && row.weightnotare != null && row.weightnotare !== '';
+        const inTareMode = !hasTransmissionError(row.value) && tareStatus && row.status_tare && row.weightnotare != null && row.weightnotare !== '';
         const display = isDanger ? 'DANGER' : (isTrErr ? 'Tr.Err' : dv);
         const cellClass = showAlert ? 'bg-red-600 text-black' : (isTrErr ? 'bg-danger text-white' : (inTareMode ? 'bg-cyan-600 text-white' : (hasValue ? 'bg-green-600 text-white' : '')));
         return (

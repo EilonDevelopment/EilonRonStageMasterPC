@@ -639,26 +639,14 @@ const Report: FC = () => {
     }
   };
   const getLogStatus = (log: any, lc?: any): ReportStatus => {
-    const explicitStatus = String(log?.status_code ?? '').toLowerCase();
-    if (explicitStatus === 'ok') return 'OK';
-    if (explicitStatus === 'underload') return 'UNDERLOAD';
-    if (explicitStatus === 'overload') return 'OVERLOAD';
-    if (explicitStatus === 'danger') return 'DANGER';
-    if (explicitStatus === 'err') return 'TR.ERR';
     const lt = String(log?.log_type || '').toLowerCase();
     if (lt === 'prr_connected') return 'PRR CONNECTED';
     if (lt === 'prr_disconnected') return 'PRR DISCONNECTED';
-    if (lt === 'ok') return 'OK';
-    if (lt === 'underload') return 'UNDERLOAD';
-    if (lt === 'overload') return 'OVERLOAD';
-    if (lt === 'danger') return 'DANGER';
-    if (lt === 'err') return 'TR.ERR';
     const rawValue = String(log?.value ?? '').trim();
     const valueNum = Number(log?.value);
-    const isErr = valueNum === -99999999 || rawValue === 'Tr.Err' || rawValue === 'Tr. Err';
+    const isErr = lt === 'err' || valueNum === -99999999 || rawValue === 'Tr.Err' || rawValue === 'Tr. Err';
     if (isErr) return 'TR.ERR';
     if (!Number.isFinite(valueNum)) return 'TR.ERR';
-    // Fallback path for legacy rows that don't carry explicit status.
     const overNum = Number(log?.overload ?? lc?.overload);
     const underNum = Number(log?.underload ?? lc?.underload);
     if (Number.isFinite(overNum) && overNum > 0 && valueNum >= overNum * 1.3) return 'DANGER';
@@ -789,21 +777,8 @@ const Report: FC = () => {
       });
     });
 
-  const getExportDataset = async () => {
-    const baseRows = getAllLogsFromList();
-    // If we're in preview mode, force full-range fetch for exports so users never export partial data unintentionally.
-    if (!isPreview || !lastQueryRef.current) return baseRows;
-    const { project_id, fromVal, toVal } = lastQueryRef.current;
-    const from = getTime(new Date(fromVal).setHours(0, 0, 0, 0));
-    const to = getTime(new Date(toVal).setHours(23, 59, 59, 999));
-    const fullRows = await fetchProjectLogsInRange(project_id, from, to, MAX_REPORT_LOGS);
-    return fullRows.sort((a: any, b: any) => (b.log_date || 0) - (a.log_date || 0));
-  };
-
   const handleExport = async (type: string) => {
-    setExportBusy(true);
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    const logData = await getExportDataset();
+    const logData = getAllLogsFromList();
 
     if (logData.length === 0) {
       Swal.fire({
@@ -813,10 +788,11 @@ const Report: FC = () => {
         heightAuto: false,
       });
       console.log('[Report Export] No data to export');
-      setExportBusy(false);
       return;
     }
 
+    setExportBusy(true);
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
     try {
     switch (type) {
       case t('Report.CSV'): {
