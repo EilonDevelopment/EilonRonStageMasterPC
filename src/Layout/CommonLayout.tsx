@@ -117,6 +117,8 @@ const getLcDisplayBatchMs = (platformType: string | undefined, lcCount: number):
 const PRR_STALE_LC_MS = 8000;
 /** If no BLE-driven updates hit dataTimeById for this long, declare full link loss and set all LCs to Tr.Err. */
 const PRR_SILENCE_ALL_TRERR_MS = 15000;
+const PRR_RECONNECT_BASE_MS = 1500;
+const PRR_RECONNECT_MAX_MS = 30000;
 
 type PendingLCDisplay = {
   value?: string;
@@ -531,7 +533,17 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
 
   useEffect(() => {
     setConnected(bleConnected)
+    bleConnectedRef.current = bleConnected;
   }, [bleConnected])
+
+  useEffect(() => {
+    return () => {
+      if (prrReconnectTimerRef.current) {
+        clearTimeout(prrReconnectTimerRef.current);
+        prrReconnectTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     layoutRefreshRef.current = () => setLayoutKey((k) => k + 1);
@@ -934,7 +946,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   }
 };
 
-  const bleConnectToDevice = async (deviceId: string, type: string, displayName?: string) => {
+  const bleConnectToDevice = async (deviceId: string, type: string, displayName?: string): Promise<boolean> => {
     const s = (type == "prr") ? numberToUUID(0xfff0) : '0bd51666-e7cb-469b-8e4d-2742f1ba77cc';
     const c = (type == "prr") ? numberToUUID(0xfff4) : 'e7add780-b042-4876-aae1-112855353cc1';
     try {
@@ -957,10 +969,20 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
           bt_parse(new Uint8Array(value.buffer));
         }
       );
+      if (type === 'prr') {
+        prrReconnectAttemptRef.current = 0;
+        prrReconnectInProgressRef.current = false;
+        if (prrReconnectTimerRef.current) {
+          clearTimeout(prrReconnectTimerRef.current);
+          prrReconnectTimerRef.current = null;
+        }
+      }
+      return true;
     } catch (error) {
       console.error(error);
       void logEvent("ERROR", "BLE notification setup failed", { error }, "BLE");
       updateBleConnected(false);
+      return false;
     }
   };
 
@@ -1057,9 +1079,13 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       if (timeDiff > PRR_STALE_LC_MS) idsWithStaleData.add(String(item.id));
     }
     const updatedLcs = lcs.map((lcItem) => {
-      const existsInDataTimeById = dataTimeById.some(item => item.id === lcItem.id);
       const isStale = dataTimeById.length > 0 && idsWithStaleData.has(String(lcItem.id));
-      if (!existsInDataTimeById || isStale) {
+      // IMPORTANT:
+      // During PRR reconnect/recovery the stream can repopulate IDs gradually.
+      // Treating "not yet present in dataTimeById" as Tr.Err causes rapid flashes
+      // (valid value for ms, then Tr.Err again) across many LCs.
+      // Only force Tr.Err for IDs that were seen and are now stale.
+      if (isStale) {
         if (active_project?.id) {
           maybeLogLcValue(lcItem.id, active_project.id, 'Tr.Err', -99999999, lcItem.overload, lcItem.underload);
         }
@@ -1223,6 +1249,10 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   /** Friendly name for PRR report rows (ID column); falls back to deviceId if unnamed. */
   const prrBleDisplayNameRef = useRef<string | null>(null);
   const prevBlePrrLogRef = useRef<boolean | null>(null);
+  const bleConnectedRef = useRef<boolean>(bleConnected);
+  const prrReconnectAttemptRef = useRef<number>(0);
+  const prrReconnectInProgressRef = useRef<boolean>(false);
+  const prrReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Keep ref in sync every render so flushLcDisplayBuffer always merges buffer into latest lcs (preserves status_tare/tare)
   currentLcs.current = lcs;
 
@@ -2130,9 +2160,53 @@ const lastSoundTimeRef = useRef<number>(0);
     void 0; // placeholder; chart drawing can be implemented here
   }
 
+  const schedulePrrAutoReconnect = (reason: string) => {
+    const targetDeviceId = prrBleDeviceIdRef.current;
+    if (!targetDeviceId) return;
+    if (prrReconnectInProgressRef.current) return;
+    if (prrReconnectTimerRef.current) return;
+
+    const attempt = prrReconnectAttemptRef.current + 1;
+    const delay = Math.min(PRR_RECONNECT_MAX_MS, PRR_RECONNECT_BASE_MS * Math.pow(2, Math.max(0, attempt - 1)));
+    prrReconnectTimerRef.current = setTimeout(async () => {
+      prrReconnectTimerRef.current = null;
+      if (bleConnectedRef.current) {
+        prrReconnectAttemptRef.current = 0;
+        return;
+      }
+      const reconnectDeviceId = prrBleDeviceIdRef.current;
+      if (!reconnectDeviceId) return;
+
+      prrReconnectInProgressRef.current = true;
+      prrReconnectAttemptRef.current = attempt;
+      void logEvent("WARN", "PRR auto-reconnect attempt", { attempt, delay, reason, reconnectDeviceId }, "BLE");
+      let shouldRetry = false;
+      try {
+        // Defensive cleanup; ignore errors if stack already dropped link.
+        await BleClient.disconnect(reconnectDeviceId).catch(() => undefined);
+        const ok = await bleConnectToDevice(
+          reconnectDeviceId,
+          "prr",
+          (prrBleDisplayNameRef.current && prrBleDisplayNameRef.current.trim()) || undefined
+        );
+        shouldRetry = !ok;
+      } catch (error) {
+        void logEvent("ERROR", "PRR auto-reconnect failed", { attempt, error: String((error as any)?.message || error) }, "BLE");
+        shouldRetry = true;
+      } finally {
+        prrReconnectInProgressRef.current = false;
+        if (shouldRetry && !bleConnectedRef.current) {
+          schedulePrrAutoReconnect("retry_after_failure");
+        }
+      }
+    }, delay);
+  };
+
   function bt_disconnect(deviceId: string): void {
-    //console.log(`device ${deviceId} disconnected`);
     updateBleConnected(false);
+    if (prrBleDeviceIdRef.current && String(prrBleDeviceIdRef.current) === String(deviceId)) {
+      schedulePrrAutoReconnect("disconnect_callback");
+    }
   }
 
   useEffect(() => {
@@ -2162,7 +2236,7 @@ const lastSoundTimeRef = useRef<number>(0);
   }
 
   const bt_auto_reconnect = () => {
-    //console.log('===bt_auto_reconnect===')
+    schedulePrrAutoReconnect("manual_call")
   }
 
   const bt_read = async (device_id: any, service_uuid: any, characteristic_uuid: any) => {
