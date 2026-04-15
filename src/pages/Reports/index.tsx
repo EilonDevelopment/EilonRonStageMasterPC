@@ -65,8 +65,9 @@ const Report: FC = () => {
   const PAGE_SIZE = 10
   /** First load only: fewer rows = faster UI (same date range; use Load more for full cap). */
   const REPORT_PREVIEW_ROW_LIMIT = 800
-  const MAX_REPORT_LOGS = 15000
-  const MAX_ANDROID_EXPORT_ROWS = 20000
+  const MAX_EXPORT_ROWS = 100000
+  const MAX_EXPORT_FETCH_ROWS = MAX_EXPORT_ROWS + 1
+  const MAX_REPORT_LOGS = MAX_EXPORT_ROWS
   const [page, setPage] = useState<number>(1)
 
   const reportIntervalSeconds = (projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId))?.report_interval_seconds ?? 60) || 60;
@@ -116,7 +117,7 @@ const Report: FC = () => {
     const pidCandidates: any[] = [];
     if (pidNorm) pidCandidates.push(pidNorm);
     if (Number.isFinite(pidNum)) pidCandidates.push(pidNum);
-    const effectiveLimit = Math.max(1, Math.min(limitOverride ?? MAX_REPORT_LOGS, MAX_REPORT_LOGS));
+    const effectiveLimit = Math.max(1, Math.min(limitOverride ?? MAX_REPORT_LOGS, MAX_EXPORT_FETCH_ROWS));
     // Do not split the limit by store. In real projects most rows are usually in `logs`,
     // so dividing by 3 can return too few rows and make reports look empty/incomplete.
     const maxPerStore = effectiveLimit;
@@ -510,6 +511,7 @@ const Report: FC = () => {
                 <tr className="text-left">
                   <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium ">{t("Report.Title")}</th>
                   <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium ">{t("Report.ID")}</th>
+                  <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-24">Data</th>
                   <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-36">Status</th>
                   <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-28">{t("Report.Load")}</th>
                   <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-28">{t("Report.Battery")}</th>
@@ -527,11 +529,13 @@ const Report: FC = () => {
                   const idCell = isPrrLink ? (sItem.unit != null && String(sItem.unit) !== '' ? String(sItem.unit) : '—') : lc?.id;
                   const isTrErr = !isPrrLink && ((sItem.log_type != null && String(sItem.log_type).toLowerCase() === 'err') || Number(sItem.value) === -99999999);
                   const displayLoad = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : `${sItem.value ?? ''} ${sItem.unit ?? ''}`.trim());
+                  const dataSource = String(sItem.log_type || '').toLowerCase() === 'agg' ? '5-min chunk' : 'raw';
                   const statusMeta = getStatusMeta(getLogStatus(sItem, lc));
                   return (
                     <tr key={sKey} className="w-full">
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{titleCell}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{idCell}</td>
+                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{dataSource}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">
                         <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${statusMeta.className}`}>
                           {statusMeta.label}
@@ -672,17 +676,39 @@ const Report: FC = () => {
     if (b == null || String(b).trim() === '') return '';
     return `${String(b).trim()}%`;
   };
+  const formatBulkDetails = (log: any): string => {
+    const lt = String(log?.log_type || '').toLowerCase();
+    if (lt !== 'agg') return '-';
+    const parts: string[] = [];
+    const pushNum = (label: string, value: any) => {
+      const n = Number(value);
+      if (Number.isFinite(n)) parts.push(`${label}=${n}`);
+    };
+    pushNum('count', log?.count);
+    pushNum('vmin', log?.value_min);
+    pushNum('vmax', log?.value_max);
+    pushNum('ok', log?.count_ok);
+    pushNum('under', log?.count_underload);
+    pushNum('over', log?.count_overload);
+    pushNum('danger', log?.count_danger);
+    pushNum('err', log?.count_err);
+    return parts.length > 0 ? parts.join(' | ') : '5-min chunk';
+  };
   const getReportRows = (data: any[]) =>
     data.map((log: any) => {
       const plt = String(log.log_type || '').toLowerCase();
+      const source = plt === 'agg' ? '5-min chunk' : 'raw';
+      const bulk = formatBulkDetails(log);
       if (plt === 'prr_connected' || plt === 'prr_disconnected') {
         const status = getLogStatus(log);
         return {
           Name: plt === 'prr_connected' ? 'PRR connected' : 'PRR disconnected',
           ID: log.unit != null ? String(log.unit) : '',
+          Source: source,
           Status: status,
           Load: log.unit != null ? String(log.unit) : '',
           Battery: '',
+          Bulk: bulk,
           Time: format(new Date(log.log_date), 'yyyy-MM-dd HH:mm:ss'),
         };
       }
@@ -691,9 +717,11 @@ const Report: FC = () => {
       return {
         Name: (lc?.title || '').toString(),
         ID: (lc?.id || log.lc_id || '').toString(),
+        Source: source,
         Status: status,
         Load: formatLogLoad(log),
         Battery: formatBattery(log.battery),
+        Bulk: bulk,
         Time: format(new Date(log.log_date), 'yyyy-MM-dd HH:mm:ss'),
       };
     });
@@ -701,8 +729,8 @@ const Report: FC = () => {
   const openMailtoFallback = (subject: string, logData: any[]) => {
     const project = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
     const reportRows = getReportRows(logData);
-    const lines = reportRows.slice(0, 50).map((r) => `${r.Name}\t${r.ID}\t${r.Status}\t${r.Load}\t${r.Battery}\t${r.Time}`);
-    const body = `Report: ${project?.title ?? ''}\nDate range: ${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}\nTotal rows: ${logData.length}\n\nName\tID\tStatus\tLoad\tBattery\tTime\n${lines.join('\n')}${logData.length > 50 ? '\n...' : ''}`;
+    const lines = reportRows.slice(0, 50).map((r) => `${r.Name}\t${r.ID}\t${r.Source}\t${r.Status}\t${r.Load}\t${r.Battery}\t${r.Time}`);
+    const body = `Report: ${project?.title ?? ''}\nDate range: ${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}\nTotal rows: ${logData.length}\n\nName\tID\tData\tStatus\tLoad\tBattery\tTime\n${lines.join('\n')}${logData.length > 50 ? '\n...' : ''}`;
     const mailto = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     window.location.href = mailto;
   };
@@ -796,14 +824,14 @@ const Report: FC = () => {
     const { project_id, fromVal, toVal } = lastQueryRef.current;
     const from = getTime(new Date(fromVal).setHours(0, 0, 0, 0));
     const to = getTime(new Date(toVal).setHours(23, 59, 59, 999));
-    const fullRows = await fetchProjectLogsInRange(project_id, from, to, MAX_REPORT_LOGS);
+    const fullRows = await fetchProjectLogsInRange(project_id, from, to, MAX_EXPORT_FETCH_ROWS);
     return fullRows.sort((a: any, b: any) => (b.log_date || 0) - (a.log_date || 0));
   };
 
   const handleExport = async (type: string) => {
     setExportBusy(true);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    const logData = await getExportDataset();
+    let logData = await getExportDataset();
 
     if (logData.length === 0) {
       Swal.fire({
@@ -816,20 +844,29 @@ const Report: FC = () => {
       setExportBusy(false);
       return;
     }
+    if (logData.length > MAX_EXPORT_ROWS) {
+      setExportBusy(false);
+      const decision = await Swal.fire({
+        title: t('Report.Export') || 'Export',
+        text: `Too many rows for export (${logData.length.toLocaleString()}). Continue with a truncated export of the first ${MAX_EXPORT_ROWS.toLocaleString()} rows? To export fewer than ${MAX_EXPORT_ROWS.toLocaleString()} rows, reduce the date range or change filters.`,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Continue',
+        cancelButtonText: t('Common.Cancel') || 'Cancel',
+        heightAuto: false,
+      });
+      if (!decision.isConfirmed) {
+        return;
+      }
+      logData = logData.slice(0, MAX_EXPORT_ROWS);
+      setExportBusy(true);
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    }
 
     try {
     switch (type) {
       case t('Report.CSV'): {
         try {
-          if ((platformType === 'android' || platformType === 'ios') && logData.length > MAX_ANDROID_EXPORT_ROWS) {
-            Swal.fire({
-              title: t('Report.Export') || 'Export',
-              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on mobile.`,
-              icon: 'warning',
-              heightAuto: false,
-            });
-            return;
-          }
           const project = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
           const escapeCsv = (v: any) => {
             const s = v == null ? '' : String(v);
@@ -837,8 +874,8 @@ const Report: FC = () => {
             return s;
           };
           const reportRows = getReportRows(logData);
-          const rows: string[] = ['Name,ID,Status,Load,Battery,Time'];
-          reportRows.forEach((r) => rows.push([r.Name, r.ID, r.Status, r.Load, r.Battery, r.Time].map(escapeCsv).join(',')));
+          const rows: string[] = ['Name,ID,Data,Status,Load,Battery,Bulk,Time'];
+          reportRows.forEach((r) => rows.push([r.Name, r.ID, r.Source, r.Status, r.Load, r.Battery, r.Bulk, r.Time].map(escapeCsv).join(',')));
           const csvStr = rows.join('\r\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
 
@@ -852,9 +889,9 @@ const Report: FC = () => {
             URL.revokeObjectURL(url);
           } else if (platformType === 'android' || platformType === 'ios') {
                 const reportRows = getReportRows(logData);
-                const csvChunks: string[] = ['\uFEFFName,ID,Status,Load,Battery,Time\r\n'];
+                const csvChunks: string[] = ['\uFEFFName,ID,Data,Status,Load,Battery,Bulk,Time\r\n'];
                 reportRows.forEach((r) => {
-                  csvChunks.push([r.Name, r.ID, r.Status, r.Load, r.Battery, r.Time].map(escapeCsv).join(',') + '\r\n');
+                  csvChunks.push([r.Name, r.ID, r.Source, r.Status, r.Load, r.Battery, r.Bulk, r.Time].map(escapeCsv).join(',') + '\r\n');
                 });
                 await writeTextFileInChunks(fileName, csvChunks);
             const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
@@ -883,15 +920,6 @@ const Report: FC = () => {
       }
       case t('Report.JSON'): {
         if (platformType === 'android' || platformType === 'ios') {
-          if (logData.length > MAX_ANDROID_EXPORT_ROWS) {
-            Swal.fire({
-              title: t('Report.Export') || 'Export',
-              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on mobile.`,
-              icon: 'warning',
-              heightAuto: false,
-            });
-            return;
-          }
           await runNativeExport(async () => {
             try {
               const reportRows = getReportRows(logData);
@@ -921,7 +949,8 @@ const Report: FC = () => {
         }
         try {
           const reportRows = getReportRows(logData);
-          const jsonStr = JSON.stringify(reportRows, null, 2);
+          const jsonRows = reportRows.map(({ Bulk, ...rest }) => rest);
+          const jsonStr = JSON.stringify(jsonRows, null, 2);
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.json`;
           if (platformType === 'web') {
             const blob = new Blob([jsonStr], { type: 'application/json' });
@@ -943,15 +972,6 @@ const Report: FC = () => {
       }
       case t('Report.SQL'): {
         if (platformType === 'android' || platformType === 'ios') {
-          if (logData.length > MAX_ANDROID_EXPORT_ROWS) {
-            Swal.fire({
-              title: t('Report.Export') || 'Export',
-              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on mobile.`,
-              icon: 'warning',
-              heightAuto: false,
-            });
-            return;
-          }
           await runNativeExport(async () => {
             try {
               const reportRows = getReportRows(logData);
@@ -962,7 +982,7 @@ const Report: FC = () => {
               const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.sql`;
               const sqlChunks: string[] = [];
               reportRows.forEach((r) => {
-                sqlChunks.push(`INSERT INTO logs (\`Name\`,\`ID\`,\`Status\`,\`Load\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Name)},${escape(r.ID)},${escape(r.Status)},${escape(r.Load)},${escape(r.Battery)},${escape(r.Time)});\n`);
+                sqlChunks.push(`INSERT INTO logs (\`Name\`,\`ID\`,\`Data\`,\`Status\`,\`Load\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Name)},${escape(r.ID)},${escape(r.Source)},${escape(r.Status)},${escape(r.Load)},${escape(r.Battery)},${escape(r.Time)});\n`);
               });
               await writeTextFileInChunks(fileName, sqlChunks);
               const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
@@ -989,7 +1009,7 @@ const Report: FC = () => {
             return `'${s}'`;
           };
           const lines: string[] = reportRows.map(
-            (r) => `INSERT INTO logs (\`Name\`,\`ID\`,\`Status\`,\`Load\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Name)},${escape(r.ID)},${escape(r.Status)},${escape(r.Load)},${escape(r.Battery)},${escape(r.Time)});`
+            (r) => `INSERT INTO logs (\`Name\`,\`ID\`,\`Data\`,\`Status\`,\`Load\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Name)},${escape(r.ID)},${escape(r.Source)},${escape(r.Status)},${escape(r.Load)},${escape(r.Battery)},${escape(r.Time)});`
           );
           const sqlStr = lines.join('\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.sql`;
@@ -1013,15 +1033,6 @@ const Report: FC = () => {
       }
       case t('Report.PDF'): {
         if (platformType === 'android' || platformType === 'ios') {
-          if (logData.length > MAX_ANDROID_EXPORT_ROWS) {
-            Swal.fire({
-              title: t('Report.Export') || 'Export',
-              text: `Too many rows (${logData.length.toLocaleString()}). Please reduce date range below ${MAX_ANDROID_EXPORT_ROWS.toLocaleString()} rows on mobile.`,
-              icon: 'warning',
-              heightAuto: false,
-            });
-            return;
-          }
           await runNativeExport(async () => {
             try {
               const totalRows = logData.length;
@@ -1031,7 +1042,7 @@ const Report: FC = () => {
               const doc = new jsPDF('p', 'mm', 'a4');
               const pageW = doc.internal.pageSize.getWidth();
               const margin = 10;
-              const colWidths = [34, 18, 24, 24, 18, 50];
+              const colWidths = [28, 16, 18, 22, 22, 14, 40];
               const rowHeight = 7;
               let y = margin;
               doc.setFontSize(14);
@@ -1042,7 +1053,7 @@ const Report: FC = () => {
               y += 6;
               doc.text(`${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}`, margin, y);
               y += 10;
-              const headers = ['Name', 'ID', 'Status', t('Report.Load'), t('Report.Battery'), t('Report.Time')];
+              const headers = ['Name', 'ID', 'Data', 'Status', t('Report.Load'), t('Report.Battery'), t('Report.Time')];
               doc.setFontSize(8);
               doc.setFillColor(240, 240, 240);
               doc.rect(margin, y, pageW - 2 * margin, rowHeight, 'F');
@@ -1070,10 +1081,10 @@ const Report: FC = () => {
                   y += rowHeight;
                 }
                 const r = rowsForPdf[i];
-                const row = [r.Name.slice(0, 16), r.ID.slice(0, 10), r.Status.slice(0, 14), r.Load.slice(0, 12), r.Battery.slice(0, 8), r.Time.slice(0, 19)];
+                const row = [r.Name.slice(0, 14), r.ID.slice(0, 9), r.Source.slice(0, 12), r.Status.slice(0, 12), r.Load.slice(0, 12), r.Battery.slice(0, 7), r.Time.slice(0, 19)];
                 row.forEach((cell, ii) => {
                   const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
-                  if (ii === 2) {
+                  if (ii === 3) {
                     const meta = getStatusMeta(r.Status as ReportStatus);
                     doc.setTextColor(meta.textColor);
                     doc.text(cell, x, y + 5);
@@ -1122,7 +1133,7 @@ const Report: FC = () => {
           const doc = new jsPDF('p', 'mm', 'a4');
           const pageW = doc.internal.pageSize.getWidth();
           const margin = 10;
-          const colWidths = [34, 18, 24, 24, 18, 50];
+              const colWidths = [28, 16, 18, 22, 22, 14, 40];
           const rowHeight = 7;
           let y = margin;
           doc.setFontSize(14);
@@ -1133,7 +1144,7 @@ const Report: FC = () => {
           y += 6;
           doc.text(`${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}`, margin, y);
           y += 10;
-          const headers = ['Name', 'ID', 'Status', t('Report.Load'), t('Report.Battery'), t('Report.Time')];
+          const headers = ['Name', 'ID', 'Data', 'Status', t('Report.Load'), t('Report.Battery'), t('Report.Time')];
           doc.setFontSize(8);
           doc.setFillColor(240, 240, 240);
           doc.rect(margin, y, pageW - 2 * margin, rowHeight, 'F');
@@ -1162,10 +1173,10 @@ const Report: FC = () => {
               y += rowHeight;
             }
             const r = reportRowsPdf[i];
-            const row = [r.Name.slice(0, 16), r.ID.slice(0, 10), r.Status.slice(0, 14), r.Load.slice(0, 12), r.Battery.slice(0, 8), r.Time.slice(0, 19)];
+            const row = [r.Name.slice(0, 14), r.ID.slice(0, 9), r.Source.slice(0, 12), r.Status.slice(0, 12), r.Load.slice(0, 12), r.Battery.slice(0, 7), r.Time.slice(0, 19)];
             row.forEach((cell, ii) => {
               const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
-              if (ii === 2) {
+              if (ii === 3) {
                 const meta = getStatusMeta(r.Status as ReportStatus);
                 doc.setTextColor(meta.textColor);
                 doc.text(cell, x, y + 5);
@@ -1210,8 +1221,8 @@ const Report: FC = () => {
             return s;
           };
           const reportRows = getReportRows(logData);
-          const csvRows: string[] = ['Name,ID,Status,Load,Battery,Time'];
-          reportRows.forEach((r) => csvRows.push([r.Name, r.ID, r.Status, r.Load, r.Battery, r.Time].map(escapeCsv).join(',')));
+          const csvRows: string[] = ['Name,ID,Data,Status,Load,Battery,Bulk,Time'];
+          reportRows.forEach((r) => csvRows.push([r.Name, r.ID, r.Source, r.Status, r.Load, r.Battery, r.Bulk, r.Time].map(escapeCsv).join(',')));
           const csvStr = '\uFEFF' + csvRows.join('\r\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
           const bodyText = project?.title

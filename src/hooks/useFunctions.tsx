@@ -738,6 +738,7 @@ export default function useFunctions() {
           const val = Number(row.value)
           const rval = Number(row.realval)
           const rowStatus = String(row.log_type || row.status_code || 'ok').toLowerCase()
+          const isErrSample = rowStatus === 'err' || val === -99999999 || rval === -99999999
           const b = row.battery != null ? Number(row.battery) : undefined
 
           let a = aggMap.get(key)
@@ -752,9 +753,11 @@ export default function useFunctions() {
               underload: row.underload,
               count: 0,
               value_sum: 0,
+              value_count: 0,
               value_min: Number.POSITIVE_INFINITY,
               value_max: Number.NEGATIVE_INFINITY,
               realval_sum: 0,
+              realval_count: 0,
               realval_min: Number.POSITIVE_INFINITY,
               realval_max: Number.NEGATIVE_INFINITY,
               last_value: undefined as any,
@@ -774,13 +777,15 @@ export default function useFunctions() {
           }
 
           a.count += 1
-          if (Number.isFinite(val)) {
+          if (!isErrSample && Number.isFinite(val)) {
             a.value_sum += val
+            a.value_count += 1
             a.value_min = Math.min(a.value_min, val)
             a.value_max = Math.max(a.value_max, val)
           }
-          if (Number.isFinite(rval)) {
+          if (!isErrSample && Number.isFinite(rval)) {
             a.realval_sum += rval
+            a.realval_count += 1
             a.realval_min = Math.min(a.realval_min, rval)
             a.realval_max = Math.max(a.realval_max, rval)
           }
@@ -803,8 +808,8 @@ export default function useFunctions() {
         }
 
         const aggRows = Array.from(aggMap.values()).map((a: any) => {
-          const value_avg = a.count > 0 ? a.value_sum / a.count : undefined
-          const realval_avg = a.count > 0 ? a.realval_sum / a.count : undefined
+          const value_avg = a.value_count > 0 ? a.value_sum / a.value_count : undefined
+          const realval_avg = a.realval_count > 0 ? a.realval_sum / a.realval_count : undefined
           return {
             project_id: a.project_id,
             lc_id: a.lc_id,

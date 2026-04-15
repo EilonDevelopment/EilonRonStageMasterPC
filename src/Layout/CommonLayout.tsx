@@ -959,6 +959,9 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
           (displayName && displayName.trim()) || deviceId;
       }
       updateBleConnected(true);
+      if (type === 'prr') {
+        logPrrLinkEventSafely('connected');
+      }
       await BleClient.getServices(deviceId);
       void logEvent("INFO", "BLE device connected", { deviceId, type }, "BLE");
       await BleClient.startNotifications(
@@ -1248,7 +1251,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const prrBleDeviceIdRef = useRef<string | null>(null);
   /** Friendly name for PRR report rows (ID column); falls back to deviceId if unnamed. */
   const prrBleDisplayNameRef = useRef<string | null>(null);
-  const prevBlePrrLogRef = useRef<boolean | null>(null);
+  const lastPrrLinkEventRef = useRef<{ kind: 'connected' | 'disconnected'; ts: number } | null>(null);
+  const prevBlePrrStateRef = useRef<boolean | null>(null);
   const bleConnectedRef = useRef<boolean>(bleConnected);
   const prrReconnectAttemptRef = useRef<number>(0);
   const prrReconnectInProgressRef = useRef<boolean>(false);
@@ -1290,6 +1294,19 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     if (now - (lastReportTimeRef.current[key] ?? 0) < intervalSec * 1000) return;
     lastReportTimeRef.current[key] = now;
     f_log_lc_value(lcId, projectId, value, realval, overload, underload, batteryParam);
+  };
+
+  const logPrrLinkEventSafely = (kind: 'connected' | 'disconnected') => {
+    const proj = activeProjectRef.current?.id ? activeProjectRef.current : active_project;
+    if (!proj?.id || !proj?.cycle) return;
+    const reportLabel = (prrBleDisplayNameRef.current && prrBleDisplayNameRef.current.trim()) || prrBleDeviceIdRef.current;
+    if (!reportLabel) return;
+
+    const nowTs = Date.now();
+    const prev = lastPrrLinkEventRef.current;
+    if (prev && prev.kind === kind && nowTs - prev.ts < 2000) return;
+    lastPrrLinkEventRef.current = { kind, ts: nowTs };
+    f_log_prr_link_event(proj.id, kind, reportLabel);
   };
 
  /* const flushLcDisplayBuffer = () => {
@@ -2205,30 +2222,23 @@ const lastSoundTimeRef = useRef<number>(0);
   function bt_disconnect(deviceId: string): void {
     updateBleConnected(false);
     if (prrBleDeviceIdRef.current && String(prrBleDeviceIdRef.current) === String(deviceId)) {
+      logPrrLinkEventSafely('disconnected');
       schedulePrrAutoReconnect("disconnect_callback");
     }
   }
 
+  // Fallback path: if a platform misses native disconnect callback ordering,
+  // still emit PRR link events based on BLE state transitions (dedupe-protected).
   useEffect(() => {
-    const proj = active_project;
-    if (!proj?.id || !proj?.cycle) {
-      prevBlePrrLogRef.current = bleConnected;
-      return;
-    }
-    const devId = prrBleDeviceIdRef.current;
-    const reportLabel = (prrBleDisplayNameRef.current && prrBleDisplayNameRef.current.trim()) || devId;
-    const prev = prevBlePrrLogRef.current;
+    const prev = prevBlePrrStateRef.current;
     if (prev === null) {
-      prevBlePrrLogRef.current = bleConnected;
+      prevBlePrrStateRef.current = bleConnected;
       return;
     }
-    if (bleConnected && !prev && reportLabel) {
-      f_log_prr_link_event(proj.id, 'connected', reportLabel);
+    if (bleConnected !== prev) {
+      logPrrLinkEventSafely(bleConnected ? 'connected' : 'disconnected');
     }
-    if (!bleConnected && prev && reportLabel) {
-      f_log_prr_link_event(proj.id, 'disconnected', reportLabel);
-    }
-    prevBlePrrLogRef.current = bleConnected;
+    prevBlePrrStateRef.current = bleConnected;
   }, [bleConnected, active_project?.id, active_project?.cycle]);
 
   const usb_scan = () => {
