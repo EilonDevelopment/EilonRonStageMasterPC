@@ -5,6 +5,7 @@ import { codeSlashSharp, cubeSharp, documentSharp, downloadSharp, mailSharp, ref
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
+import { Device } from '@capacitor/device';
 
 import CommonLayout from "../../Layout/CommonLayout";
 import useAppData from "../../hooks/useAppData";
@@ -14,11 +15,10 @@ import { normalizeProjectId } from "../../helper/functions";
 import { buildReportGroupsAsync, type ReportGroupQuery } from "../../helper/reportGrouping";
 import { db } from '../../db'
 import Swal from "sweetalert2";
-import { format, getTime, getUnixTime } from "date-fns"
+import { eachDayOfInterval, endOfDay, format, getTime, startOfDay } from "date-fns"
 import { jsPDF } from 'jspdf';
 import { EmailComposer } from "@awesome-cordova-plugins/email-composer";
 import { toast } from 'react-toastify';
-import { renderToString } from 'react-dom/server'
 import './index.css';
 
 interface LogFilter {
@@ -29,10 +29,38 @@ interface LogFilter {
   err: boolean;
   start: Date;
   end: Date;
+  hourStart: string;
+  hourEnd: string;
+}
+
+/** Raw rows stay in IndexedDB; UI + exports never exceed this many logs. */
+const MAX_REPORT_LOGS = 100_000;
+
+/** Merge K arrays sorted by log_date descending into one list of at most `cap` items. */
+function mergeSortedLogArraysDesc(arrays: any[][], cap: number): any[] {
+  const heads = arrays.map(() => 0);
+  const out: any[] = [];
+  while (out.length < cap) {
+    let bestIdx = -1;
+    let bestTs = -Infinity;
+    for (let i = 0; i < arrays.length; i++) {
+      const h = heads[i];
+      const arr = arrays[i];
+      if (h >= arr.length) continue;
+      const ts = Number(arr[h]?.log_date ?? 0);
+      if (ts >= bestTs) {
+        bestTs = ts;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx < 0) break;
+    out.push(arrays[bestIdx][heads[bestIdx]++]);
+  }
+  return out;
 }
 
 const Report: FC = () => {
-  const { platformType, projects, curProject, lcs, logs, layoutRefreshRef } = useAppData();
+  const { platformType, projects, curProject, lcs, layoutRefreshRef } = useAppData();
   const { t } = useTranslation();
   const tr = (key: string, fallback: string) => {
     const value = t(key);
@@ -53,38 +81,70 @@ const Report: FC = () => {
     danger: true,
     underload: true,
     err: false,
-    start: new Date(),
-    end: new Date(),
-  } as LogFilter);
+    start: startOfDay(new Date()),
+    end: endOfDay(new Date()),
+    hourStart: '00:00',
+    hourEnd: '23:59',
+  });
   const [logList, setLogList] = useState<any>(null)
   const [loading, setLoading] = useState<boolean>(false)
+  const [loadProgressPct, setLoadProgressPct] = useState<number>(0)
+  const [loadProgressText, setLoadProgressText] = useState<string>('')
   /** Blocks UI during CSV/PDF/email prep (native Share + large files can take several seconds). */
   const [exportBusy, setExportBusy] = useState(false)
-  const [loadStatus, setLoadStatus] = useState<boolean>(false)
   const [rawLogs, setRawLogs] = useState<any[] | null>(null);
+  const [storageTotal, setStorageTotal] = useState<number>(0)
+  const [storageFree, setStorageFree] = useState<number>(0)
+  const [reportsStorageUsed, setReportsStorageUsed] = useState<number>(0)
   const PAGE_SIZE = 10
-  /** First load only: fewer rows = faster UI (same date range; use Load more for full cap). */
-  const REPORT_PREVIEW_ROW_LIMIT = 800
-  const MAX_EXPORT_ROWS = 100000
-  const MAX_EXPORT_FETCH_ROWS = MAX_EXPORT_ROWS + 1
-  const MAX_REPORT_LOGS = MAX_EXPORT_ROWS
   const [page, setPage] = useState<number>(1)
 
   const reportIntervalSeconds = (projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId))?.report_interval_seconds ?? 60) || 60;
+  const isSingleDayRange = format(filter.start, 'yyyy-MM-dd') === format(filter.end, 'yyyy-MM-dd');
+  const activeTimeRange = useMemo(() => {
+    if (!isSingleDayRange) return null;
+    const parseHm = (value: string, fallback: number) => {
+      const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(value || '').trim());
+      if (!m) return fallback;
+      return Number(m[1]) * 60 + Number(m[2]);
+    };
+    const startMin = parseHm(filter.hourStart, 0);
+    const endMin = parseHm(filter.hourEnd, 23 * 60 + 59);
+    if (startMin > endMin) return null;
+    return { startMin, endMin };
+  }, [isSingleDayRange, filter.hourStart, filter.hourEnd]);
 
-  // Load data only when project/date changes or user explicitly refreshes.
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const [pendingRefresh, setPendingRefresh] = useState(false);
+  const totalUsedBytes = Math.max(0, storageTotal - storageFree);
+  const reportsUsedBytesClamped = Math.min(totalUsedBytes, Math.max(0, reportsStorageUsed));
+  const otherUsedBytes = Math.max(0, totalUsedBytes - reportsUsedBytesClamped);
+  const freePct = storageTotal > 0 ? (storageFree / storageTotal) * 100 : 0;
+  const isLowStorage = storageTotal > 0 && freePct <= 10;
+  const formatGiB = (bytes: number) => `${(bytes / (1024 ** 3)).toFixed(2)} GB`;
+
+  // Load only when user explicitly taps Refresh.
   useEffect(() => {
-    if (selectedId) {
-      load_reports(selectedId, filter.start, filter.end, reportIntervalSeconds);
-      setLoadStatus(false)
-    } else {
+    if (reloadNonce === 0) return;
+    if (!selectedId || !filter.start || !filter.end) {
       setLogList(null)
       setRawLogs(null)
+      return;
     }
-  }, [selectedId, filter.start, filter.end, loadStatus === true, reportIntervalSeconds])
+    if (getTime(filter.start) > getTime(filter.end)) {
+      setLogList(null)
+      setRawLogs(null)
+      return;
+    }
+    if (isSingleDayRange && !activeTimeRange) {
+      setLogList(null)
+      setRawLogs(null)
+      return;
+    }
+    void load_reports(selectedId, filter.start, filter.end, reportIntervalSeconds);
+  }, [reloadNonce])
 
   // Helper function to merge and deduplicate logs.
-  // Important: aggregated rows (logs_agg) might not have `id`, so we must dedupe by a stable composite key.
   const mergeAndDeduplicateLogs = (logArrays: any) => {
     const getKey = (log: any) => {
       const hasId = log?.id != null && String(log.id).trim() !== '';
@@ -107,112 +167,210 @@ const Report: FC = () => {
     return Array.from(logMap.values());
   }
 
-  const fetchProjectLogsInRange = async (projectId: string, from: number, to: number, limitOverride?: number) => {
-    reportTrace('INICIO: fetchProjectLogsInRange', { projectId, from, to, limitOverride });
+  const fetchLogsForSingleDay = async (
+    projectId: string,
+    dayKey: string,
+    query: ReportGroupQuery,
+    onProgress?: (pct: number, text: string) => void,
+    isCancelled?: () => boolean,
+    opts?: {
+      maxTotal: number;
+      progressBase?: number;
+      progressSpan?: number;
+      dayIndex?: number;
+      dayCount?: number;
+      /** Rows already counted toward global cap (for message only). */
+      globalRowsSoFar?: number;
+      /** Optional HH:mm range in minutes, only for single-day queries. */
+      dayTimeWindow?: { startMin: number; endMin: number } | null;
+    }
+  ): Promise<{ rows: any[]; cancelled: boolean; rowsReadFromDb: number }> => {
+    const maxTotal = Math.max(1, opts?.maxTotal ?? MAX_REPORT_LOGS);
+    const progressBase = opts?.progressBase ?? 0;
+    const progressSpan = opts?.progressSpan ?? 70;
+    const globalOff = opts?.globalRowsSoFar ?? 0;
+    const dayLabel =
+      opts?.dayIndex != null && opts?.dayCount != null
+        ? `day ${opts.dayIndex + 1}/${opts.dayCount} (${dayKey})`
+        : dayKey;
+
     const pidNorm = normalizeProjectId(projectId);
     const pidNum = Number(pidNorm);
-    // IMPORTANT: Dexie compound-index lookups are type-sensitive.
-    // If older DB rows stored project_id as a number, querying with "1" (string) returns 0 rows.
-    // So we try both string and number candidates.
     const pidCandidates: any[] = [];
     if (pidNorm) pidCandidates.push(pidNorm);
     if (Number.isFinite(pidNum)) pidCandidates.push(pidNum);
-    const effectiveLimit = Math.max(1, Math.min(limitOverride ?? MAX_REPORT_LOGS, MAX_EXPORT_FETCH_ROWS));
-    // Do not split the limit by store. In real projects most rows are usually in `logs`,
-    // so dividing by 3 can return too few rows and make reports look empty/incomplete.
-    const maxPerStore = effectiveLimit;
-    const activeAll: any[] = [];
-    const aggAll: any[] = [];
-    const archiveAll: any[] = [];
 
-    const dateCandidates: Array<{ label: string; from: any; to: any }> = [
-      { label: 'number', from, to },
-      { label: 'string', from: String(from), to: String(to) },
-    ];
+    const dayBase = new Date(dayKey + 'T12:00:00');
+    const dayStartMs = getTime(startOfDay(dayBase));
+    const dayEndMs = getTime(endOfDay(dayBase));
+    const queryStartMs = opts?.dayTimeWindow ? dayStartMs + opts.dayTimeWindow.startMin * 60_000 : dayStartMs;
+    const queryEndMs = opts?.dayTimeWindow
+      ? Math.min(dayEndMs, dayStartMs + opts.dayTimeWindow.endMin * 60_000 + 59_999)
+      : dayEndMs;
 
-    // Note: queries are type-sensitive in Dexie compound indexes, so we try both string & number project_id,
-    // and number & string ranges for log_date/bucket. This is intentional for backward compatibility.
-    const isPreviewLoad = typeof limitOverride === 'number' && limitOverride < MAX_REPORT_LOGS;
+    const activeStatuses = (() => {
+      const set = new Set<string>();
+      if (query.ok) set.add('ok');
+      if (query.overload) set.add('overload');
+      if (query.danger) set.add('danger');
+      if (query.underload) set.add('underload');
+      if (query.trerr) set.add('err');
+      return Array.from(set);
+    })();
 
-    // Preview-first optimization:
-    // query active logs first (usually the largest source), then hit agg/archive only if needed.
-    for (const pidCandidate of pidCandidates) {
-      for (const dt of dateCandidates) {
-        if (activeAll.length >= maxPerStore) break;
-        const rows = await db.logs
-          .where('[project_id+log_date]')
-          .between([pidCandidate, dt.from], [pidCandidate, dt.to], true, true)
+    const filterEnabled = query.ok || query.overload || query.danger || query.underload || query.trerr;
+
+    let rowsReadFromDb = 0;
+    const bumpProgress = (phaseLabel: string, dayKeptCount: number) => {
+      const shown = Math.min(globalOff + dayKeptCount, MAX_REPORT_LOGS);
+      const pct = progressBase + Math.min(progressSpan, Math.round((shown / MAX_REPORT_LOGS) * progressSpan));
+      onProgress?.(
+        pct,
+        `${phaseLabel} · ${dayLabel} — ${shown.toLocaleString()} / ${MAX_REPORT_LOGS.toLocaleString()} logs (IndexedDB read ~${rowsReadFromDb.toLocaleString()} rows this day)`
+      );
+    };
+
+    const queryByPidDay = (pidCandidate: any, upperMs = queryEndMs) =>
+      db.daily_logs
+        .where('[project_id+day_key+log_date]')
+        .between([pidCandidate, dayKey, queryStartMs], [pidCandidate, dayKey, upperMs], true, true)
+        .reverse();
+
+    let merged: any[] = [];
+
+    if (!filterEnabled) {
+      for (const pidCandidate of pidCandidates) {
+        if (isCancelled?.()) return { rows: [], cancelled: true, rowsReadFromDb };
+        const rows = await queryByPidDay(pidCandidate).limit(maxTotal).toArray();
+        rowsReadFromDb += rows?.length ?? 0;
+        merged = rows || [];
+        bumpProgress('Reading (all statuses)', merged.length);
+        if (merged.length > 0) break;
+      }
+    } else {
+      // Stream newest -> oldest with one indexed cursor path.
+      // This avoids large per-status reads that can stall around 2%.
+      const activeSet = new Set(activeStatuses.map((s) => String(s).toLowerCase()));
+      const matchesFilter = (row: any) => {
+        const lt = String(row?.log_type || '').toLowerCase();
+        if (lt === 'prr_connected' || lt === 'prr_disconnected') return true;
+        const status = String(row?.status_code || lt || '').toLowerCase();
+        return activeSet.has(status);
+      };
+      const STREAM_CHUNK = 20_000;
+      const MAX_SCANNED_ROWS = 600_000;
+      for (const pidCandidate of pidCandidates) {
+        if (isCancelled?.()) return { rows: [], cancelled: true, rowsReadFromDb };
+        let upper = queryEndMs;
+        let scannedForPid = 0;
+        const keptRows: any[] = [];
+        while (upper >= queryStartMs && keptRows.length < maxTotal && scannedForPid < MAX_SCANNED_ROWS) {
+          if (isCancelled?.()) return { rows: [], cancelled: true, rowsReadFromDb };
+          const slice = await queryByPidDay(pidCandidate, upper).limit(STREAM_CHUNK).toArray();
+          if (!slice || slice.length === 0) break;
+          rowsReadFromDb += slice.length;
+          scannedForPid += slice.length;
+          for (const row of slice) {
+            if (matchesFilter(row)) {
+              keptRows.push(row);
+              if (keptRows.length >= maxTotal) break;
+            }
+          }
+          bumpProgress('Scanning day stream', keptRows.length);
+          const oldestTs = Number(slice[slice.length - 1]?.log_date ?? queryStartMs) - 1;
+          if (!Number.isFinite(oldestTs) || oldestTs < queryStartMs) break;
+          upper = oldestTs;
+        }
+        if (keptRows.length > 0) {
+          merged = keptRows.slice(0, maxTotal);
+          break;
+        }
+      }
+      if (merged.length === 0) {
+        reportTrace('fetchLogsForSingleDay: no rows for filtered day-stream scan', { dayKey, pidNorm, statuses: activeStatuses });
+      }
+    }
+
+    let legacyRows: any[] = [];
+    if (merged.length === 0) {
+      for (const pidCandidate of pidCandidates) {
+        if (isCancelled?.()) return { rows: [], cancelled: true, rowsReadFromDb };
+        legacyRows = await db.daily_logs
+          .filter(
+            (r: any) =>
+              normalizeProjectId(r.project_id) === pidNorm &&
+              Number(r.log_date) >= queryStartMs &&
+              Number(r.log_date) <= queryEndMs
+          )
           .reverse()
-          .limit(maxPerStore - activeAll.length)
-          .toArray();
-        activeAll.push(...rows);
+          .limit(maxTotal)
+          .toArray()
+          .catch(() => []);
+        rowsReadFromDb += legacyRows?.length ?? 0;
+        if (legacyRows.length > 0) break;
+      }
+      if (legacyRows.length > 0) {
+        onProgress?.(
+          progressBase + progressSpan,
+          `Legacy scan ${dayLabel} — ${legacyRows.length.toLocaleString()} rows (slow path)`
+        );
       }
     }
 
-    if (isPreviewLoad && activeAll.length >= Math.min(effectiveLimit, 500)) {
-      const previewResult = mergeAndDeduplicateLogs([activeAll])
-        .sort((a: any, b: any) => Number(b.log_date) - Number(a.log_date))
-        .slice(0, effectiveLimit);
-      reportTrace('FIN: fetchProjectLogsInRange (preview-fast-path)', {
-        projectId,
-        rows: previewResult.length,
-        activeRows: activeAll.length,
+    const combined = mergeAndDeduplicateLogs([merged, legacyRows]).sort(
+      (a: any, b: any) => Number(b.log_date) - Number(a.log_date)
+    );
+    const rows = combined.slice(0, maxTotal);
+    return { rows, cancelled: false, rowsReadFromDb };
+  };
+
+  const fetchProjectLogsForRange = async (
+    projectId: string,
+    rangeStart: Date,
+    rangeEnd: Date,
+    query: ReportGroupQuery,
+    onProgress?: (pct: number, text: string) => void,
+    isCancelled?: () => boolean
+  ) => {
+    const startD = startOfDay(rangeStart);
+    const endD = endOfDay(rangeEnd);
+    reportTrace('INICIO: fetchProjectLogsForRange', { projectId, start: format(startD, 'yyyy-MM-dd'), end: format(endD, 'yyyy-MM-dd') });
+    onProgress?.(2, 'Preparing date range...');
+
+    const days = eachDayOfInterval({ start: startD, end: endD });
+    const dayKeysDesc = days.map((d) => format(d, 'yyyy-MM-dd')).sort((a, b) => b.localeCompare(a));
+    const merged: any[] = [];
+    const dayCount = dayKeysDesc.length;
+
+    for (let i = 0; i < dayKeysDesc.length; i++) {
+      if (isCancelled?.()) return { logs: [], totalBeforeCap: 0 };
+      if (merged.length >= MAX_REPORT_LOGS) break;
+      const dk = dayKeysDesc[i];
+      const remaining = MAX_REPORT_LOGS - merged.length;
+      const span = Math.max(8, Math.floor(68 / Math.max(1, dayCount)));
+      const base = 5 + i * span;
+      const dayResult = await fetchLogsForSingleDay(projectId, dk, query, onProgress, isCancelled, {
+        maxTotal: remaining,
+        progressBase: base,
+        progressSpan: span,
+        dayIndex: i,
+        dayCount,
+        globalRowsSoFar: merged.length,
+        dayTimeWindow: dayCount === 1 ? activeTimeRange : null,
       });
-      return previewResult;
+      if (dayResult.cancelled) return { logs: [], totalBeforeCap: 0 };
+      merged.push(...dayResult.rows);
     }
 
-    // Optimization: stop early once we have enough rows per store.
-    // This keeps larger range loads faster.
-    for (const pidCandidate of pidCandidates) {
-      for (const dt of dateCandidates) {
-        const needActive = false;
-        const needAgg = aggAll.length < maxPerStore;
-        const needArchive = archiveAll.length < maxPerStore;
-        if (!needActive && !needAgg && !needArchive) break;
-
-        const tasks: Array<Promise<any[]>> = [];
-        const pushers: Array<(rows: any[]) => void> = [];
-
-        if (needAgg) {
-          tasks.push(
-            db.logs_agg
-              .where('[project_id+bucket]')
-              .between([pidCandidate, dt.from], [pidCandidate, dt.to], true, true)
-              .reverse()
-              .limit(maxPerStore - aggAll.length)
-              .toArray()
-          );
-          pushers.push((rows) => aggAll.push(...rows));
-        }
-        if (needArchive) {
-          tasks.push(
-            db.logs_archive
-              .where('[project_id+log_date]')
-              .between([pidCandidate, dt.from], [pidCandidate, dt.to], true, true)
-              .reverse()
-              .limit(maxPerStore - archiveAll.length)
-              .toArray()
-          );
-          pushers.push((rows) => archiveAll.push(...rows));
-        }
-
-        const results = await Promise.all(tasks);
-        results.forEach((rows, i) => pushers[i]?.(rows));
-      }
-    }
-
-    const merged = mergeAndDeduplicateLogs([activeAll, aggAll, archiveAll])
-      .sort((a: any, b: any) => Number(b.log_date) - Number(a.log_date))
-      .slice(0, effectiveLimit);
-
-    reportTrace('FIN: fetchProjectLogsInRange', {
+    const sorted = mergeAndDeduplicateLogs([merged]).sort((a: any, b: any) => Number(b.log_date) - Number(a.log_date));
+    const capped = sorted.slice(0, MAX_REPORT_LOGS);
+    reportTrace('FIN: fetchProjectLogsForRange', {
       projectId,
-      rows: merged.length,
-      activeRows: activeAll.length,
-      aggRows: aggAll.length,
-      archiveRows: archiveAll.length,
+      days: dayCount,
+      rows: capped.length,
+      truncated: sorted.length > MAX_REPORT_LOGS,
     });
-    return merged;
+    return { logs: capped, totalBeforeCap: sorted.length };
   };
 
   const writeTextFileInChunks = async (fileName: string, chunks: string[]) => {
@@ -237,8 +395,6 @@ const Report: FC = () => {
 
   const loadReqIdRef = useRef(0);
   const filterBuildGenRef = useRef(0);
-  const [isPreview, setIsPreview] = useState(false);
-  const [canLoadMore, setCanLoadMore] = useState(false);
   const lastQueryRef = useRef<any>(null);
 
   const reportGroupQuery = (report_interval_seconds: number): ReportGroupQuery => ({
@@ -250,36 +406,26 @@ const Report: FC = () => {
     report_interval_seconds,
   });
 
-  const load_reports = async (project_id: any, fromVal: any, toVal: any, report_interval_seconds = 60) => {
-    reportTrace('INICIO: load_reports', { project_id, fromVal, toVal, report_interval_seconds });
+  const load_reports = async (project_id: any, rangeStart: Date, rangeEnd: Date, report_interval_seconds = 60) => {
+    reportTrace('INICIO: load_reports', {
+      project_id,
+      rangeStart: format(startOfDay(rangeStart), 'yyyy-MM-dd'),
+      rangeEnd: format(endOfDay(rangeEnd), 'yyyy-MM-dd'),
+      report_interval_seconds,
+    });
     const reqId = ++loadReqIdRef.current;
     setLoading(true);
-    setIsPreview(false);
-    setCanLoadMore(false);
+    setLoadProgressPct(1);
+    setLoadProgressText('Preparing query...');
     lastQueryRef.current = {
       project_id,
-      fromVal,
-      toVal,
+      rangeStart,
+      rangeEnd,
       report_interval_seconds,
     };
 
-    const withTimeout = async <T,>(p: Promise<T>, ms: number): Promise<T> => {
-      let timeoutId: any;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error('Report load timeout')), ms);
-      });
-      try {
-        return await Promise.race([p, timeoutPromise]);
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    };
-
+    const q = reportGroupQuery(report_interval_seconds);
     try {
-      const from = getTime(new Date(fromVal).setHours(0, 0, 0, 0));
-      const to = getTime(new Date(toVal).setHours(23, 59, 59, 999));
-      console.log('start', from, to, format(getTime(fromVal), 'yyyy-MM-dd'), format(getTime(toVal), 'yyyy-MM-dd'));
-
       const selectedProject = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(project_id));
       if (selectedProject && !selectedProject.cycle) {
         if (loadReqIdRef.current !== reqId) return;
@@ -295,9 +441,18 @@ const Report: FC = () => {
         return;
       }
 
-      const previewLimit = REPORT_PREVIEW_ROW_LIMIT;
-
-      const allLogs = await withTimeout(fetchProjectLogsInRange(project_id, from, to, previewLimit), 30000);
+      const { logs: allLogs, totalBeforeCap } = await fetchProjectLogsForRange(
+        project_id,
+        rangeStart,
+        rangeEnd,
+        q,
+        (pct, text) => {
+        if (loadReqIdRef.current !== reqId) return;
+        setLoadProgressPct(pct);
+        setLoadProgressText(text);
+      },
+        () => loadReqIdRef.current !== reqId
+      );
       if (loadReqIdRef.current !== reqId) return;
 
         if (!allLogs || allLogs.length === 0) {
@@ -312,14 +467,31 @@ const Report: FC = () => {
           reportTrace('FIN: load_reports (no-rows)', { project_id, reqId });
           return;
         }
+        if (totalBeforeCap > MAX_REPORT_LOGS) {
+          Swal.fire({
+            title: tr('Report.Export', 'Report'),
+            text: `Showing the newest ${MAX_REPORT_LOGS.toLocaleString()} logs (${totalBeforeCap.toLocaleString()} matched). Narrow the date range or filters to see older rows.`,
+            icon: 'info',
+            heightAuto: false,
+          });
+        }
         setRawLogs(allLogs);
-        const previewTruncated = allLogs.length >= previewLimit;
-        setIsPreview(previewTruncated);
-        setCanLoadMore(previewTruncated);
         const groupResult = await buildReportGroupsAsync(
           allLogs,
-          reportGroupQuery(report_interval_seconds),
-          () => loadReqIdRef.current !== reqId
+          q,
+          () => loadReqIdRef.current !== reqId,
+          (phase, done, total) => {
+            if (loadReqIdRef.current !== reqId) return;
+            const safeTotal = Math.max(1, total);
+            const phaseBase = 70;
+            const phaseSpan = 30;
+            const phasePct = Math.round((done / safeTotal) * phaseSpan);
+            const pct = Math.min(99, phaseBase + phasePct);
+            const phaseLabel =
+              phase === 'filter' ? 'Filtering' : phase === 'validate' ? 'Validating' : 'Grouping';
+            setLoadProgressPct(pct);
+            setLoadProgressText(`${phaseLabel} ${Math.min(done, total).toLocaleString()} / ${total.toLocaleString()}`);
+          }
         );
         if (loadReqIdRef.current !== reqId) return;
         if (groupResult.cancelled) return;
@@ -327,51 +499,31 @@ const Report: FC = () => {
 
         if (!groups) {
           setLogList(null);
-          if (previewTruncated) {
-            Swal.fire({
-              title: tr('Report.Export', 'Report'),
-              text: 'No reports found in the quick preview for this filter. Tap "Load more" to search the full range.',
-              icon: 'info',
-              heightAuto: false,
-            });
-          } else {
-            Swal.fire({
-              title: tr('Report.Export', 'Report'),
-              text: 'No reports found for the selected date range and filters.',
-              icon: 'info',
-              heightAuto: false,
-            });
-          }
+          Swal.fire({
+            title: tr('Report.Export', 'Report'),
+            text: 'No reports found for the selected date range and filters.',
+            icon: 'info',
+            heightAuto: false,
+          });
           return;
         }
 
         setLogList(groups);
         setPage(1);
+        setLoadProgressPct(100);
+        setLoadProgressText('Finalizing...');
         reportTrace('FIN: load_reports', {
           project_id,
           reqId,
           rows: allLogs.length,
           groups: Object.keys(groups || {}).length,
-          previewTruncated,
         });
-
-        if (previewTruncated) {
-          Swal.fire({
-            title: tr('Report.Export', 'Report'),
-            text: `Showing a quick preview (${previewLimit.toLocaleString()} rows max). Tap "Load more" to fetch more.`,
-            icon: 'info',
-            heightAuto: false,
-          });
-        }
     } catch (error: any) {
       console.error('Error generating report: ' + error);
       if (loadReqIdRef.current !== reqId) return;
-      const isTimeout = error?.message === 'Report load timeout';
       Swal.fire({
-        title: tr('Report.Export', 'Report'),
-        text: isTimeout
-          ? tr('Report.LoadTimeout', 'Report loading took too long. Try again, narrow the date range, or use Load more.')
-          : tr('Report.ExportError', 'Failed to generate report.'),
+        title: tr('Report.Load', 'Report'),
+        text: tr('Report.LoadError', 'Failed to load report.'),
         icon: 'error',
         heightAuto: false,
       });
@@ -383,89 +535,13 @@ const Report: FC = () => {
       setLogList(null);
       setRawLogs(null);
     } finally {
-      if (loadReqIdRef.current === reqId) setLoading(false);
+      if (loadReqIdRef.current === reqId) {
+        setLoading(false);
+        setLoadProgressPct(0);
+        setLoadProgressText('');
+      }
     }
   }
-
-  const handleLoadMore = async () => {
-    if (!lastQueryRef.current) return;
-    const {
-      project_id, fromVal, toVal, report_interval_seconds
-    } = lastQueryRef.current;
-
-    const reqId = ++loadReqIdRef.current;
-    reportTrace('INICIO: handleLoadMore', { project_id, reqId });
-    setLoading(true);
-    setCanLoadMore(false);
-
-    const withTimeout = async <T,>(p: Promise<T>, ms: number): Promise<T> => {
-      let timeoutId: any;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error('Report load timeout')), ms);
-      });
-      try {
-        return await Promise.race([p, timeoutPromise]);
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    };
-
-    try {
-      const from = getTime(new Date(fromVal).setHours(0, 0, 0, 0));
-      const to = getTime(new Date(toVal).setHours(23, 59, 59, 999));
-
-      const allLogs = await withTimeout(fetchProjectLogsInRange(project_id, from, to, MAX_REPORT_LOGS), 30000);
-      if (loadReqIdRef.current !== reqId) return;
-
-      setRawLogs(allLogs);
-      const groupResult = await buildReportGroupsAsync(
-        allLogs,
-        reportGroupQuery(report_interval_seconds),
-        () => loadReqIdRef.current !== reqId
-      );
-      if (loadReqIdRef.current !== reqId) return;
-      if (groupResult.cancelled) return;
-      const { groups } = groupResult;
-      if (!groups) {
-        setLogList(null);
-        Swal.fire({
-          title: tr('Report.Export', 'Report'),
-          text: 'No reports found for the selected date range and filters.',
-          icon: 'info',
-          heightAuto: false,
-        });
-        reportTrace('FIN: handleLoadMore (no-groups)', { project_id, reqId, rows: allLogs.length });
-        return;
-      }
-      setLogList(groups);
-      setPage(1);
-      setIsPreview(false);
-      reportTrace('FIN: handleLoadMore', {
-        project_id,
-        reqId,
-        rows: allLogs.length,
-        groups: Object.keys(groups || {}).length,
-      });
-    } catch (error: any) {
-      console.error('Error generating report (load more): ' + error);
-      const isTimeout = error?.message === 'Report load timeout';
-      Swal.fire({
-        title: tr('Report.Export', 'Report'),
-        text: isTimeout
-          ? tr('Report.LoadTimeout', 'Report loading took too long. Try a smaller date range.')
-          : tr('Report.ExportError', 'Failed to generate report.'),
-        icon: 'error',
-        heightAuto: false,
-      });
-      reportTrace('ERROR: handleLoadMore', {
-        project_id,
-        reqId,
-        error: String(error?.message || error),
-      });
-    } finally {
-      if (loadReqIdRef.current === reqId) setLoading(false);
-    }
-  };
 
   const ExportList = [
     { title: t('Report.Email'), icon: mailSharp, hidden: true },
@@ -511,9 +587,9 @@ const Report: FC = () => {
                 <tr className="text-left">
                   <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium ">{t("Report.Title")}</th>
                   <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium ">{t("Report.ID")}</th>
-                  <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-24">Data</th>
                   <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-36">Status</th>
-                  <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-28">{t("Report.Load")}</th>
+                  <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-28">Gross</th>
+                  <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-28">Net</th>
                   <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-28">{t("Report.Battery")}</th>
                   <th className="border border-slate-300 text-dark dark:text-white px-3 py-1 font-medium w-48">{t("Report.Time")}</th>
                 </tr>
@@ -528,20 +604,21 @@ const Report: FC = () => {
                     : lc?.title;
                   const idCell = isPrrLink ? (sItem.unit != null && String(sItem.unit) !== '' ? String(sItem.unit) : '—') : lc?.id;
                   const isTrErr = !isPrrLink && ((sItem.log_type != null && String(sItem.log_type).toLowerCase() === 'err') || Number(sItem.value) === -99999999);
-                  const displayLoad = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : `${sItem.value ?? ''} ${sItem.unit ?? ''}`.trim());
-                  const dataSource = String(sItem.log_type || '').toLowerCase() === 'agg' ? '5-min chunk' : 'raw';
+                  const grossStr = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : `${sItem.value ?? ''} ${sItem.unit ?? ''}`.trim());
+                  const netVal = (sItem as any).tare_applied === true && (sItem as any).net_value != null ? (sItem as any).net_value : sItem.value;
+                  const netStr = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : `${netVal ?? ''} ${sItem.unit ?? ''}`.trim());
                   const statusMeta = getStatusMeta(getLogStatus(sItem, lc));
                   return (
                     <tr key={sKey} className="w-full">
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{titleCell}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{idCell}</td>
-                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{dataSource}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">
                         <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${statusMeta.className}`}>
                           {statusMeta.label}
                         </span>
                       </td>
-                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{displayLoad}</td>
+                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{grossStr}</td>
+                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{netStr}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{formatBattery(sItem.battery)}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{format(sItem.log_date, "yyyy-MM-dd pp")}</td>
                     </tr>
@@ -598,6 +675,74 @@ const Report: FC = () => {
   }, [projects, curProject?.id])
 
   useEffect(() => {
+    const refreshStorage = async () => {
+      try {
+        let total = 0
+        let free = 0
+
+        // Native first (iOS/Android)
+        try {
+          const info = await Device.getInfo()
+          total = Number((info as any).diskTotal || 0)
+          free = Number((info as any).diskFree || 0)
+        } catch {
+          // ignore and try web estimate fallback
+        }
+
+        // Fallback for environments where Device.getInfo doesn't expose disk fields
+        if (!(total > 0) && typeof navigator !== 'undefined' && (navigator as any).storage?.estimate) {
+          const estimate = await (navigator as any).storage.estimate()
+          const quota = Number(estimate?.quota || 0)
+          const usage = Number(estimate?.usage || 0)
+          if (quota > 0 && usage >= 0) {
+            total = quota
+            free = Math.max(0, quota - usage)
+          }
+        }
+
+        // Approximate reports footprint from row sample (fast, bounded).
+        let reportsBytesApprox = 0
+        try {
+          const count = await db.daily_logs.count()
+          if (count > 0) {
+            const sampleSize = Math.min(120, count)
+            const sampleRows = await db.daily_logs
+              .orderBy('log_date')
+              .reverse()
+              .limit(sampleSize)
+              .toArray()
+            if (sampleRows.length > 0) {
+              const sampleBytes = sampleRows.reduce((acc: number, row: any) => {
+                try {
+                  return acc + new Blob([JSON.stringify(row)]).size
+                } catch {
+                  return acc + JSON.stringify(row).length
+                }
+              }, 0)
+              const avgBytes = sampleBytes / sampleRows.length
+              // 1.25x factor: IndexedDB/object overhead approximation.
+              reportsBytesApprox = Math.round(avgBytes * count * 1.25)
+            }
+          }
+        } catch {
+          reportsBytesApprox = 0
+        }
+
+        setStorageTotal(Number.isFinite(total) && total > 0 ? total : 0)
+        setStorageFree(Number.isFinite(free) && free >= 0 ? free : 0)
+        setReportsStorageUsed(Number.isFinite(reportsBytesApprox) && reportsBytesApprox > 0 ? reportsBytesApprox : 0)
+      } catch {
+        setStorageTotal(0)
+        setStorageFree(0)
+        setReportsStorageUsed(0)
+      }
+    }
+    void refreshStorage()
+    const timer = window.setInterval(() => { void refreshStorage() }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
     if (!logList) return
     const totalIntervals = (Object.keys(logList) as string[]).length
     const totalPages = Math.max(1, Math.ceil(totalIntervals / PAGE_SIZE))
@@ -615,12 +760,20 @@ const Report: FC = () => {
       .sort((a: any, b: any) => (b.log_date || 0) - (a.log_date || 0));
   };
 
-  const formatLogLoad = (log: any) => {
+  const formatLogGross = (log: any) => {
     const plt = String(log.log_type || '').toLowerCase();
     if (plt === 'prr_connected') return 'PRR connected';
     if (plt === 'prr_disconnected') return 'PRR disconnected';
     const isErr = (log.log_type != null && String(log.log_type).toLowerCase() === 'err') || Number(log.value) === -99999999;
     return isErr ? 'Tr.Err' : `${log.value ?? ''} ${log.unit ?? ''}`.trim();
+  };
+  const formatLogNet = (log: any) => {
+    const plt = String(log.log_type || '').toLowerCase();
+    if (plt === 'prr_connected') return '—';
+    if (plt === 'prr_disconnected') return '—';
+    const isErr = (log.log_type != null && String(log.log_type).toLowerCase() === 'err') || Number(log.value) === -99999999;
+    const netVal = (log as any).tare_applied === true && (log as any).net_value != null ? (log as any).net_value : log.value;
+    return isErr ? 'Tr.Err' : `${netVal ?? ''} ${log.unit ?? ''}`.trim();
   };
 
   type ReportStatus = 'OK' | 'UNDERLOAD' | 'OVERLOAD' | 'DANGER' | 'TR.ERR' | 'PRR CONNECTED' | 'PRR DISCONNECTED';
@@ -676,39 +829,18 @@ const Report: FC = () => {
     if (b == null || String(b).trim() === '') return '';
     return `${String(b).trim()}%`;
   };
-  const formatBulkDetails = (log: any): string => {
-    const lt = String(log?.log_type || '').toLowerCase();
-    if (lt !== 'agg') return '-';
-    const parts: string[] = [];
-    const pushNum = (label: string, value: any) => {
-      const n = Number(value);
-      if (Number.isFinite(n)) parts.push(`${label}=${n}`);
-    };
-    pushNum('count', log?.count);
-    pushNum('vmin', log?.value_min);
-    pushNum('vmax', log?.value_max);
-    pushNum('ok', log?.count_ok);
-    pushNum('under', log?.count_underload);
-    pushNum('over', log?.count_overload);
-    pushNum('danger', log?.count_danger);
-    pushNum('err', log?.count_err);
-    return parts.length > 0 ? parts.join(' | ') : '5-min chunk';
-  };
   const getReportRows = (data: any[]) =>
     data.map((log: any) => {
       const plt = String(log.log_type || '').toLowerCase();
-      const source = plt === 'agg' ? '5-min chunk' : 'raw';
-      const bulk = formatBulkDetails(log);
       if (plt === 'prr_connected' || plt === 'prr_disconnected') {
         const status = getLogStatus(log);
         return {
           Name: plt === 'prr_connected' ? 'PRR connected' : 'PRR disconnected',
           ID: log.unit != null ? String(log.unit) : '',
-          Source: source,
           Status: status,
-          Load: log.unit != null ? String(log.unit) : '',
+          Gross: '—',
+          Net: '—',
           Battery: '',
-          Bulk: bulk,
           Time: format(new Date(log.log_date), 'yyyy-MM-dd HH:mm:ss'),
         };
       }
@@ -717,11 +849,10 @@ const Report: FC = () => {
       return {
         Name: (lc?.title || '').toString(),
         ID: (lc?.id || log.lc_id || '').toString(),
-        Source: source,
         Status: status,
-        Load: formatLogLoad(log),
+        Gross: formatLogGross(log),
+        Net: formatLogNet(log),
         Battery: formatBattery(log.battery),
-        Bulk: bulk,
         Time: format(new Date(log.log_date), 'yyyy-MM-dd HH:mm:ss'),
       };
     });
@@ -729,8 +860,11 @@ const Report: FC = () => {
   const openMailtoFallback = (subject: string, logData: any[]) => {
     const project = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
     const reportRows = getReportRows(logData);
-    const lines = reportRows.slice(0, 50).map((r) => `${r.Name}\t${r.ID}\t${r.Source}\t${r.Status}\t${r.Load}\t${r.Battery}\t${r.Time}`);
-    const body = `Report: ${project?.title ?? ''}\nDate range: ${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}\nTotal rows: ${logData.length}\n\nName\tID\tData\tStatus\tLoad\tBattery\tTime\n${lines.join('\n')}${logData.length > 50 ? '\n...' : ''}`;
+    const lines = reportRows.slice(0, 50).map((r) => `${r.Name}\t${r.ID}\t${r.Status}\t${r.Gross}\t${r.Net}\t${r.Battery}\t${r.Time}`);
+    const rangeLine = isSingleDayRange
+      ? `Range: ${format(filter.start, 'yyyy-MM-dd')} ${filter.hourStart}-${filter.hourEnd}`
+      : `Range: ${format(filter.start, 'yyyy-MM-dd')} → ${format(filter.end, 'yyyy-MM-dd')}`;
+    const body = `Report: ${project?.title ?? ''}\n${rangeLine}\nTotal rows: ${logData.length}\n\nName\tID\tStatus\tGross\tNet\tBattery\tTime\n${lines.join('\n')}${logData.length > 50 ? '\n...' : ''}`;
     const mailto = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     window.location.href = mailto;
   };
@@ -818,14 +952,7 @@ const Report: FC = () => {
     });
 
   const getExportDataset = async () => {
-    const baseRows = getAllLogsFromList();
-    // If we're in preview mode, force full-range fetch for exports so users never export partial data unintentionally.
-    if (!isPreview || !lastQueryRef.current) return baseRows;
-    const { project_id, fromVal, toVal } = lastQueryRef.current;
-    const from = getTime(new Date(fromVal).setHours(0, 0, 0, 0));
-    const to = getTime(new Date(toVal).setHours(23, 59, 59, 999));
-    const fullRows = await fetchProjectLogsInRange(project_id, from, to, MAX_EXPORT_FETCH_ROWS);
-    return fullRows.sort((a: any, b: any) => (b.log_date || 0) - (a.log_date || 0));
+    return getAllLogsFromList();
   };
 
   const handleExport = async (type: string) => {
@@ -844,25 +971,6 @@ const Report: FC = () => {
       setExportBusy(false);
       return;
     }
-    if (logData.length > MAX_EXPORT_ROWS) {
-      setExportBusy(false);
-      const decision = await Swal.fire({
-        title: t('Report.Export') || 'Export',
-        text: `Too many rows for export (${logData.length.toLocaleString()}). Continue with a truncated export of the first ${MAX_EXPORT_ROWS.toLocaleString()} rows? To export fewer than ${MAX_EXPORT_ROWS.toLocaleString()} rows, reduce the date range or change filters.`,
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonText: 'Continue',
-        cancelButtonText: t('Common.Cancel') || 'Cancel',
-        heightAuto: false,
-      });
-      if (!decision.isConfirmed) {
-        return;
-      }
-      logData = logData.slice(0, MAX_EXPORT_ROWS);
-      setExportBusy(true);
-      await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    }
-
     try {
     switch (type) {
       case t('Report.CSV'): {
@@ -874,8 +982,8 @@ const Report: FC = () => {
             return s;
           };
           const reportRows = getReportRows(logData);
-          const rows: string[] = ['Name,ID,Data,Status,Load,Battery,Bulk,Time'];
-          reportRows.forEach((r) => rows.push([r.Name, r.ID, r.Source, r.Status, r.Load, r.Battery, r.Bulk, r.Time].map(escapeCsv).join(',')));
+          const rows: string[] = ['Name,ID,Status,Gross,Net,Battery,Time'];
+          reportRows.forEach((r) => rows.push([r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(escapeCsv).join(',')));
           const csvStr = rows.join('\r\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
 
@@ -889,9 +997,9 @@ const Report: FC = () => {
             URL.revokeObjectURL(url);
           } else if (platformType === 'android' || platformType === 'ios') {
                 const reportRows = getReportRows(logData);
-                const csvChunks: string[] = ['\uFEFFName,ID,Data,Status,Load,Battery,Bulk,Time\r\n'];
+                const csvChunks: string[] = ['\uFEFFName,ID,Status,Gross,Net,Battery,Time\r\n'];
                 reportRows.forEach((r) => {
-                  csvChunks.push([r.Name, r.ID, r.Source, r.Status, r.Load, r.Battery, r.Bulk, r.Time].map(escapeCsv).join(',') + '\r\n');
+                  csvChunks.push([r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(escapeCsv).join(',') + '\r\n');
                 });
                 await writeTextFileInChunks(fileName, csvChunks);
             const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
@@ -949,8 +1057,7 @@ const Report: FC = () => {
         }
         try {
           const reportRows = getReportRows(logData);
-          const jsonRows = reportRows.map(({ Bulk, ...rest }) => rest);
-          const jsonStr = JSON.stringify(jsonRows, null, 2);
+          const jsonStr = JSON.stringify(reportRows, null, 2);
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.json`;
           if (platformType === 'web') {
             const blob = new Blob([jsonStr], { type: 'application/json' });
@@ -982,7 +1089,7 @@ const Report: FC = () => {
               const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.sql`;
               const sqlChunks: string[] = [];
               reportRows.forEach((r) => {
-                sqlChunks.push(`INSERT INTO logs (\`Name\`,\`ID\`,\`Data\`,\`Status\`,\`Load\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Name)},${escape(r.ID)},${escape(r.Source)},${escape(r.Status)},${escape(r.Load)},${escape(r.Battery)},${escape(r.Time)});\n`);
+                sqlChunks.push(`INSERT INTO logs (\`Name\`,\`ID\`,\`Status\`,\`Gross\`,\`Net\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Name)},${escape(r.ID)},${escape(r.Status)},${escape(r.Gross)},${escape(r.Net)},${escape(r.Battery)},${escape(r.Time)});\n`);
               });
               await writeTextFileInChunks(fileName, sqlChunks);
               const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
@@ -1009,7 +1116,7 @@ const Report: FC = () => {
             return `'${s}'`;
           };
           const lines: string[] = reportRows.map(
-            (r) => `INSERT INTO logs (\`Name\`,\`ID\`,\`Data\`,\`Status\`,\`Load\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Name)},${escape(r.ID)},${escape(r.Source)},${escape(r.Status)},${escape(r.Load)},${escape(r.Battery)},${escape(r.Time)});`
+            (r) => `INSERT INTO logs (\`Name\`,\`ID\`,\`Status\`,\`Gross\`,\`Net\`,\`Battery\`,\`Time\`) VALUES (${escape(r.Name)},${escape(r.ID)},${escape(r.Status)},${escape(r.Gross)},${escape(r.Net)},${escape(r.Battery)},${escape(r.Time)});`
           );
           const sqlStr = lines.join('\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.sql`;
@@ -1037,12 +1144,13 @@ const Report: FC = () => {
             try {
               const totalRows = logData.length;
               const capped = totalRows > MAX_NATIVE_PDF_ROWS;
-              const rowsForPdf = capped ? getReportRows(logData).slice(0, MAX_NATIVE_PDF_ROWS) : getReportRows(logData);
+              const rowsForPdfSource = capped ? logData.slice(0, MAX_NATIVE_PDF_ROWS) : logData;
+              const rowsForPdf = getReportRows(rowsForPdfSource);
               const project = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
               const doc = new jsPDF('p', 'mm', 'a4');
               const pageW = doc.internal.pageSize.getWidth();
               const margin = 10;
-              const colWidths = [28, 16, 18, 22, 22, 14, 40];
+              const colWidths = [30, 16, 22, 22, 22, 16, 42];
               const rowHeight = 7;
               let y = margin;
               doc.setFontSize(14);
@@ -1051,9 +1159,15 @@ const Report: FC = () => {
               doc.setFontSize(10);
               if (project) doc.text(`${t('Report.MyProjects') || 'Project'}: ${project.title}`, margin, y);
               y += 6;
-              doc.text(`${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}`, margin, y);
+              doc.text(
+                isSingleDayRange
+                  ? `Range: ${format(filter.start, 'yyyy-MM-dd')} ${filter.hourStart}-${filter.hourEnd}`
+                  : `Range: ${format(filter.start, 'yyyy-MM-dd')} → ${format(filter.end, 'yyyy-MM-dd')}`,
+                margin,
+                y
+              );
               y += 10;
-              const headers = ['Name', 'ID', 'Data', 'Status', t('Report.Load'), t('Report.Battery'), t('Report.Time')];
+              const headers = ['Name', 'ID', 'Status', 'Gross', 'Net', t('Report.Battery'), t('Report.Time')];
               doc.setFontSize(8);
               doc.setFillColor(240, 240, 240);
               doc.rect(margin, y, pageW - 2 * margin, rowHeight, 'F');
@@ -1081,10 +1195,10 @@ const Report: FC = () => {
                   y += rowHeight;
                 }
                 const r = rowsForPdf[i];
-                const row = [r.Name.slice(0, 14), r.ID.slice(0, 9), r.Source.slice(0, 12), r.Status.slice(0, 12), r.Load.slice(0, 12), r.Battery.slice(0, 7), r.Time.slice(0, 19)];
+                const row = [r.Name.slice(0, 14), r.ID.slice(0, 9), r.Status.slice(0, 12), r.Gross.slice(0, 12), r.Net.slice(0, 12), r.Battery.slice(0, 7), r.Time.slice(0, 19)];
                 row.forEach((cell, ii) => {
                   const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
-                  if (ii === 3) {
+                  if (ii === 2) {
                     const meta = getStatusMeta(r.Status as ReportStatus);
                     doc.setTextColor(meta.textColor);
                     doc.text(cell, x, y + 5);
@@ -1133,7 +1247,7 @@ const Report: FC = () => {
           const doc = new jsPDF('p', 'mm', 'a4');
           const pageW = doc.internal.pageSize.getWidth();
           const margin = 10;
-              const colWidths = [28, 16, 18, 22, 22, 14, 40];
+          const colWidths = [30, 16, 22, 22, 22, 16, 42];
           const rowHeight = 7;
           let y = margin;
           doc.setFontSize(14);
@@ -1142,9 +1256,15 @@ const Report: FC = () => {
           doc.setFontSize(10);
           if (project) doc.text(`${t('Report.MyProjects') || 'Project'}: ${project.title}`, margin, y);
           y += 6;
-          doc.text(`${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}`, margin, y);
+          doc.text(
+            isSingleDayRange
+              ? `Range: ${format(filter.start, 'yyyy-MM-dd')} ${filter.hourStart}-${filter.hourEnd}`
+              : `Range: ${format(filter.start, 'yyyy-MM-dd')} → ${format(filter.end, 'yyyy-MM-dd')}`,
+            margin,
+            y
+          );
           y += 10;
-          const headers = ['Name', 'ID', 'Data', 'Status', t('Report.Load'), t('Report.Battery'), t('Report.Time')];
+          const headers = ['Name', 'ID', 'Status', 'Gross', 'Net', t('Report.Battery'), t('Report.Time')];
           doc.setFontSize(8);
           doc.setFillColor(240, 240, 240);
           doc.rect(margin, y, pageW - 2 * margin, rowHeight, 'F');
@@ -1173,10 +1293,10 @@ const Report: FC = () => {
               y += rowHeight;
             }
             const r = reportRowsPdf[i];
-            const row = [r.Name.slice(0, 14), r.ID.slice(0, 9), r.Source.slice(0, 12), r.Status.slice(0, 12), r.Load.slice(0, 12), r.Battery.slice(0, 7), r.Time.slice(0, 19)];
+            const row = [r.Name.slice(0, 14), r.ID.slice(0, 9), r.Status.slice(0, 12), r.Gross.slice(0, 12), r.Net.slice(0, 12), r.Battery.slice(0, 7), r.Time.slice(0, 19)];
             row.forEach((cell, ii) => {
               const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
-              if (ii === 3) {
+              if (ii === 2) {
                 const meta = getStatusMeta(r.Status as ReportStatus);
                 doc.setTextColor(meta.textColor);
                 doc.text(cell, x, y + 5);
@@ -1221,12 +1341,15 @@ const Report: FC = () => {
             return s;
           };
           const reportRows = getReportRows(logData);
-          const csvRows: string[] = ['Name,ID,Data,Status,Load,Battery,Bulk,Time'];
-          reportRows.forEach((r) => csvRows.push([r.Name, r.ID, r.Source, r.Status, r.Load, r.Battery, r.Bulk, r.Time].map(escapeCsv).join(',')));
+          const csvRows: string[] = ['Name,ID,Status,Gross,Net,Battery,Time'];
+          reportRows.forEach((r) => csvRows.push([r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(escapeCsv).join(',')));
           const csvStr = '\uFEFF' + csvRows.join('\r\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
+          const rangeStr = isSingleDayRange
+            ? `${format(filter.start, 'yyyy-MM-dd')} ${filter.hourStart}-${filter.hourEnd}`
+            : `${format(filter.start, 'yyyy-MM-dd')} → ${format(filter.end, 'yyyy-MM-dd')}`;
           const bodyText = project?.title
-            ? `${t('Report.AttachedReport') || 'Please find the report attached.'} ${project.title}, ${format(new Date(filter.start), 'yyyy-MM-dd')} – ${format(new Date(filter.end), 'yyyy-MM-dd')}, ${logData.length} ${t('Report.Rows') || 'rows'}.`
+            ? `${t('Report.AttachedReport') || 'Please find the report attached.'} ${project.title}, ${rangeStr}, ${logData.length} ${t('Report.Rows') || 'rows'}.`
             : `${t('Report.AttachedReport') || 'Please find the report attached.'} ${logData.length} ${t('Report.Rows') || 'rows'}.`;
 
           const isNative = Capacitor.isNativePlatform();
@@ -1286,10 +1409,10 @@ const Report: FC = () => {
     }
   }
 
-  const handleChangeFilter = (field: string, value: boolean | Date) => {
-    setFilter(v => ({ ...v, [field]: value }))
-    console.log('date changed: ', field, value)
-  }
+  const handleChangeFilter = <K extends keyof LogFilter>(field: K, value: LogFilter[K]) => {
+    setFilter((v) => ({ ...v, [field]: value }));
+    setPendingRefresh(true);
+  };
 
   const handleRemove = () => {
     if (!selectedId) return;
@@ -1307,14 +1430,10 @@ const Report: FC = () => {
     }).then((result) => {
       if (!result.value) return;
       setLoading(true);
-      db.logs
+      db.daily_logs
         .filter((log: any) => normalizeProjectId(log.project_id) === pidNorm)
         .primaryKeys()
-        .then((keys) => db.logs.bulkDelete(keys))
-        .then(() => db.logs_archive.filter((log: any) => normalizeProjectId(log.project_id) === pidNorm).primaryKeys())
-        .then((keys) => db.logs_archive.bulkDelete(keys))
-        .then(() => db.logs_agg.where('[project_id+bucket]').between([pidNorm, 0], [pidNorm, Number.MAX_SAFE_INTEGER], true, true).primaryKeys())
-        .then((keys) => db.logs_agg.bulkDelete(keys))
+        .then((keys) => db.daily_logs.bulkDelete(keys))
         .then(() => {
           setLogList(null);
           setLoading(false);
@@ -1326,10 +1445,44 @@ const Report: FC = () => {
     });
   }
   const handleRefresh = () => {
-    setLoadStatus(true)
+    if (!selectedId) {
+      Swal.fire({
+        title: tr('Report.Load', 'Report'),
+        text: 'Select a project first.',
+        icon: 'info',
+        heightAuto: false,
+      });
+      return;
+    }
+    if (!filter.start || !filter.end || getTime(filter.start) > getTime(filter.end)) {
+      Swal.fire({
+        title: tr('Report.Load', 'Report'),
+        text: 'Choose a valid From / To date range.',
+        icon: 'info',
+        heightAuto: false,
+      });
+      return;
+    }
+    if (isSingleDayRange && !activeTimeRange) {
+      Swal.fire({
+        title: tr('Report.Load', 'Report'),
+        text: 'Choose a valid hour range (From must be before To).',
+        icon: 'info',
+        heightAuto: false,
+      });
+      return;
+    }
+    setPendingRefresh(false);
+    setReloadNonce((n) => n + 1);
+  };
+  const handleCancelLoad = () => {
+    loadReqIdRef.current += 1
+    setLoading(false)
+    setLoadProgressPct(0)
+    setLoadProgressText('')
   }
 
-  // Re-apply checkbox filters without re-querying IndexedDB. Chunked async work so huge Ok/Tr.Err sets do not freeze the UI.
+  // Rebuild groups only when new raw dataset is loaded (Refresh).
   useEffect(() => {
     if (!rawLogs) return;
     const gen = ++filterBuildGenRef.current;
@@ -1340,41 +1493,118 @@ const Report: FC = () => {
       setLogList(result.groups);
       setPage(1);
     })();
-  }, [filter.ok, filter.overload, filter.danger, filter.underload, filter.err, rawLogs, reportIntervalSeconds]);
+  }, [rawLogs, reportIntervalSeconds]);
 
   const selectedProject = projectList.find((p: IProject) => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
 
   const busyMessage = exportBusy
     ? (t('Report.PreparingExport') || 'Preparing export...')
-    : (t('Report.LoadingReport') || 'Loading report...');
+    : (loadProgressText || t('Report.LoadingReport') || 'Loading report...');
+
+  const touchActionAtRef = useRef<Record<string, number>>({});
+  const TOUCH_CLICK_SUPPRESS_MS = 700;
+  const toggleTouchActionAtRef = useRef<Record<string, number>>({});
+  const runFromTouchPointerUp = (buttonKey: string, ev: React.PointerEvent, action: () => void) => {
+    if (ev.pointerType !== 'touch') return;
+    touchActionAtRef.current[buttonKey] = Date.now();
+    action();
+  };
+  const runFromClick = (buttonKey: string, action: () => void) => {
+    const lastTouchAt = touchActionAtRef.current[buttonKey] || 0;
+    if (Date.now() - lastTouchAt < TOUCH_CLICK_SUPPRESS_MS) return;
+    action();
+  };
+  const handleToggleRowPointerUp = (field: 'ok' | 'overload' | 'danger' | 'underload' | 'err', ev: React.PointerEvent<HTMLDivElement>) => {
+    if (ev.pointerType !== 'touch') return;
+    const targetEl = ev.target as HTMLElement | null;
+    if (targetEl?.closest('ion-toggle')) return;
+    const key = `toggle:${String(field)}`;
+    toggleTouchActionAtRef.current[key] = Date.now();
+    handleChangeFilter(field, !filter[field]);
+  };
+  const handleToggleIonChange = (field: 'ok' | 'overload' | 'danger' | 'underload' | 'err', checked: boolean) => {
+    const key = `toggle:${String(field)}`;
+    const lastTouchAt = toggleTouchActionAtRef.current[key] || 0;
+    if (Date.now() - lastTouchAt < TOUCH_CLICK_SUPPRESS_MS && checked === filter[field]) return;
+    handleChangeFilter(field, checked);
+  };
 
   return (
     <>
       {(loading || exportBusy) && (
-        <div className="report-progress-wrap" role="status" aria-live="polite" aria-busy="true">
-          <div className="report-progress-bar" />
-          <p className="report-progress-text">{busyMessage}</p>
+        <div className="report-progress-overlay" role="status" aria-live="polite" aria-busy="true">
+          <div className="report-progress-card">
+            <p className="report-progress-title">{exportBusy ? 'Preparing export' : 'Loading report'}</p>
+            <p className="report-progress-text-center">{busyMessage}</p>
+            <div className="report-progress-track">
+              <div
+                className="report-progress-fill"
+                style={{ width: `${Math.max(2, Math.min(100, exportBusy ? 35 : loadProgressPct || 5))}%` }}
+              />
+            </div>
+            {!exportBusy && loadProgressPct > 0 && (
+              <p className="report-progress-percent">{loadProgressPct}%</p>
+            )}
+            {!exportBusy && loading && (
+              <button
+                type="button"
+                className="report-progress-cancel"
+                onClick={handleCancelLoad}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
         </div>
       )}
     <CommonLayout>
       <div className="grid grid-cols-4 gap-2">
         <div className="flex flex-col gap-2 ml-0.5 min-w-0">
           <Text classes="w-full bg-primary px-4 py-1" label={t('Report.MyProjects')} />
-          <div className="flex flex-col">
+          <div className="flex flex-col gap-1">
             {projectList.length > 0 && projectList.map((item: IProject, index: number) => {
               const isSelected = normalizeProjectId(item.id) === normalizeProjectId(selectedId);
               return (
                 <button
                   key={index}
                   type="button"
-                  className={`w-full text-left border-0 bg-transparent px-4 py-1 cursor-pointer flex items-baseline gap-2 ${isSelected ? 'ring-2 ring-primary rounded font-bold shadow-md' : ''}`}
-                  onClick={() => setSelectedId(String(item.id))}
+                  className={`w-full text-left border border-slate-200 rounded px-3 py-1 cursor-pointer ${isSelected ? 'ring-2 ring-primary font-bold shadow-md' : 'bg-transparent'}`}
+                  onClick={() => {
+                    setSelectedId(String(item.id));
+                  }}
                 >
-                  <span className="text-primary shrink-0 select-none" aria-hidden>•</span>
-                  <Text classes={isSelected ? 'text-primary font-bold' : 'text-primary'} label={item.title} />
+                  <span className="text-primary">{item.title}</span>
                 </button>
               );
             })}
+          </div>
+          <div className="mt-3 border border-slate-300 rounded p-2">
+            <div className="text-xs font-semibold text-slate-600 mb-1">Storage</div>
+            <div className="text-xs text-slate-500 mb-2">
+              {storageTotal > 0 ? `${formatGiB(totalUsedBytes)} used / ${formatGiB(storageTotal)} total` : 'Unavailable'}
+            </div>
+            <div className="w-full h-2 bg-slate-200 rounded overflow-hidden flex">
+              <div
+                className="h-2 bg-slate-400"
+                title="Used by system/other apps"
+                style={{ width: `${storageTotal > 0 ? Math.min(100, Math.max(0, (otherUsedBytes / storageTotal) * 100)) : 0}%` }}
+              />
+              <div
+                className="h-2 bg-primary"
+                title="Used by reports data"
+                style={{ width: `${storageTotal > 0 ? Math.min(100, Math.max(0, (reportsUsedBytesClamped / storageTotal) * 100)) : 0}%` }}
+              />
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-x-3 gap-y-1">
+              <span>Other: {formatGiB(otherUsedBytes)}</span>
+              <span>Reports: {formatGiB(reportsUsedBytesClamped)}</span>
+              <span>Free: {formatGiB(storageFree)}</span>
+            </div>
+            {isLowStorage && (
+              <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                Warning: less than 10% free space. Old report logs will be removed automatically while saving new data.
+              </p>
+            )}
           </div>
         </div>
         <div className="col-span-3 flex flex-col px-6 gap-2">
@@ -1383,6 +1613,10 @@ const Report: FC = () => {
                 <div className="flex flex-row items-center gap-2 py-1 flex-wrap">
                   <Text label={t('Report.ShowingReports')} />
                   <span className="font-medium text-primary">{selectedProject.title}</span>
+                  <span className="font-medium text-slate-600">
+                    — {format(filter.start, 'yyyy-MM-dd')} → {format(filter.end, 'yyyy-MM-dd')}
+                    {isSingleDayRange ? ` (${filter.hourStart} - ${filter.hourEnd})` : ''}
+                  </span>
                 </div>
               )}
               <div className="flex flex-row items-center gap-2 py-2">
@@ -1393,7 +1627,8 @@ const Report: FC = () => {
                     type="button"
                     disabled={exportBusy}
                     className={`flex flex-row items-center gap-1 border-0 bg-transparent p-0 touch-manipulation ${exportBusy ? 'opacity-40 cursor-wait' : 'cursor-pointer'}`}
-                    onClick={() => void handleExport(item.title)}
+                    onPointerUp={(e) => runFromTouchPointerUp(`export:${item.title}`, e, () => { void handleExport(item.title); })}
+                    onClick={() => runFromClick(`export:${item.title}`, () => { void handleExport(item.title); })}
                   >
                     <IonIcon src={item.icon} color="primary" />
                     <Text label={item.title} />
@@ -1405,51 +1640,51 @@ const Report: FC = () => {
                 <Text label={`${t('Common.Filter')}:`} />
                 <div className="flex flex-row flex-wrap items-center gap-x-4 gap-y-2">
                   {/* Use only onIonChange — wrapping div onClick + IonToggle caused double-toggles on iOS and ghost touch issues */}
-                  <div className="flex flex-row justify-center items-center gap-2">
+                  <div className="flex flex-row justify-center items-center gap-2" onPointerUp={(e) => handleToggleRowPointerUp('ok', e)}>
                     <IonToggle
                       checked={filter.ok}
-                      onIonChange={(e) => handleChangeFilter('ok', e.detail.checked)}
+                      onIonChange={(e) => handleToggleIonChange('ok', e.detail.checked)}
                     />
                     <Text label={t('Common.Okay')} />
                   </div>
-                  <div className="flex flex-row justify-center items-center gap-2">
+                  <div className="flex flex-row justify-center items-center gap-2" onPointerUp={(e) => handleToggleRowPointerUp('overload', e)}>
                     <IonToggle
                       checked={filter.overload}
-                      onIonChange={(e) => handleChangeFilter('overload', e.detail.checked)}
+                      onIonChange={(e) => handleToggleIonChange('overload', e.detail.checked)}
                     />
                     <Text label={t('Common.Overload')} />
                   </div>
-                  <div className="flex flex-row justify-center items-center gap-2">
+                  <div className="flex flex-row justify-center items-center gap-2" onPointerUp={(e) => handleToggleRowPointerUp('danger', e)}>
                     <IonToggle
                       checked={filter.danger}
-                      onIonChange={(e) => handleChangeFilter('danger', e.detail.checked)}
+                      onIonChange={(e) => handleToggleIonChange('danger', e.detail.checked)}
                     />
                     <Text label={t('Common.Danger')} />
                   </div>
-                  <div className="flex flex-row justify-center items-center gap-2">
+                  <div className="flex flex-row justify-center items-center gap-2" onPointerUp={(e) => handleToggleRowPointerUp('underload', e)}>
                     <IonToggle
                       checked={filter.underload}
-                      onIonChange={(e) => handleChangeFilter('underload', e.detail.checked)}
+                      onIonChange={(e) => handleToggleIonChange('underload', e.detail.checked)}
                     />
                     <Text label={t('Common.Underload')} />
                   </div>
-                  <div className="flex flex-row justify-center items-center gap-2">
+                  <div className="flex flex-row justify-center items-center gap-2" onPointerUp={(e) => handleToggleRowPointerUp('err', e)}>
                     <IonToggle
                       checked={filter.err}
-                      onIonChange={(e) => handleChangeFilter('err', e.detail.checked)}
+                      onIonChange={(e) => handleToggleIonChange('err', e.detail.checked)}
                     />
                     <Text label={t('Common.TrErr')} />
                   </div>
                 </div>
-                <div className="flex flex-row items-center gap-8">
+                <div className="flex flex-row flex-wrap items-center gap-x-6 gap-y-2 mt-1">
                   <div className="flex flex-row items-center gap-2">
                     <Text label={t('Common.From')} />
                     <input
                       type="date"
                       value={format(new Date(filter.start).toISOString(), 'yyyy-MM-dd')}
-                      className="outline-none border border-dark rounded p-1"
+                      className="outline-none border border-dark rounded p-1 bg-transparent text-dark dark:text-white"
                       onChange={(e) => {
-                        handleChangeFilter('start', new Date(getTime(e.target.value) + new Date().getTimezoneOffset() * 60 * 1000));
+                        handleChangeFilter('start', startOfDay(new Date(getTime(e.target.value) + new Date().getTimezoneOffset() * 60 * 1000)));
                         e.currentTarget.blur();
                       }}
                     />
@@ -1458,21 +1693,50 @@ const Report: FC = () => {
                     <Text label={t('Common.To')} />
                     <input
                       type="date"
-                      value={format(new Date(filter.end), 'yyyy-MM-dd')}
-                      className="outline-none border border-dark rounded p-1"
+                      value={format(new Date(filter.end).toISOString(), 'yyyy-MM-dd')}
+                      className="outline-none border border-dark rounded p-1 bg-transparent text-dark dark:text-white"
                       onChange={(e) => {
-                        handleChangeFilter('end', new Date(getTime(e.target.value) + new Date().getTimezoneOffset() * 60 * 1000));
+                        handleChangeFilter('end', endOfDay(new Date(getTime(e.target.value) + new Date().getTimezoneOffset() * 60 * 1000)));
                         e.currentTarget.blur();
                       }}
                     />
                   </div>
+                  <div className="flex flex-row items-center gap-2">
+                    <Text label="Hour from" />
+                    <input
+                      type="time"
+                      value={filter.hourStart}
+                      disabled={!isSingleDayRange}
+                      className="outline-none border border-dark rounded p-1 bg-transparent text-dark dark:text-white disabled:opacity-50"
+                      onChange={(e) => {
+                        handleChangeFilter('hourStart', e.target.value);
+                      }}
+                    />
+                  </div>
+                  <div className="flex flex-row items-center gap-2">
+                    <Text label="Hour to" />
+                    <input
+                      type="time"
+                      value={filter.hourEnd}
+                      disabled={!isSingleDayRange}
+                      className="outline-none border border-dark rounded p-1 bg-transparent text-dark dark:text-white disabled:opacity-50"
+                      onChange={(e) => {
+                        handleChangeFilter('hourEnd', e.target.value);
+                      }}
+                    />
+                  </div>
+                  <span className="text-xs text-slate-500">
+                    Up to {MAX_REPORT_LOGS.toLocaleString()} logs loaded for UI and exports.
+                    {!isSingleDayRange ? ' Hour range disabled for multi-day date ranges.' : ''}
+                  </span>
                 </div>
               </div>
               <div className="flex gap-2">
                 <button
                   type="button"
                   className={`p-2 w-max rounded flex justify-center items-center border-0 ${logList ? 'bg-danger' : 'bg-red-300'}`}
-                  onClick={() => void handleRemove()}
+                  onPointerUp={(e) => runFromTouchPointerUp('delete', e, () => { void handleRemove(); })}
+                  onClick={() => runFromClick('delete', () => { void handleRemove(); })}
                   aria-label={t('Common.Delete')}
                 >
                   <IonIcon icon={trashSharp} color="light" />
@@ -1480,22 +1744,18 @@ const Report: FC = () => {
                 <button
                   type="button"
                   className="p-2 w-max rounded flex justify-center items-center bg-primary border-0"
-                  onClick={() => handleRefresh()}
+                  onPointerUp={(e) => runFromTouchPointerUp('refresh', e, handleRefresh)}
+                  onClick={() => runFromClick('refresh', handleRefresh)}
                   aria-label={t('Common.Refresh')}
                 >
                   <IonIcon icon={refreshSharp} color="light" />
                 </button>
-                {isPreview && canLoadMore && (
-                  <button
-                    type="button"
-                    className="px-3 py-2 rounded bg-primary text-white font-medium disabled:opacity-50"
-                    disabled={loading}
-                    onClick={() => void handleLoadMore()}
-                  >
-                    Load more
-                  </button>
-                )}
               </div>
+              {pendingRefresh && (
+                <p className="text-xs text-amber-600 dark:text-amber-300">
+                  Filters changed. Press Refresh to apply.
+                </p>
+              )}
               <ReportTable />
           </>
         </div>

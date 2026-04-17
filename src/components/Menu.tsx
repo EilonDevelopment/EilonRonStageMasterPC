@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   IonContent,
   IonIcon,
@@ -128,6 +128,28 @@ const Menu: React.FC = () => {
 
   const [lang, setLang] = useState<string>('')
   const [themeToggle, setThemeToggle] = useState(false);
+  const touchActionAtRef = useRef<Record<string, number>>({});
+  const TOUCH_CLICK_SUPPRESS_MS = 700;
+
+  const runFromTouchPointerUp = (key: string, ev: React.PointerEvent, action: () => void) => {
+    if (ev.pointerType !== 'touch') return;
+    touchActionAtRef.current[key] = Date.now();
+    action();
+  };
+  const runFromClick = (key: string, action: () => void) => {
+    const lastTouchAt = touchActionAtRef.current[key] || 0;
+    if (Date.now() - lastTouchAt < TOUCH_CLICK_SUPPRESS_MS) return;
+    action();
+  };
+  const closeMainMenu = async () => {
+    const menuEl = document.querySelector('ion-menu') as HTMLIonMenuElement | null;
+    if (!menuEl) return;
+    try {
+      await menuEl.close();
+    } catch {
+      // ignore close errors; navigation already happened
+    }
+  };
 
   useEffect(() => {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)');
@@ -343,8 +365,15 @@ const Menu: React.FC = () => {
                 const textClass = themeToggle ? (isSelected ? '' : '!text-white') : (isSelected ? '' : '!text-black dark:!text-white');
                 if (appPage.title === MENUS.Monitor) {
                   return (
-                    <IonMenuToggle key={index} autoHide={false} onClick={() => handleOpenMonitor()}>
-                      <IonItem className={`bg-white dark:bg-dark cursor-pointer ${textClass}`} routerDirection="none" lines="none" detail={false}>
+                    <IonMenuToggle key={index} autoHide={false}>
+                      <IonItem
+                        className={`bg-white dark:bg-dark cursor-pointer ${textClass}`}
+                        routerDirection="none"
+                        lines="none"
+                        detail={false}
+                        onPointerUp={(e) => runFromTouchPointerUp(`menu:${appPage.title}`, e, () => { handleOpenMonitor(); void closeMainMenu(); })}
+                        onClick={() => runFromClick(`menu:${appPage.title}`, () => { handleOpenMonitor(); void closeMainMenu(); })}
+                      >
                         {ionIcon ? <IonIcon color={itemColor} className={textClass} aria-hidden="true" slot="start" ios={appPage.iosIcon} md={appPage.mdIcon} />
                           : <IonImg src={appPage.imgIcon} alt='' className='w-10 mr-2' />}
                         <IonLabel color={itemColor} className={textClass}>{t(`Menu.${appPage.title}`)}</IonLabel>
@@ -353,8 +382,14 @@ const Menu: React.FC = () => {
                   );
                 } else
                   return (
-                    <IonMenuToggle key={index} className='bg-white dark:bg-dark' autoHide={false} onClick={() => updateVisibleModal(appPage.title)}>
-                      <IonItem className={`bg-white dark:bg-dark cursor-pointer ${textClass}`} lines="none" detail={false}>
+                    <IonMenuToggle key={index} className='bg-white dark:bg-dark' autoHide={false}>
+                      <IonItem
+                        className={`bg-white dark:bg-dark cursor-pointer ${textClass}`}
+                        lines="none"
+                        detail={false}
+                        onPointerUp={(e) => runFromTouchPointerUp(`menu:${appPage.title}`, e, () => { updateVisibleModal(appPage.title); void closeMainMenu(); })}
+                        onClick={() => runFromClick(`menu:${appPage.title}`, () => { updateVisibleModal(appPage.title); void closeMainMenu(); })}
+                      >
                         {ionIcon ? <IonIcon color={itemColor} className={textClass} aria-hidden="true" slot="start" ios={appPage.iosIcon} md={appPage.mdIcon} />
                           : <IonImg src={appPage.imgIcon} alt='' className='w-10 mr-2' />}
                         <IonLabel color={itemColor} className={textClass}>{t(`Menu.${appPage.title}`)}</IonLabel>
@@ -367,7 +402,14 @@ const Menu: React.FC = () => {
                 const textClass = themeToggle ? (isSelected ? '' : '!text-white') : (isSelected ? '' : '!text-black dark:!text-white');
                 return (
                   <IonMenuToggle key={index} autoHide={false}>
-                    <IonItem className={`bg-white dark:bg-dark ${textClass}`} routerLink={appPage.url} routerDirection="none" lines="none" detail={false}>
+                    <IonItem
+                      className={`bg-white dark:bg-dark ${textClass}`}
+                      routerDirection="none"
+                      lines="none"
+                      detail={false}
+                      onPointerUp={(e) => runFromTouchPointerUp(`menu:${appPage.title}`, e, () => { history.push(appPage.url); void closeMainMenu(); })}
+                      onClick={() => runFromClick(`menu:${appPage.title}`, () => { history.push(appPage.url); void closeMainMenu(); })}
+                    >
                       {ionIcon ? <IonIcon color={itemColor} className={textClass} aria-hidden="true" slot="start" ios={appPage.iosIcon} md={appPage.mdIcon} />
                         : <IonImg src={appPage.imgIcon} alt='' className='w-10 mr-2' />}
                       <IonLabel color={itemColor} className={textClass}>{t(`Menu.${appPage.title}`)}</IonLabel>
@@ -396,14 +438,20 @@ const Menu: React.FC = () => {
 
           
           
-            <IonItem className='flex items-center gap-2 p-2 cursor-pointer' button onClick={handleSendLogsToDeveloper} detail={false}>
+            <IonItem
+            className='flex items-center gap-2 p-2 cursor-pointer'
+            button
+            onPointerUp={(e) => runFromTouchPointerUp('menu:sendlogs', e, () => { void handleSendLogsToDeveloper(); })}
+            onClick={() => runFromClick('menu:sendlogs', () => { void handleSendLogsToDeveloper(); })}
+            detail={false}
+          >
             <IonIcon slot="start" icon={mailOutline} />
             <IonLabel>Send logs to the developer</IonLabel>
           </IonItem>
           
 
 
-          <h1>version-1.4.3</h1>
+          <h1>version-1.4.4</h1>
         </IonContent>
       </IonMenu>
     </>

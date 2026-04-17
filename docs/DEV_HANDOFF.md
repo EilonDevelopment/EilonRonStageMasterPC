@@ -66,8 +66,20 @@ npm run build && npx cap sync ios
 | 2026-04-14 | ios-development-ai | Mac | Runtime/reporting hardening pass: protocol negative-spike guard at ingest (`< -10% nominal capacity`), persistent `status_code` at log write, queue backpressure to protect UI under long runs, richer agg status counters/worst-status, report filters consume status metadata, exports force full dataset (not preview), and status column/colors across screen + CSV/PDF/SQL/email. Local backup snapshot added under `src/_backup_2026-04-14_reports_runtime_reset/`. | f0d49ae |
 | 2026-04-15 | ios-development-ai | Mac | PRR BLE auto-reconnect after long power-off: next retry scheduled in `finally` after releasing `inProgress` (fixes stuck backoff), `bleConnectToDevice` returns success boolean, exponential backoff from disconnect callback. | 1eec9a2 |
 | 2026-04-15 | ios-development-ai | Mac | Reports/export pass: unified 100k cap + explicit continue/truncate warning, added `Data` source marker (`raw` / `5-min chunk`) in UI/exports, kept bulk details only in CSV, and fixed 5-min aggregation to exclude `Tr.Err` sentinel values from avg/min/max while preserving error counters. Also improved PRR link event logging consistency (connected/disconnected). | 3271e65 |
+| 2026-04-15 | ios-development-ai | Mac | Daily raw reports redesign: new `daily_logs` store + clean migration reset of legacy report stores, ingest writes raw rows by `day_key` with rollover on first sample after midnight, Reports UI changed to project→day tree (today default), exports now mirror selected-day filtered UI without Data/Bulk columns, and added tablet storage usage bar. | local WIP |
+| 2026-04-17 | ios-development-ai | Mac | Reports + Monitor stabilization block: date-range reports (no day/hour tree), centered progress kept, 100k UI/export cap with faster IndexedDB streaming, optional hour/min filter for single-day range, refresh-only apply flow, pending-refresh label, segmented storage bar + low-space warning + auto-prune oldest daily logs, Gross/Net ingest fixes (`tare_applied` + `net_value`) and multiple tare consistency fixes in Monitor totals/status, plus ZERO safety guard (block if any group LC raw load >30% capacity), and visual version bump to `1.4.4`. | pending push |
 
-**Android (`development-ai`):** `git fetch origin` and merge `origin/ios-development-ai` (recomendado). Último bloque compartido: `3271e65` (reports/export + agg Tr.Err fix + PRR link log consistency). Reconexión PRR BLE previa: `1eec9a2`. Hardening runtime/reportes: `f0d49ae`. Cherry-pick puntual (último): `3271e65`. Rutas en `3271e65`: `src/pages/Reports/index.tsx`, `src/hooks/useFunctions.tsx`, `src/Layout/CommonLayout.tsx`. Si faltan commits viejos: `f0d49ae`, `841ccef`, `286dbc4`, `7ae7b33`.
+**Android (`development-ai`) import checklist (2026-04-17 block):**
+- `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
+- Rebuild shared app layer (`npm install` only if lock/package changed; otherwise `npm run build`)
+- Android sync/build as usual (`npx cap sync android`, then Gradle/Android Studio build)
+- Validate on device:
+  1) Reports load only on Refresh, date range + single-day hour/min range behavior, 100k cap warnings
+  2) Monitor tare behavior: tile colors + group/total sums + overload/danger based on gross for safety
+  3) ZERO group blocked when any member raw load exceeds 30% of capacity
+  4) Left storage bar segmentation + low-space warning + no regressions while ingesting
+
+Primary touched files in this block: `src/pages/Reports/index.tsx`, `src/pages/Reports/index.css`, `src/hooks/useFunctions.tsx`, `src/Layout/CommonLayout.tsx`, `src/pages/Monitor/index.tsx`, `src/components/Monitor/MonitorView.tsx`, `src/components/Menu.tsx`, `src/helper/reportGrouping.ts`, `src/db.ts`.
 
 ---
 

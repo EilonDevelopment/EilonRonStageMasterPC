@@ -6,7 +6,6 @@ import {
   IonIcon,
   IonImg,
   IonLabel,
-  IonMenuButton,
   IonPage,
   IonTitle,
   IonToolbar,
@@ -17,7 +16,7 @@ import { useTranslation } from 'react-i18next';
 // import { useLocation,  } from 'react-router';
 import { useHistory, useLocation } from 'react-router-dom';
 import { App as CapApp } from '@capacitor/app';
-import { bluetoothOutline, checkmarkSharp, closeSharp, duplicateOutline, settingsOutline, trashOutline } from 'ionicons/icons';
+import { bluetoothOutline, checkmarkSharp, closeSharp, duplicateOutline, menuOutline, settingsOutline, trashOutline } from 'ionicons/icons';
 
 import { batteryBlackIcon, loadIcon, battIcon, maxIcon, maxActiveIcon, roundPictureIcon, tareIcon, tareActiveIcon, toolbarlistIcon, toolbarprogIcon, toolbarstopIcon, warningErrorIcon, bleConnectIcon, bleDisConnectIcon, batteryWhiteIcon } from '../assets/icons';
 import NewProjectModal from '../components/Modals/NewProjectModal';
@@ -269,6 +268,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const batteryIconRef = useRef(batteryIcon)
   const currentUnitsRef = useRef(curProject.units)
   const curProjectRef=useRef(curProject)
+  const tareStatusRef = useRef<boolean>(!!tareStatus)
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
   const { f_log_prooftest_value } = useFunctions()
   const locationRef = useRef(location.pathname + location.search + (location.hash || ''))
@@ -322,6 +322,9 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   useEffect(() => {
     batteryIconRef.current = batteryIcon
   }, [batteryIcon])
+  useEffect(() => {
+    tareStatusRef.current = !!tareStatus
+  }, [tareStatus])
   const handleChangeGroup = (group: IProofTest) => {
     // Handle group change
   }
@@ -1748,13 +1751,17 @@ const lastSoundTimeRef = useRef<number>(0);
           preoverload_precent = overload * po;
         }
 
-        // Use the same value that is shown on the LC tile (MonitorView: tareStatus && status_tare ? weightnotare : value)
-        const displayValueNumeric = (tareStatus && statusTare) ? weightnotare : parseFloat(w);
-        const valueToSaveForWarning = (u === 'mton') ? displayValueNumeric.toFixed(3) : displayValueNumeric.toFixed(0);
+        const grossValueNumeric = parseFloat(w);
+        const useNetForDisplay = tareStatusRef.current && statusTare;
+        const netValueNumeric = useNetForDisplay ? weightnotare : grossValueNumeric;
+        const displayValueNumeric = useNetForDisplay ? netValueNumeric : grossValueNumeric;
+        // Safety alarms MUST always use gross (physical load), never net/tare-adjusted.
+        const safetyValueNumeric = grossValueNumeric;
+        const valueToSaveForWarning = (u === 'mton') ? safetyValueNumeric.toFixed(3) : safetyValueNumeric.toFixed(0);
 
         let lcAlertKey = `lc-${lc}`; // Clave única para esta celda
         
-        if (displayValueNumeric < underload) {
+        if (safetyValueNumeric < underload) {
 
           
             // underload!! alert
@@ -1765,7 +1772,7 @@ const lastSoundTimeRef = useRef<number>(0);
             {
                 const timeNow = Date.now();
               // 1. Notificación Visual y Sonora (EL PUENTE)
-            const typeMsg = displayValueNumeric < underload ? "UNDERLOAD" : "OVERLOAD";
+            const typeMsg = safetyValueNumeric < underload ? "UNDERLOAD" : "OVERLOAD";
             toast.error(`LC ${lc}: ${typeMsg}! Value: ${valueToSaveForWarning}`, { toastId: lcAlertKey });
             //play_beep(4);
 
@@ -1802,7 +1809,7 @@ const lastSoundTimeRef = useRef<number>(0);
             activeAlertsRef.current.add(lcAlertKey); // Bloqueamos nuevas entradas para esta LC
            // fire_lc_overload(lc, valueToSaveForWarning, l.underload , 'total');
             }
-          } else if (displayValueNumeric > overload) {
+          } else if (safetyValueNumeric > overload) {
 
             const danger = (((parseFloat(String(weight)) / overload) * 100) > 129) ? true : false;
 
@@ -1843,7 +1850,7 @@ const lastSoundTimeRef = useRef<number>(0);
             }
             activeAlertsRef.current.add(lcAlertKey);
             }
-          } else if (displayValueNumeric > preoverload_precent) {
+          } else if (safetyValueNumeric > preoverload_precent) {
             // PRE-OVERLOAD alert
             lcAlertKey += "preoverload"
             if (!activeAlertsRef.current.has(lcAlertKey)) {
@@ -1887,12 +1894,41 @@ const lastSoundTimeRef = useRef<number>(0);
         let groupsChanged = false;
 
 
+        const tareEnabled = !!tareStatusRef.current;
         const projectGroups = groupsRef.current.filter(g => normalizeProjectId(g.project_id) === normalizeProjectId(curProjectRef.current.id));
+        const latestProjectLcs = (lcsRef?.current ?? []).filter(
+          (item: any) => normalizeProjectId(item.project_id) === normalizeProjectId(curProjectRef.current.id)
+        );
+        // Use one coherent source for totals: latest context LC list, but override the currently
+        // parsed LC with fresh values from this packet so sums and tiles stay in sync.
+        const effectiveProjectLcs = latestProjectLcs.map((item: any) => {
+          if (String(item.id) !== lc.toString()) return item;
+          return {
+            ...item,
+            value: w,
+            weightnotare: wn,
+            status_tare: statusTare,
+            tare,
+          };
+        });
+        const getDisplayValueNum = (item: any): number => {
+          if (item.value === 'Tr.Err') return 0;
+          const useNet = tareEnabled && item.status_tare && item.weightnotare != null && item.weightnotare !== '';
+          const raw = useNet ? item.weightnotare : item.value;
+          const n = Number(raw);
+          return Number.isFinite(n) ? n : 0;
+        };
+        const getGrossValueNum = (item: any): number => {
+          if (item.value === 'Tr.Err') return 0;
+          const n = Number(item.value);
+          return Number.isFinite(n) ? n : 0;
+        };
 
         projectGroups.forEach(group => {
-          const lcsInGroup = currentLcs.current.filter(item => 
-            item.groups && item.groups.split(',').map((s: string) => s.trim()).includes(String(group.id))
-          );
+          const lcsInGroup = effectiveProjectLcs
+            .filter(item =>
+              item.groups && item.groups.split(',').map((s: string) => s.trim()).includes(String(group.id))
+            );
 
           // 1. Verificamos si hay algún error para el DISPLAY (UI)
           const hasErrorInGroup = lcsInGroup.some(item => {
@@ -1900,13 +1936,11 @@ const lastSoundTimeRef = useRef<number>(0);
             return !isCurrentLC && item.value === 'Tr.Err';
           });
 
-          const groupSum = lcsInGroup.reduce((acc, item) => {
-            const val = (item.id === lc.toString()) ? displayValueNumeric : (item.value === 'Tr.Err' ? 0 : Number(item.value));
-            return acc + val;
-          }, 0);
+          const groupGrossSum = lcsInGroup.reduce((acc, item) => acc + getGrossValueNum(item), 0);
+          const groupDisplaySum = lcsInGroup.reduce((acc, item) => acc + getDisplayValueNum(item), 0);
 
           // 1. ACTUALIZACIÓN VISUAL (Lo que te faltaba)
-          const finalSumStr = hasErrorInGroup ? 'Tr.Err' : groupSum.toFixed(fx); //const finalSumStr = groupSum.toFixed(fx);
+          const finalSumStr = hasErrorInGroup ? 'Tr.Err' : groupDisplaySum.toFixed(fx);
           
           
           const gIdx = nextGroups.findIndex(g => g.id === group.id);
@@ -1917,7 +1951,7 @@ const lastSoundTimeRef = useRef<number>(0);
 
           let alertKey = `group-${group.id}`; // Identificador único para la guardia
 
-          if (group.overload && groupSum > Number(group.overload)) {
+          if (group.overload && groupGrossSum > Number(group.overload)) {
             // GUARDIA: Solo si NO estaba ya en alerta, grabamos en el historial
             alertKey += "overload";
             if (!activeAlertsRef.current.has(alertKey)) {
@@ -1927,12 +1961,12 @@ const lastSoundTimeRef = useRef<number>(0);
                 id: `warn-${group.id}-${timeNow}-${Math.random().toString(36).substr(2, 5)}`, // ID ÚNICO REAL warnId++,
                 log_date: format(new Date(), "HH:mm"),
                 lc_id: `Group ${group.id}`,
-                value: (u === 'mton') ? groupSum.toFixed(3) : groupSum.toFixed(0),
+                value: (u === 'mton') ? groupGrossSum.toFixed(3) : groupGrossSum.toFixed(0),
                 overload: group.overload,
                 project_id: curProjectRef.current.id
               };
 
-              toast.error(`Group-${group.id}: OVERLOAD! Value: ${groupSum}`, { toastId: lcAlertKey });
+              toast.error(`Group-${group.id}: OVERLOAD! Value: ${groupGrossSum}`, { toastId: lcAlertKey });
               //play_beep(4);
               const updatedList = [newWarning, ...warnListRef.current];
               warnListRef.current = updatedList;
@@ -1962,28 +1996,28 @@ const lastSoundTimeRef = useRef<number>(0);
 
         // 5. LÓGICA DE SUMA TOTAL (TOTAL SUM)
         // FIX TS: Usamos !!item.total_sum para evaluar el booleano correctamente
-        const totalSumLcs = currentLcs.current.filter(item => !!item.total_sum || String(item.total_sum) === '1');
+        const totalSumLcs = effectiveProjectLcs
+          .filter(item => !!item.total_sum || String(item.total_sum) === '1')
+          ;
         
         // Verificamos si hay algún error de transmisión en las celdas del total
         const hasTotalError = totalSumLcs.some(item => item.value === 'Tr.Err');
 
 
-        const totalSumValue = totalSumLcs.reduce((acc, item) => {
-          const val = (item.id === lc.toString()) ? displayValueNumeric : (item.value === 'Tr.Err' ? 0 : Number(item.value));
-          return acc + val;
-        }, 0);
+        const totalSumGrossValue = totalSumLcs.reduce((acc, item) => acc + getGrossValueNum(item), 0);
+        const totalSumDisplayValue = totalSumLcs.reduce((acc, item) => acc + getDisplayValueNum(item), 0);
 
         // EL PUENTE: Actualizamos el encabezado visual
         if (hasTotalError) {
           updateTotalWeightHtml('<span class="text-xs font-bold bg-danger text-white px-1.5 py-0.5 rounded">Tr. Err</span>');
         } else {
-          const formattedTotal = (u === 'mton') ? totalSumValue.toFixed(3) : totalSumValue.toFixed(0);
+          const formattedTotal = (u === 'mton') ? totalSumDisplayValue.toFixed(3) : totalSumDisplayValue.toFixed(0);
           pendingTotalHtmlRef.current = formattedTotal; //updateTotalWeightHtml(formattedTotal);
         }
 
         const totalAlertKey = 'total-sum-alert';
 
-        if (!hasTotalError && curProjectRef.current.total_overload && totalSumValue > Number(curProjectRef.current.total_overload)) {
+        if (!hasTotalError && curProjectRef.current.total_overload && totalSumGrossValue > Number(curProjectRef.current.total_overload)) {
           // GUARDIA para Suma Total
           if (!activeAlertsRef.current.has(totalAlertKey)) {
             const timeNow = Date.now();
@@ -1991,11 +2025,11 @@ const lastSoundTimeRef = useRef<number>(0);
               id: `warn-${totalAlertKey}-${timeNow}-${Math.random().toString(36).substr(2, 5)}`, // ID ÚNICO REAL warnId++,
               log_date: format(new Date(), "HH:mm"),
               lc_id: 'Total Sum',
-              value: (u === 'mton') ? totalSumValue.toFixed(3) : totalSumValue.toFixed(0),
+              value: (u === 'mton') ? totalSumGrossValue.toFixed(3) : totalSumGrossValue.toFixed(0),
               overload: curProjectRef.current.total_overload,
               project_id: curProjectRef.current.id
             };
-            toast.error(`Total Sum: OVERLOAD! Value: ${(u === 'mton') ? totalSumValue.toFixed(3) : totalSumValue.toFixed(0)}`);
+            toast.error(`Total Sum: OVERLOAD! Value: ${(u === 'mton') ? totalSumGrossValue.toFixed(3) : totalSumGrossValue.toFixed(0)}`);
 
             const updatedList = [newWarning, ...warnListRef.current];
 
@@ -2444,13 +2478,36 @@ const lastSoundTimeRef = useRef<number>(0);
   }
 
   const isDark = useMemo(() => mode === 'dark', [mode])
+  const touchMenuOpenAtRef = useRef(0)
+  const openMainMenu = () => {
+    const menuEl = document.querySelector('ion-menu') as HTMLIonMenuElement | null
+    if (!menuEl) return
+    void menuEl.open()
+  }
+  const handleHamburgerPointerUp = (ev: React.PointerEvent<HTMLButtonElement>) => {
+    if (ev.pointerType !== 'touch') return
+    touchMenuOpenAtRef.current = Date.now()
+    openMainMenu()
+  }
+  const handleHamburgerClick = () => {
+    if (Date.now() - touchMenuOpenAtRef.current < 700) return
+    openMainMenu()
+  }
 
   return (
     <IonPage key={layoutKey}>
       <IonHeader>
         <IonToolbar style={{ '--min-height': '64px' }}>
           <IonButtons slot="start">
-            <IonMenuButton color='dark' />
+            <button
+              type="button"
+              className="bg-transparent border-0 p-2 cursor-pointer flex items-center justify-center"
+              onPointerUp={handleHamburgerPointerUp}
+              onClick={handleHamburgerClick}
+              aria-label="Open menu"
+            >
+              <IonIcon icon={menuOutline} color='dark' className="text-2xl" />
+            </button>
           </IonButtons>
           {location.pathname === ROUTES.Monitor &&
             <div className='flex flex-row justify-between'>

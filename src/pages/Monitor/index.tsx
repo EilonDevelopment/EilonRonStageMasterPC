@@ -1562,8 +1562,31 @@ const updateSumByGroup = async () => {
           
           const inGroup = (item: ILC) => (item.groups?.split(',').map(g => g.trim()) ?? []).includes(groupId);
           const groupLcs = lcs.filter(lc => normalizeProjectId(lc.project_id) === normalizeProjectId(curProject.id) && inGroup(lc));
+          // Safety rule for ZERO: block when any LC in the target group carries >30% of its capacity (raw load).
+          // Capacity baseline = LC overload threshold.
+          const overLimitLc = groupLcs.find((lc) => {
+            const overloadNum = Number(lc.overload);
+            if (!Number.isFinite(overloadNum) || overloadNum <= 0) return false;
+            const live = liveLC.find((x: any) => String(x.id) === String(lc.id));
+            const rawGross = Number((live as any)?.realval ?? lc.realval);
+            if (!Number.isFinite(rawGross)) return false;
+            return Math.abs(rawGross) > overloadNum * 0.3;
+          });
           setVisibleModal('');
           if (groupLcs.length === 0) return setVisibleModal('');
+          if (overLimitLc) {
+            const overloadNum = Number(overLimitLc.overload);
+            const live = liveLC.find((x: any) => String(x.id) === String(overLimitLc.id));
+            const rawGross = Number((live as any)?.realval ?? overLimitLc.realval);
+            const unitLabel = String(curProject.units || '').trim() || 'unit';
+            await Swal.fire({
+              title: 'Zero not allowed',
+              text: `Cannot apply ZERO to this group because load cell ${overLimitLc.id} is above 30% of capacity (${Math.abs(rawGross).toFixed(2)} ${unitLabel} > ${(overloadNum * 0.3).toFixed(2)} ${unitLabel}). Remove load and try again.`,
+              icon: 'warning',
+              heightAuto: false,
+            });
+            return;
+          }
           // En el case 'zero':
 logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: groupLcs.length });
           // PASO 1: Preparación inmediata

@@ -7,6 +7,7 @@ export class MySubClassedDexie extends Dexie {
   lcs!: Table<any>;
   groups!: Table<any>;
   logs!: Table<any>;
+  daily_logs!: Table<any>;
   logs_archive!: Table<any>;
   logs_agg!: Table<any>;
   project_details!: Table<any>;
@@ -64,6 +65,70 @@ export class MySubClassedDexie extends Dexie {
       projects: '++id, title, units, pre_overload, total_overload, reports, cycle, last_settings_change, stage_x, stage_y, p_image, show_graphs, windmeter_units',
       lcs: '++lc_id, id, project_id, title, psw, underload, overload, total_sum, groups, view_x, view_y, calibration_offset, zero, tare, logoheaderpdf, certnumber, certcompany, certcompanyaddress, companytel,companycontact, productdescription, serialortag, wll, testmethod, loadtestto, notes, machinecode, productname, modelname, testlocation',
       groups: '++group_id, id, project_id, title, overload, tare',
+      logs: '++id, lc_id, project_id, log_date, value, overload, underload, unit, realval, battery, log_type, [project_id+log_date], [log_date]',
+      logs_archive: '++id, lc_id, project_id, log_date, value, overload, underload, unit, realval, battery, log_type, [project_id+log_date], [log_date]',
+      logs_agg: '[project_id+lc_id+bucket], project_id, lc_id, bucket, [project_id+bucket], [bucket]',
+      project_details: '++id, project_id, logoheaderpdf, certnumber, certcompany, certcompanyaddress, companytel, companycontact, productdescription, serialortag, wll, testmethod, loadtestto, notes, machinecode, productname, modelname, testlocation',
+      logs_proofftest: '++id, group_id, lc_id, project_id, log_date, value, overload, underload, unit, realval',
+      totalizer: '++id, group_id, project_id, sum, log_date',
+      app_state: 'id, cur_project_id',
+      crash_logs: '++id, timestamp'
+    });
+    this.version(20).stores({
+      projects: '++id, title, units, pre_overload, total_overload, reports, cycle, last_settings_change, stage_x, stage_y, p_image, show_graphs, windmeter_units',
+      lcs: '++lc_id, id, project_id, title, psw, underload, overload, total_sum, groups, view_x, view_y, calibration_offset, zero, tare, logoheaderpdf, certnumber, certcompany, certcompanyaddress, companytel,companycontact, productdescription, serialortag, wll, testmethod, loadtestto, notes, machinecode, productname, modelname, testlocation',
+      groups: '++group_id, id, project_id, title, overload, tare',
+      // New raw-only daily store for reports
+      daily_logs: '++id, project_id, day_key, log_date, lc_id, log_type, status_code, [project_id+day_key], [project_id+day_key+log_date], [day_key+log_date], [log_date]',
+      // Legacy stores kept in schema for compatibility, but no longer used by reports pipeline
+      logs: '++id, lc_id, project_id, log_date, value, overload, underload, unit, realval, battery, log_type, [project_id+log_date], [log_date]',
+      logs_archive: '++id, lc_id, project_id, log_date, value, overload, underload, unit, realval, battery, log_type, [project_id+log_date], [log_date]',
+      logs_agg: '[project_id+lc_id+bucket], project_id, lc_id, bucket, [project_id+bucket], [bucket]',
+      project_details: '++id, project_id, logoheaderpdf, certnumber, certcompany, certcompanyaddress, companytel, companycontact, productdescription, serialortag, wll, testmethod, loadtestto, notes, machinecode, productname, modelname, testlocation',
+      logs_proofftest: '++id, group_id, lc_id, project_id, log_date, value, overload, underload, unit, realval',
+      totalizer: '++id, group_id, project_id, sum, log_date',
+      app_state: 'id, cur_project_id',
+      crash_logs: '++id, timestamp'
+    }).upgrade(async (tx) => {
+      // Clean start requested for report history migration
+      await tx.table('logs').clear();
+      await tx.table('logs_archive').clear();
+      await tx.table('logs_agg').clear();
+    });
+    this.version(21).stores({
+      projects: '++id, title, units, pre_overload, total_overload, reports, cycle, last_settings_change, stage_x, stage_y, p_image, show_graphs, windmeter_units',
+      lcs: '++lc_id, id, project_id, title, psw, underload, overload, total_sum, groups, view_x, view_y, calibration_offset, zero, tare, logoheaderpdf, certnumber, certcompany, certcompanyaddress, companytel,companycontact, productdescription, serialortag, wll, testmethod, loadtestto, notes, machinecode, productname, modelname, testlocation',
+      groups: '++group_id, id, project_id, title, overload, tare',
+      daily_logs: '++id, project_id, day_key, log_date, lc_id, log_type, status_code, [project_id+day_key], [project_id+day_key+log_date], [project_id+day_key+status_code+log_date], [day_key+log_date], [log_date]',
+      logs: '++id, lc_id, project_id, log_date, value, overload, underload, unit, realval, battery, log_type, [project_id+log_date], [log_date]',
+      logs_archive: '++id, lc_id, project_id, log_date, value, overload, underload, unit, realval, battery, log_type, [project_id+log_date], [log_date]',
+      logs_agg: '[project_id+lc_id+bucket], project_id, lc_id, bucket, [project_id+bucket], [bucket]',
+      project_details: '++id, project_id, logoheaderpdf, certnumber, certcompany, certcompanyaddress, companytel, companycontact, productdescription, serialortag, wll, testmethod, loadtestto, notes, machinecode, productname, modelname, testlocation',
+      logs_proofftest: '++id, group_id, lc_id, project_id, log_date, value, overload, underload, unit, realval',
+      totalizer: '++id, group_id, project_id, sum, log_date',
+      app_state: 'id, cur_project_id',
+      crash_logs: '++id, timestamp'
+    });
+    this.version(22).stores({
+      projects: '++id, title, units, pre_overload, total_overload, reports, cycle, last_settings_change, stage_x, stage_y, p_image, show_graphs, windmeter_units',
+      lcs: '++lc_id, id, project_id, title, psw, underload, overload, total_sum, groups, view_x, view_y, calibration_offset, zero, tare, logoheaderpdf, certnumber, certcompany, certcompanyaddress, companytel,companycontact, productdescription, serialortag, wll, testmethod, loadtestto, notes, machinecode, productname, modelname, testlocation',
+      groups: '++group_id, id, project_id, title, overload, tare',
+      daily_logs: '++id, project_id, day_key, hour_key, log_date, lc_id, log_type, status_code, [project_id+day_key], [project_id+day_key+log_date], [project_id+day_key+hour_key], [project_id+day_key+hour_key+log_date], [project_id+day_key+hour_key+status_code+log_date], [project_id+day_key+status_code+log_date], [day_key+log_date], [log_date]',
+      logs: '++id, lc_id, project_id, log_date, value, overload, underload, unit, realval, battery, log_type, [project_id+log_date], [log_date]',
+      logs_archive: '++id, lc_id, project_id, log_date, value, overload, underload, unit, realval, battery, log_type, [project_id+log_date], [log_date]',
+      logs_agg: '[project_id+lc_id+bucket], project_id, lc_id, bucket, [project_id+bucket], [bucket]',
+      project_details: '++id, project_id, logoheaderpdf, certnumber, certcompany, certcompanyaddress, companytel, companycontact, productdescription, serialortag, wll, testmethod, loadtestto, notes, machinecode, productname, modelname, testlocation',
+      logs_proofftest: '++id, group_id, lc_id, project_id, log_date, value, overload, underload, unit, realval',
+      totalizer: '++id, group_id, project_id, sum, log_date',
+      app_state: 'id, cur_project_id',
+      crash_logs: '++id, timestamp'
+    });
+    this.version(23).stores({
+      projects: '++id, title, units, pre_overload, total_overload, reports, cycle, last_settings_change, stage_x, stage_y, p_image, show_graphs, windmeter_units',
+      lcs: '++lc_id, id, project_id, title, psw, underload, overload, total_sum, groups, view_x, view_y, calibration_offset, zero, tare, logoheaderpdf, certnumber, certcompany, certcompanyaddress, companytel,companycontact, productdescription, serialortag, wll, testmethod, loadtestto, notes, machinecode, productname, modelname, testlocation',
+      groups: '++group_id, id, project_id, title, overload, tare',
+      // Ensure legacy-compatible index exists for menu/hour rebuilds
+      daily_logs: '++id, project_id, day_key, hour_key, log_date, lc_id, log_type, status_code, [project_id+day_key], [project_id+day_key+log_date], [project_id+day_key+hour_key], [project_id+day_key+hour_key+log_date], [project_id+day_key+hour_key+status_code+log_date], [project_id+day_key+status_code+log_date], [day_key+log_date], [log_date]',
       logs: '++id, lc_id, project_id, log_date, value, overload, underload, unit, realval, battery, log_type, [project_id+log_date], [log_date]',
       logs_archive: '++id, lc_id, project_id, log_date, value, overload, underload, unit, realval, battery, log_type, [project_id+log_date], [log_date]',
       logs_agg: '[project_id+lc_id+bucket], project_id, lc_id, bucket, [project_id+bucket], [bucket]',

@@ -406,14 +406,15 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
   const numOver = Number(overload);
   const numUnder = Number(underload);
   const useTareValue = !hasTransmissionError && tare && status_tare && weightnotare != null && weightnotare !== '';
-  const valueForCheck = useTareValue ? Number(weightnotare) : numVal;
-  const isDanger = !Number.isNaN(valueForCheck) && !Number.isNaN(numOver) && numOver > 0 && valueForCheck >= numOver * 1.3;
-  const isOverload = !Number.isNaN(valueForCheck) && !Number.isNaN(numOver) && valueForCheck > numOver;
-  const isUnderload = !Number.isNaN(valueForCheck) && !Number.isNaN(numUnder) && valueForCheck < numUnder;
+  // Safety thresholds must always use GROSS (physical load), not tare-adjusted net.
+  const safetyValue = numVal;
+  const isDanger = !Number.isNaN(safetyValue) && !Number.isNaN(numOver) && numOver > 0 && safetyValue >= numOver * 1.3;
+  const isOverload = !Number.isNaN(safetyValue) && !Number.isNaN(numOver) && safetyValue > numOver;
+  const isUnderload = !Number.isNaN(safetyValue) && !Number.isNaN(numUnder) && safetyValue < numUnder;
   const displayValue = isDanger ? 'DANGER' : (value ? value : (bleConnected ? value : t("Common.TrErr")));
   const valueShown = useTareValue ? weightnotare : (value ?? '');
-  const isZeroValue = valueShown === '0' || parseFloat(String(valueShown).trim()) === 0;
-  const showRedValueBg = (isDanger || isOverload || isUnderload) && !isZeroValue;
+  const showRedValueBg = (isDanger || isOverload || isUnderload);
+  const statusText = isDanger ? 'DANGER' : '';
 
   return (
     <div
@@ -478,7 +479,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
           >
             {maxMode
               ? (bleConnected ? (item.max ?? 0) : t("Common.TrErr"))
-              : (isDanger ? 'DANGER' : (bleConnected && useTareValue
+              : (statusText ? statusText : (bleConnected && useTareValue
                   ? weightnotare
                   : (!loadMode ? (bleConnected ? `${battery}%` : t("Common.TrErr")) : displayValue)))}
           </div>

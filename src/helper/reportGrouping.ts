@@ -102,7 +102,8 @@ export function buildReportGroupsSync(
 export async function buildReportGroupsAsync(
   allLogs: any[],
   query: ReportGroupQuery,
-  isCancelled: () => boolean
+  isCancelled: () => boolean,
+  onProgress?: (phase: 'filter' | 'validate' | 'group', done: number, total: number) => void
 ): Promise<{ groups: Record<string, any[]> | null; rowCount: number; cancelled?: boolean }> {
   const byFilter = makeByFilter(query);
   const hasAnyFilter = query.ok || query.overload || query.danger || query.underload || query.trerr;
@@ -110,21 +111,26 @@ export async function buildReportGroupsAsync(
   let mergedLogs: any[];
   if (!hasAnyFilter) {
     mergedLogs = allLogs;
+    onProgress?.('filter', allLogs.length, allLogs.length);
   } else {
     mergedLogs = [];
+    const total = allLogs.length;
     for (let i = 0; i < allLogs.length; i += FILTER_CHUNK) {
       if (isCancelled()) return { groups: null, rowCount: 0, cancelled: true };
       mergedLogs.push(
         ...allLogs.slice(i, i + FILTER_CHUNK).filter((log) => isPrrLinkLog(log) || byFilter(log))
       );
+      onProgress?.('filter', Math.min(i + FILTER_CHUNK, total), total);
       await yieldToMain();
     }
   }
 
   const validLogs: any[] = [];
+  const validateTotal = mergedLogs.length;
   for (let i = 0; i < mergedLogs.length; i += FILTER_CHUNK) {
     if (isCancelled()) return { groups: null, rowCount: 0, cancelled: true };
     validLogs.push(...mergedLogs.slice(i, i + FILTER_CHUNK).filter(isValidLogRow));
+    onProgress?.('validate', Math.min(i + FILTER_CHUNK, validateTotal), validateTotal);
     await yieldToMain();
   }
 
@@ -132,10 +138,14 @@ export async function buildReportGroupsAsync(
 
   const intervalMs = Math.max(1000, (query.report_interval_seconds || 60) * 1000);
   const groups: Record<string, any[]> = {};
+  const groupTotal = validLogs.length;
 
   for (let i = 0; i < validLogs.length; i++) {
     if (isCancelled()) return { groups: null, rowCount: 0, cancelled: true };
-    if (i > 0 && i % GROUP_YIELD_EVERY === 0) await yieldToMain();
+    if (i > 0 && i % GROUP_YIELD_EVERY === 0) {
+      onProgress?.('group', i, groupTotal);
+      await yieldToMain();
+    }
 
     const log = validLogs[i];
     const intervalStart = Math.floor(Number(log.log_date) / intervalMs) * intervalMs;
@@ -143,6 +153,7 @@ export async function buildReportGroupsAsync(
     if (!groups[key]) groups[key] = [];
     groups[key].push(log);
   }
+  onProgress?.('group', groupTotal, groupTotal);
 
   return { groups, rowCount: mergedLogs.length };
 }
