@@ -1,5 +1,6 @@
 import React, { FC, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { useHistory } from "react-router";
 import CommonLayout from "../../Layout/CommonLayout";
 import './index.css';
 import { IGroup, ILC } from "../../helper/types";
@@ -20,6 +21,7 @@ import { format, getTime } from "date-fns";
 import useGroupOperations from "../../helper/db/groups";
 import useFunctions from "../../hooks/useFunctions";
 import { fire_error, getLCsByGroup, normalizeProjectId, strToFloat } from "../../helper/functions";
+import { ROUTES } from "../../helper/constants";
 import { toast } from "react-toastify";
 import { logEvent } from "../../services/LogService";
 
@@ -35,6 +37,7 @@ const MonitorModals = {
 const SINGLE_TAP_DELAY_MS = 350
 const GROUP_LONG_PRESS_MS = 600
 const Monitor: FC = () => {
+  const history = useHistory();
   const heartbeatRef = useRef<number | null>(null);
   const monitorStartRef = useRef<number>(Date.now());
   const { setGroupTare, setGroupZero } = useGroupOperations();
@@ -248,6 +251,24 @@ const Monitor: FC = () => {
       f_load_lcs()
     }
   }, [curProject])
+
+  useEffect(() => {
+    if (!curProject?.id) return;
+    const pid = normalizeProjectId(curProject.id);
+    const projectGroups = groups.filter(
+      (group) => normalizeProjectId(group.project_id) === pid
+    );
+    if (projectGroups.length === 0) return;
+
+    const hasZeroOverload = projectGroups.some((group) => {
+      const overload = String(group.overload ?? '').trim();
+      return overload !== '' && Number(overload) === 0;
+    });
+
+    if (hasZeroOverload) {
+      history.replace(ROUTES.Settings);
+    }
+  }, [curProject?.id, groups, history]);
 
 
   useEffect(() => {

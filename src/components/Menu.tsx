@@ -194,7 +194,7 @@ const Menu: React.FC = () => {
     await Preferences.set({ key: 'eilon.theme', value: newMode });
   }
 
-  const handleOpenMonitor = () => {
+  const handleOpenMonitor = (): boolean => {
     if (curProject) {
       const current_grroups = groups.filter((group) => {
         return String(group.project_id) === String(curProject.id);
@@ -206,24 +206,31 @@ const Menu: React.FC = () => {
           icon: 'error',
           title: `<h2 class="text-danger">${t('Common.Error')}</h2>`,
           html: `<p>${groupZero.title} Can't be 0</p>`,
-          heightAuto: false
+          heightAuto: false,
+          allowOutsideClick: false,
+          allowEscapeKey: false
         });
-        return;
+        return false;
       }
       const setGroups = groups?.filter((group) => String(group.project_id) === String(curProject.id) && group.overload != '');
       const filtered = lcs.filter(item => item.total_sum)
       if (filtered.length > 0) {
-        if (setGroups.length > 0)
+        if (setGroups.length > 0) {
           history.push(ROUTES.Monitor)
-        else
+          return true;
+        } else {
           updateErrStr(t('You Must First set at Least One Group'))
-      }
-      else
+          return false;
+        }
+      } else {
         updateErrStr(t('Msg.ErrInvalidMonitor'))
+        return false;
+      }
     } else {
       updateVisibleModal(ModalNames.NewProject)
+      return true;
     }
-
+    return false;
   }
 
 /*
@@ -365,20 +372,31 @@ const Menu: React.FC = () => {
                 const textClass = themeToggle ? (isSelected ? '' : '!text-white') : (isSelected ? '' : '!text-black dark:!text-white');
                 if (appPage.title === MENUS.Monitor) {
                   return (
-                    <IonMenuToggle key={index} autoHide={false}>
-                      <IonItem
-                        className={`bg-white dark:bg-dark cursor-pointer ${textClass}`}
-                        routerDirection="none"
-                        lines="none"
-                        detail={false}
-                        onPointerUp={(e) => runFromTouchPointerUp(`menu:${appPage.title}`, e, () => { handleOpenMonitor(); void closeMainMenu(); })}
-                        onClick={() => runFromClick(`menu:${appPage.title}`, () => { handleOpenMonitor(); void closeMainMenu(); })}
-                      >
-                        {ionIcon ? <IonIcon color={itemColor} className={textClass} aria-hidden="true" slot="start" ios={appPage.iosIcon} md={appPage.mdIcon} />
-                          : <IonImg src={appPage.imgIcon} alt='' className='w-10 mr-2' />}
-                        <IonLabel color={itemColor} className={textClass}>{t(`Menu.${appPage.title}`)}</IonLabel>
-                      </IonItem>
-                    </IonMenuToggle>
+                    <IonItem
+                      key={index}
+                      className={`bg-white dark:bg-dark cursor-pointer ${textClass}`}
+                      routerDirection="none"
+                      lines="none"
+                      detail={false}
+                      onPointerUp={(e) => runFromTouchPointerUp(`menu:${appPage.title}`, e, () => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const shouldCloseMenu = handleOpenMonitor();
+                        if (shouldCloseMenu) void closeMainMenu();
+                      })}
+                      onClick={() => runFromClick(`menu:${appPage.title}`, () => {
+                        // Prevent the same tap gesture from immediately dismissing Swal on Android.
+                        const evt = window.event;
+                        evt?.preventDefault?.();
+                        evt?.stopPropagation?.();
+                        const shouldCloseMenu = handleOpenMonitor();
+                        if (shouldCloseMenu) void closeMainMenu();
+                      })}
+                    >
+                      {ionIcon ? <IonIcon color={itemColor} className={textClass} aria-hidden="true" slot="start" ios={appPage.iosIcon} md={appPage.mdIcon} />
+                        : <IonImg src={appPage.imgIcon} alt='' className='w-10 mr-2' />}
+                      <IonLabel color={itemColor} className={textClass}>{t(`Menu.${appPage.title}`)}</IonLabel>
+                    </IonItem>
                   );
                 } else
                   return (
