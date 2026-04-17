@@ -68,6 +68,7 @@ npm run build && npx cap sync ios
 | 2026-04-15 | ios-development-ai | Mac | Reports/export pass: unified 100k cap + explicit continue/truncate warning, added `Data` source marker (`raw` / `5-min chunk`) in UI/exports, kept bulk details only in CSV, and fixed 5-min aggregation to exclude `Tr.Err` sentinel values from avg/min/max while preserving error counters. Also improved PRR link event logging consistency (connected/disconnected). | 3271e65 |
 | 2026-04-15 | ios-development-ai | Mac | Daily raw reports redesign: new `daily_logs` store + clean migration reset of legacy report stores, ingest writes raw rows by `day_key` with rollover on first sample after midnight, Reports UI changed to project→day tree (today default), exports now mirror selected-day filtered UI without Data/Bulk columns, and added tablet storage usage bar. | local WIP |
 | 2026-04-17 | ios-development-ai | Mac | Reports + Monitor stabilization block: date-range reports (no day/hour tree), centered progress kept, 100k UI/export cap with faster IndexedDB streaming, optional hour/min filter for single-day range, refresh-only apply flow, pending-refresh label, segmented storage bar + low-space warning + auto-prune oldest daily logs, Gross/Net ingest fixes (`tare_applied` + `net_value`) and multiple tare consistency fixes in Monitor totals/status, plus ZERO safety guard (block if any group LC raw load >30% capacity), and visual version bump to `1.4.4`. | pending push |
+| 2026-04-17 | development-ai | Windows | Android UX parity fix for Monitor gate: keep `Can't be 0` dialog open (no instant dismiss on touch/menu events) and auto-redirect to `Settings` on app open if any current-project group has `overload=0`. | 26a529d |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -80,6 +81,15 @@ npm run build && npx cap sync ios
   4) Left storage bar segmentation + low-space warning + no regressions while ingesting
 
 Primary touched files in this block: `src/pages/Reports/index.tsx`, `src/pages/Reports/index.css`, `src/hooks/useFunctions.tsx`, `src/Layout/CommonLayout.tsx`, `src/pages/Monitor/index.tsx`, `src/components/Monitor/MonitorView.tsx`, `src/components/Menu.tsx`, `src/helper/reportGrouping.ts`, `src/db.ts`.
+
+---
+
+**iOS (`ios-development-ai`) import checklist (Android parity fix, 2026-04-17):**
+- `git fetch origin && git checkout ios-development-ai && git merge origin/development-ai`
+- Validate:
+  1) In Settings, if any group overload is `0`, tapping Monitor shows `Can't be 0` and dialog stays visible (no auto-close)
+  2) After app restart with that invalid condition, app lands on `Settings` (not `Monitor`)
+- Primary files: `src/components/Menu.tsx`, `src/pages/Monitor/index.tsx`
 
 ---
 
