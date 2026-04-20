@@ -9,6 +9,8 @@ import {
   IonPage,
   IonTitle,
   IonToolbar,
+  useIonViewDidEnter,
+  useIonViewDidLeave,
 } from '@ionic/react';
 import React, { FC, ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -285,6 +287,24 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const bleScanAbortRef = useRef(false);
   const bleScanInProgressRef = useRef(false);
   const connectDeviceAutoRunRef = useRef(false);
+  const isViewActiveRef = useRef(true);
+
+  useIonViewDidEnter(() => {
+    isViewActiveRef.current = true;
+  });
+
+  useIonViewDidLeave(() => {
+    isViewActiveRef.current = false;
+    // Ensure hidden cached pages cannot keep a picker opened behind the active view.
+    if (blePickerOpen) {
+      bleScanAbortRef.current = true;
+      void BleClient.stopLEScan().catch(() => undefined);
+      setBlePickerOpen(false);
+      setBlePickerScanning(false);
+      setBlePickerDevices([]);
+      setBlePickerType(null);
+    }
+  });
 
   useEffect(() => {
     locationRef.current = location.pathname + location.search + (location.hash || '')
@@ -910,6 +930,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   }
 
   const handleSelectDevice = (type: string) => {
+    if (!isViewActiveRef.current) return;
     ////console.log('selected device: ', type)
     switch (type) {
       case 'prr':
@@ -931,12 +952,14 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       connectDeviceAutoRunRef.current = false;
       return;
     }
+    if (!isViewActiveRef.current) return;
     if (connectDeviceAutoRunRef.current) return;
     connectDeviceAutoRunRef.current = true;
     handleSelectDevice('prr');
   }, [visibleModal]);
 
   const handleStartScan = async (type: string) => {
+  if (!isViewActiveRef.current) return;
   if (type === 'prr') {
     // Manual flow wins: cancel pending auto-reconnect retries and invalidate stale callbacks.
     prrReconnectEpochRef.current += 1;
@@ -953,6 +976,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       text: "There is already a Bluetooth scan in progress.",
       icon: "info",
       confirmButtonText: "OK",
+      allowOutsideClick: false,
+      allowEscapeKey: false,
       heightAuto: false,
     });
     void logEvent("WARN", "BLE scan ignored: already in progress", { type }, "BLE");
@@ -1040,6 +1065,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   };
 
   const runBleDevicePickerFlow = async (kind: "prr" | "lc") => {
+    if (!isViewActiveRef.current) return;
     const s =
       kind === "prr"
         ? numberToUUID(0xfff0)

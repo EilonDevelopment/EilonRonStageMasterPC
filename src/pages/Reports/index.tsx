@@ -430,7 +430,12 @@ const Report: FC = () => {
         dayTimeWindow: dayCount === 1 ? activeTimeRange : null,
       });
       if (dayResult.cancelled) return { logs: [], totalBeforeCap: 0 };
-      merged.push(...dayResult.rows);
+      // Avoid spreading very large arrays into push (can throw RangeError / stack overflow
+      // around hundreds of thousands of rows on some Android WebViews).
+      const rowsToAppend = dayResult.rows.slice(0, remaining);
+      for (let r = 0; r < rowsToAppend.length; r++) {
+        merged.push(rowsToAppend[r]);
+      }
     }
 
     const sorted = mergeAndDeduplicateLogs([merged]).sort((a: any, b: any) => Number(b.log_date) - Number(a.log_date));

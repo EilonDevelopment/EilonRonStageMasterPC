@@ -13,8 +13,21 @@ export interface ReportGroupQuery {
 const FILTER_CHUNK = 2500;
 /** Rows assigned to interval groups before yielding. */
 const GROUP_YIELD_EVERY = 2000;
+const MAX_JS_DATE_MS = 8_640_000_000_000_000;
+const MIN_JS_DATE_MS = -8_640_000_000_000_000;
 
 const yieldToMain = () => new Promise<void>((r) => setTimeout(r, 0));
+
+const toEpochMsSafe = (raw: any): number | null => {
+  const rawNum = Number(raw);
+  let tsMs = Number.isFinite(rawNum)
+    ? (rawNum < 1_000_000_000_000 ? rawNum * 1000 : rawNum)
+    : Date.parse(String(raw ?? ''));
+  if (!Number.isFinite(tsMs)) return null;
+  if (tsMs <= 0) return null;
+  if (tsMs < MIN_JS_DATE_MS || tsMs > MAX_JS_DATE_MS) return null;
+  return tsMs;
+};
 
 /** BLE link status rows (not load-cell measurements); always pass through when filters are on. */
 export function isPrrLinkLog(log: any): boolean {
@@ -66,7 +79,8 @@ function makeByFilter(query: ReportGroupQuery) {
 function isValidLogRow(log: any): boolean {
   const value = parseFloat(log.value);
   const realval = parseFloat(log.realval);
-  return !isNaN(value) || !isNaN(realval);
+  const tsMs = toEpochMsSafe(log?.log_date);
+  return (!isNaN(value) || !isNaN(realval)) && tsMs !== null;
 }
 
 /**
@@ -87,8 +101,15 @@ export function buildReportGroupsSync(
   const intervalMs = Math.max(1000, (query.report_interval_seconds || 60) * 1000);
   const groups: Record<string, any[]> = {};
   for (const log of validLogs) {
-    const intervalStart = Math.floor(Number(log.log_date) / intervalMs) * intervalMs;
-    const key = format(new Date(intervalStart), 'yyyy-MM-dd HH:mm:ss');
+    const tsMs = toEpochMsSafe(log?.log_date);
+    if (tsMs === null) continue;
+    const intervalStart = Math.floor(tsMs / intervalMs) * intervalMs;
+    let key: string;
+    try {
+      key = format(new Date(intervalStart), 'yyyy-MM-dd HH:mm:ss');
+    } catch {
+      continue;
+    }
     if (!groups[key]) groups[key] = [];
     groups[key].push(log);
   }
@@ -148,8 +169,15 @@ export async function buildReportGroupsAsync(
     }
 
     const log = validLogs[i];
-    const intervalStart = Math.floor(Number(log.log_date) / intervalMs) * intervalMs;
-    const key = format(new Date(intervalStart), 'yyyy-MM-dd HH:mm:ss');
+    const tsMs = toEpochMsSafe(log?.log_date);
+    if (tsMs === null) continue;
+    const intervalStart = Math.floor(tsMs / intervalMs) * intervalMs;
+    let key: string;
+    try {
+      key = format(new Date(intervalStart), 'yyyy-MM-dd HH:mm:ss');
+    } catch {
+      continue;
+    }
     if (!groups[key]) groups[key] = [];
     groups[key].push(log);
   }

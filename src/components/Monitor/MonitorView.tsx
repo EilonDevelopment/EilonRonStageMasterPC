@@ -723,6 +723,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   const [lcImageCompositingBust, setLcImageCompositingBust] = useState(0);
 
   const hasBackgroundImage = !!curProject?.p_image;
+  const imageNaturalSizeRef = useRef<{ width: number; height: number } | null>(null);
 
   /** Merge lcs (context) into list so tare/weightnotare/value always reflect latest; use for display in all modes */
   const displayList = useMemo(() => {
@@ -898,8 +899,9 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     const availH = el.clientHeight
     if (availW < STAGE_FIT_MIN || availH < STAGE_FIT_MIN) return
 
-    const iw = Number(proj.p_image_w)
-    const ih = Number(proj.p_image_h)
+    const natural = imageNaturalSizeRef.current
+    const iw = natural?.width ?? Number(proj.p_image_w)
+    const ih = natural?.height ?? Number(proj.p_image_h)
     const { width: baseW, height: baseH } =
       Number.isFinite(iw) && iw > 0 && Number.isFinite(ih) && ih > 0
         ? fitImageRectToViewport(availW, availH, iw, ih)
@@ -983,6 +985,24 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   }, [f_update_project_image_size, f_update_project_image_position, f_reposition_stage, onMoveLC])
 
   applyStageFitToContentAreaRef.current = applyStageFitToContentArea
+
+  useEffect(() => {
+    imageNaturalSizeRef.current = null;
+    if (!curProject?.p_image || typeof window === 'undefined') return;
+    const img = new Image();
+    img.onload = () => {
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        imageNaturalSizeRef.current = {
+          width: img.naturalWidth,
+          height: img.naturalHeight,
+        };
+        requestAnimationFrame(() => {
+          applyStageFitToContentAreaRef.current();
+        });
+      }
+    };
+    img.src = curProject.p_image;
+  }, [curProject?.p_image]);
 
   useEffect(() => {
     stageViewZoomRef.current = 1
