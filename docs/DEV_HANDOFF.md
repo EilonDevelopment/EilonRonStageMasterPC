@@ -70,6 +70,7 @@ npm run build && npx cap sync ios
 | 2026-04-17 | ios-development-ai | Mac | Reports + Monitor stabilization block: date-range reports (no day/hour tree), centered progress kept, 100k UI/export cap with faster IndexedDB streaming, optional hour/min filter for single-day range, refresh-only apply flow, pending-refresh label, segmented storage bar + low-space warning + auto-prune oldest daily logs, Gross/Net ingest fixes (`tare_applied` + `net_value`) and multiple tare consistency fixes in Monitor totals/status, plus ZERO safety guard (block if any group LC raw load >30% capacity), and visual version bump to `1.4.4`. | pending push |
 | 2026-04-17 | development-ai | Windows | Android UX parity fix for Monitor gate: keep `Can't be 0` dialog open (no instant dismiss on touch/menu events) and auto-redirect to `Settings` on app open if any current-project group has `overload=0`. | 26a529d |
 | 2026-04-20 | ios-development-ai | Mac | Shared BLE/Reports/Monitor sync block: Connect Device direct-PRR flow hardened (single auto-run per open, scan-in-progress dialog, manual-connect wins over auto-reconnect race via reconnect epoch), Monitor view pinch/pan overlay behavior stabilized, no-image manual LC placement fixed, optional background-image removal added, Reports cap raised to 300k, legacy-report recovery paths + storage-source labeling (`device` vs estimated quota) and diagnostics helpers. | pending push |
+| 2026-04-20 | development-ai | Windows | Android parity and stability pass: fixed duplicate/hidden BLE scan modal from cached views, kept `Scan in progress` dialog visible on Android touch, hardened large Reports loads (invalid timestamps + safe append path for near-300k), fit background image using real image dimensions for Android/iOS consistency, and bumped Android Play version to `1.4.5` (`versionCode 23`). | 1e516ba |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -110,6 +111,15 @@ Primary files in this block: `src/Layout/CommonLayout.tsx`, `src/components/Moni
   1) In Settings, if any group overload is `0`, tapping Monitor shows `Can't be 0` and dialog stays visible (no auto-close)
   2) After app restart with that invalid condition, app lands on `Settings` (not `Monitor`)
 - Primary files: `src/components/Menu.tsx`, `src/pages/Monitor/index.tsx`
+
+---
+
+**iOS action request (from 2026-04-20 onward):**
+- For every **new dialog** (Swal/Ionic), verify Android touch behavior so it does not auto-dismiss.
+- For critical dialogs (validation / scan-in-progress / errors), default to:
+  - `allowOutsideClick: false`
+  - `allowEscapeKey: false`
+- Always run smoke checks on both iOS and Android for open/close timing and backdrop/touch interactions.
 
 ---
 
