@@ -247,10 +247,13 @@ const Monitor: FC = () => {
   }, [count, lcs, liveLC])
 */
   useEffect(() => {
-    if (curProject) {
+    if (curProject?.id) {
       f_load_lcs()
     }
-  }, [curProject])
+    // Reload LCs when switching project only. `curProject` object also updates for
+    // last_settings_change / image persist — that must not re-fetch LCs and overwrite
+    // view_x/view_y still settling after a home→image drop.
+  }, [curProject?.id])
 
   useEffect(() => {
     if (!curProject?.id) return;
@@ -1919,7 +1922,8 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
 
   return (
     <CommonLayout
-      classes='p-2 gap-1'
+      contentScrollDisabled={monitorStatus === 'view'}
+      classes='p-2 gap-1 flex-1 min-h-0 h-full overflow-hidden'
       maxStatus={maxStatus}
       loadStatus={loadStatus}
       tareStatus={tareStatus}
@@ -1932,7 +1936,8 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
       onDBHandler={setDBHandler}
       onTareAction={handleTareAction}
     >
-      <div className='grid grid-cols-16 h-10 w-full overflow-visible'>
+      <div className='flex flex-col flex-1 min-h-0 gap-1 overflow-hidden'>
+      <div className='grid grid-cols-16 h-10 w-full shrink-0 overflow-visible'>
         {groups.map((item: IGroup, index: number) => {
           // console.log(item);
             let v = parseFloat(item.sum ?? '')
@@ -2052,7 +2057,10 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
             )
           })}
       </div>
+      <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
       {contentView()}
+      </div>
+      </div>
       <GroupActionModal
         mode="full"
         visible={visibleModal === MonitorModals.GroupAction}

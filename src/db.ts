@@ -89,11 +89,8 @@ export class MySubClassedDexie extends Dexie {
       totalizer: '++id, group_id, project_id, sum, log_date',
       app_state: 'id, cur_project_id',
       crash_logs: '++id, timestamp'
-    }).upgrade(async (tx) => {
-      // Clean start requested for report history migration
-      await tx.table('logs').clear();
-      await tx.table('logs_archive').clear();
-      await tx.table('logs_agg').clear();
+    }).upgrade(async () => {
+      // Preserve legacy report history; Reports layer now reads both daily_logs and legacy stores.
     });
     this.version(21).stores({
       projects: '++id, title, units, pre_overload, total_overload, reports, cycle, last_settings_change, stage_x, stage_y, p_image, show_graphs, windmeter_units',

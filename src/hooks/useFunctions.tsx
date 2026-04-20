@@ -5,11 +5,12 @@ import { db } from "../db";
 import { IGroup, ILC, ILog, IProject, IProjectDetail } from "../helper/types";
 import { LC_Serials, LC_SerialsType } from "../helper/constants";
 import { normalizeProjectId } from "../helper/functions";
-import { format, getTime } from "date-fns";
+import { format, getTime, subDays } from "date-fns";
 import { useEffect, useRef } from "react";
 import { logEvent } from "../services/LogService";
 import { playAlarmBeep } from "../services/alarmFeedback";
 import { Device } from "@capacitor/device";
+import { Capacitor } from "@capacitor/core";
 
 
 export default function useFunctions() {
@@ -72,6 +73,8 @@ export default function useFunctions() {
   const STORAGE_SNAPSHOT_CACHE_MS = 30_000
   const AUTO_PRUNE_COOLDOWN_MS = 15_000
   const AUTO_PRUNE_BATCH_SIZE = 3000
+  /** Never auto-delete the most recent N day_keys, even under low storage. */
+  const AUTO_PRUNE_KEEP_RECENT_DAYS = 7
   const storageSnapshotRef = useRef<{ at: number; total: number; free: number }>({ at: 0, total: 0, free: 0 })
   const pruneInProgressRef = useRef(false)
   const lastPruneAtRef = useRef(0)
@@ -134,15 +137,30 @@ export default function useFunctions() {
         if (!(total > 0)) return
         const freePct = (free / total) * 100
         if (freePct > LOW_STORAGE_FREE_PCT) return
+        const cutoffDayKey = format(subDays(new Date(), AUTO_PRUNE_KEEP_RECENT_DAYS - 1), 'yyyy-MM-dd')
         const keys = await db.daily_logs
-          .orderBy('log_date')
+          .where('day_key')
+          .below(cutoffDayKey)
           .limit(AUTO_PRUNE_BATCH_SIZE)
           .primaryKeys()
           .catch(() => [])
-        if (keys.length === 0) return
+        if (keys.length === 0) {
+          tracePhase('AUTO_PRUNE: skipped_keep_recent_days', {
+            trigger,
+            freePct: Number(freePct.toFixed(2)),
+            keepRecentDays: AUTO_PRUNE_KEEP_RECENT_DAYS,
+          })
+          return
+        }
         await db.daily_logs.bulkDelete(keys)
         lastPruneAtRef.current = Date.now()
-        tracePhase('AUTO_PRUNE: daily_logs_low_storage', { trigger, deleted: keys.length, freePct: Number(freePct.toFixed(2)) })
+        tracePhase('AUTO_PRUNE: daily_logs_low_storage', {
+          trigger,
+          deleted: keys.length,
+          freePct: Number(freePct.toFixed(2)),
+          cutoffDayKey,
+          keepRecentDays: AUTO_PRUNE_KEEP_RECENT_DAYS,
+        })
       } catch (error: any) {
         logEvent('WARN', 'Auto-prune on low storage failed', { trigger, error: String(error?.message || error) }, 'REPORTS_DB')
       } finally {
@@ -257,6 +275,8 @@ export default function useFunctions() {
             if (current) {
               return {
                 ...lcFromDb,
+                view_x: current.view_x ?? lcFromDb.view_x,
+                view_y: current.view_y ?? lcFromDb.view_y,
                 value: current.value ?? lcFromDb.value,
                 weightnotare: current.weightnotare ?? lcFromDb.weightnotare,
                 realval: current.realval ?? lcFromDb.realval,

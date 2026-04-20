@@ -34,7 +34,7 @@ interface LogFilter {
 }
 
 /** Raw rows stay in IndexedDB; UI + exports never exceed this many logs. */
-const MAX_REPORT_LOGS = 100_000;
+const MAX_REPORT_LOGS = 300_000;
 
 /** Merge K arrays sorted by log_date descending into one list of at most `cap` items. */
 function mergeSortedLogArraysDesc(arrays: any[][], cap: number): any[] {
@@ -76,11 +76,11 @@ const Report: FC = () => {
   const [projectList, setProjectList] = useState<IProject[]>([])
   const [selectedId, setSelectedId] = useState<string>('')
   const [filter, setFilter] = useState<LogFilter>({
-    ok: false,
+    ok: true,
     overload: true,
     danger: true,
     underload: true,
-    err: false,
+    err: true,
     start: startOfDay(new Date()),
     end: endOfDay(new Date()),
     hourStart: '00:00',
@@ -96,6 +96,7 @@ const Report: FC = () => {
   const [storageTotal, setStorageTotal] = useState<number>(0)
   const [storageFree, setStorageFree] = useState<number>(0)
   const [reportsStorageUsed, setReportsStorageUsed] = useState<number>(0)
+  const [storageMetricSource, setStorageMetricSource] = useState<'device' | 'origin_quota' | 'unknown'>('unknown')
   const PAGE_SIZE = 10
   const [page, setPage] = useState<number>(1)
 
@@ -166,6 +167,21 @@ const Report: FC = () => {
     });
     return Array.from(logMap.values());
   }
+
+  const normalizeLegacyLogDate = (row: any) => {
+    const rawAny = row?.log_date;
+    const rawNum = Number(rawAny ?? 0);
+    if (Number.isFinite(rawNum) && rawNum > 0) {
+      // Legacy rows may store epoch seconds; normalize to ms for UI/range/grouping.
+      if (rawNum < 1_000_000_000_000) return { ...row, log_date: rawNum * 1000 };
+      return row;
+    }
+    const parsed = Date.parse(String(rawAny ?? ''));
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return { ...row, log_date: parsed };
+    }
+    return { ...row, log_date: 0 };
+  };
 
   const fetchLogsForSingleDay = async (
     projectId: string,
@@ -293,26 +309,81 @@ const Report: FC = () => {
 
     let legacyRows: any[] = [];
     if (merged.length === 0) {
-      for (const pidCandidate of pidCandidates) {
-        if (isCancelled?.()) return { rows: [], cancelled: true, rowsReadFromDb };
-        legacyRows = await db.daily_logs
-          .filter(
-            (r: any) =>
-              normalizeProjectId(r.project_id) === pidNorm &&
-              Number(r.log_date) >= queryStartMs &&
-              Number(r.log_date) <= queryEndMs
-          )
+      const queryStartSec = Math.floor(queryStartMs / 1000);
+      const queryEndSec = Math.floor(queryEndMs / 1000);
+      const queryLegacyRows = async (table: any, pidCandidate: any, maxRows: number) => {
+        const msRows = await table
+          .where('[project_id+log_date]')
+          .between([pidCandidate, queryStartMs], [pidCandidate, queryEndMs], true, true)
           .reverse()
-          .limit(maxTotal)
+          .limit(maxRows)
           .toArray()
           .catch(() => []);
-        rowsReadFromDb += legacyRows?.length ?? 0;
-        if (legacyRows.length > 0) break;
+        const secRows = await table
+          .where('[project_id+log_date]')
+          .between([pidCandidate, queryStartSec], [pidCandidate, queryEndSec], true, true)
+          .reverse()
+          .limit(maxRows)
+          .toArray()
+          .catch(() => []);
+        let slowRows: any[] = [];
+        if ((msRows.length + secRows.length) === 0) {
+          // Final compatibility path: very old rows may store log_date as date string.
+          // This is expensive, so run only if indexed scans returned nothing.
+          slowRows = await table
+            .filter((r: any) => {
+              if (normalizeProjectId(r?.project_id) !== pidNorm) return false;
+              const dt = normalizeLegacyLogDate(r).log_date;
+              return Number(dt) >= queryStartMs && Number(dt) <= queryEndMs;
+            })
+            .reverse()
+            .limit(maxRows)
+            .toArray()
+            .catch(() => []);
+        }
+        return {
+          msRows,
+          secRows,
+          slowRows,
+          merged: mergeAndDeduplicateLogs([msRows, secRows, slowRows]).map(normalizeLegacyLogDate),
+        };
+      };
+      for (const pidCandidate of pidCandidates) {
+        if (isCancelled?.()) return { rows: [], cancelled: true, rowsReadFromDb };
+        const logsResult = await queryLegacyRows(db.logs, pidCandidate, maxTotal);
+        const archiveResult = await queryLegacyRows(db.logs_archive, pidCandidate, maxTotal);
+        rowsReadFromDb +=
+          (logsResult.msRows?.length ?? 0) +
+          (logsResult.secRows?.length ?? 0) +
+          (logsResult.slowRows?.length ?? 0) +
+          (archiveResult.msRows?.length ?? 0) +
+          (archiveResult.secRows?.length ?? 0) +
+          (archiveResult.slowRows?.length ?? 0);
+        legacyRows = mergeAndDeduplicateLogs([
+          logsResult.merged,
+          archiveResult.merged,
+        ])
+          .sort((a: any, b: any) => Number(b.log_date) - Number(a.log_date))
+          .slice(0, maxTotal);
+        if (legacyRows.length > 0) {
+          reportTrace('fetchLogsForSingleDay: recovered from legacy stores', {
+            dayKey,
+            pidNorm,
+            fromLogsMs: logsResult.msRows.length,
+            fromLogsSec: logsResult.secRows.length,
+            fromLogsSlow: logsResult.slowRows.length,
+            fromArchiveMs: archiveResult.msRows.length,
+            fromArchiveSec: archiveResult.secRows.length,
+            fromArchiveSlow: archiveResult.slowRows.length,
+            kept: legacyRows.length,
+          });
+          break;
+        }
       }
       if (legacyRows.length > 0) {
         onProgress?.(
           progressBase + progressSpan,
-          `Legacy scan ${dayLabel} — ${legacyRows.length.toLocaleString()} rows (slow path)`
+          `Legacy scan ${dayLabel} — ${legacyRows.length.toLocaleString()} rows (legacy stores)`
         );
       }
     }
@@ -460,7 +531,7 @@ const Report: FC = () => {
           setRawLogs(null);
           Swal.fire({
             title: tr('Report.Export', 'Report'),
-            text: 'No reports found for the selected date range and filters.',
+            text: 'No reports found for the selected date range and filters. Check status toggles (OK / Overload / Danger / Underload / Tr.Err).',
             icon: 'info',
             heightAuto: false,
           });
@@ -501,7 +572,7 @@ const Report: FC = () => {
           setLogList(null);
           Swal.fire({
             title: tr('Report.Export', 'Report'),
-            text: 'No reports found for the selected date range and filters.',
+            text: 'No reports found for the selected date range and filters. Check status toggles (OK / Overload / Danger / Underload / Tr.Err).',
             icon: 'info',
             heightAuto: false,
           });
@@ -689,7 +760,9 @@ const Report: FC = () => {
           // ignore and try web estimate fallback
         }
 
-        // Fallback for environments where Device.getInfo doesn't expose disk fields
+        let source: 'device' | 'origin_quota' | 'unknown' = total > 0 ? 'device' : 'unknown';
+
+        // Fallback when native disk fields are unavailable on this runtime.
         if (!(total > 0) && typeof navigator !== 'undefined' && (navigator as any).storage?.estimate) {
           const estimate = await (navigator as any).storage.estimate()
           const quota = Number(estimate?.quota || 0)
@@ -697,20 +770,40 @@ const Report: FC = () => {
           if (quota > 0 && usage >= 0) {
             total = quota
             free = Math.max(0, quota - usage)
+            source = 'origin_quota'
           }
         }
 
         // Approximate reports footprint from row sample (fast, bounded).
+        // Include legacy stores so historical data does not appear as "other apps".
         let reportsBytesApprox = 0
         try {
-          const count = await db.daily_logs.count()
-          if (count > 0) {
-            const sampleSize = Math.min(120, count)
-            const sampleRows = await db.daily_logs
-              .orderBy('log_date')
-              .reverse()
-              .limit(sampleSize)
-              .toArray()
+          const [countDailyR, countLogsR, countArchiveR] = await Promise.allSettled([
+            db.daily_logs.count(),
+            db.logs.count(),
+            db.logs_archive.count(),
+          ])
+          const countDaily = countDailyR.status === 'fulfilled' ? Number(countDailyR.value || 0) : 0
+          const countLogs = countLogsR.status === 'fulfilled' ? Number(countLogsR.value || 0) : 0
+          const countArchive = countArchiveR.status === 'fulfilled' ? Number(countArchiveR.value || 0) : 0
+          const totalCount = countDaily + countLogs + countArchive
+          if (totalCount > 0) {
+            const sampleCap = 50
+            const [sampleDailyR, sampleLogsR, sampleArchiveR] = await Promise.allSettled([
+              countDaily > 0
+                ? db.daily_logs.orderBy('log_date').reverse().limit(Math.min(sampleCap, countDaily)).toArray()
+                : Promise.resolve([] as any[]),
+              countLogs > 0
+                ? db.logs.orderBy('log_date').reverse().limit(Math.min(sampleCap, countLogs)).toArray()
+                : Promise.resolve([] as any[]),
+              countArchive > 0
+                ? db.logs_archive.orderBy('log_date').reverse().limit(Math.min(sampleCap, countArchive)).toArray()
+                : Promise.resolve([] as any[]),
+            ])
+            const sampleDaily = sampleDailyR.status === 'fulfilled' ? sampleDailyR.value : []
+            const sampleLogs = sampleLogsR.status === 'fulfilled' ? sampleLogsR.value : []
+            const sampleArchive = sampleArchiveR.status === 'fulfilled' ? sampleArchiveR.value : []
+            const sampleRows = [...sampleDaily, ...sampleLogs, ...sampleArchive]
             if (sampleRows.length > 0) {
               const sampleBytes = sampleRows.reduce((acc: number, row: any) => {
                 try {
@@ -721,7 +814,7 @@ const Report: FC = () => {
               }, 0)
               const avgBytes = sampleBytes / sampleRows.length
               // 1.25x factor: IndexedDB/object overhead approximation.
-              reportsBytesApprox = Math.round(avgBytes * count * 1.25)
+              reportsBytesApprox = Math.round(avgBytes * totalCount * 1.25)
             }
           }
         } catch {
@@ -731,10 +824,12 @@ const Report: FC = () => {
         setStorageTotal(Number.isFinite(total) && total > 0 ? total : 0)
         setStorageFree(Number.isFinite(free) && free >= 0 ? free : 0)
         setReportsStorageUsed(Number.isFinite(reportsBytesApprox) && reportsBytesApprox > 0 ? reportsBytesApprox : 0)
+        setStorageMetricSource(source)
       } catch {
         setStorageTotal(0)
         setStorageFree(0)
         setReportsStorageUsed(0)
+        setStorageMetricSource('unknown')
       }
     }
     void refreshStorage()
@@ -1475,6 +1570,301 @@ const Report: FC = () => {
     setPendingRefresh(false);
     setReloadNonce((n) => n + 1);
   };
+
+  const buildLegacyRescueRows = async (projectId: string, rangeStart: Date, rangeEnd: Date, cap = 200000) => {
+    const startMs = getTime(startOfDay(rangeStart));
+    const endMs = getTime(endOfDay(rangeEnd));
+    const startSec = Math.floor(startMs / 1000);
+    const endSec = Math.floor(endMs / 1000);
+    const pidNorm = normalizeProjectId(projectId);
+    const pidNum = Number(pidNorm);
+    const pidCandidates: any[] = [];
+    if (pidNorm) pidCandidates.push(pidNorm);
+    if (Number.isFinite(pidNum)) pidCandidates.push(pidNum);
+
+    const queryByPid = async (table: any, pidCandidate: any) => {
+      const msRows = await table
+        .where('[project_id+log_date]')
+        .between([pidCandidate, startMs], [pidCandidate, endMs], true, true)
+        .reverse()
+        .limit(cap)
+        .toArray()
+        .catch(() => []);
+      const secRows = await table
+        .where('[project_id+log_date]')
+        .between([pidCandidate, startSec], [pidCandidate, endSec], true, true)
+        .reverse()
+        .limit(cap)
+        .toArray()
+        .catch(() => []);
+      return mergeAndDeduplicateLogs([msRows, secRows]).map(normalizeLegacyLogDate);
+    };
+
+    const tableRows: any[] = [];
+    for (const pidCandidate of pidCandidates) {
+      const [r1, r2] = await Promise.all([
+        queryByPid(db.logs, pidCandidate),
+        queryByPid(db.logs_archive, pidCandidate),
+      ]);
+      const merged = mergeAndDeduplicateLogs([r1, r2]);
+      if (merged.length > 0) {
+        tableRows.push(...merged);
+        break;
+      }
+    }
+
+    if (tableRows.length === 0) {
+      // Emergency fallback: project_id may be corrupted in legacy rows.
+      // Use selected project's LC ids + date range.
+      const lcIds = new Set(
+        lcs
+          .filter((c: any) => normalizeProjectId(c.project_id) === pidNorm)
+          .map((c: any) => String(c.id))
+      );
+      if (lcIds.size > 0) {
+        const byLcAndDate = (row: any) => {
+          const r = normalizeLegacyLogDate(row);
+          const dt = Number(r.log_date || 0);
+          return dt >= startMs && dt <= endMs && lcIds.has(String(r.lc_id ?? ''));
+        };
+        const [slowLogs, slowArchive] = await Promise.all([
+          db.logs.filter(byLcAndDate).reverse().limit(cap).toArray().catch(() => []),
+          db.logs_archive.filter(byLcAndDate).reverse().limit(cap).toArray().catch(() => []),
+        ]);
+        tableRows.push(...mergeAndDeduplicateLogs([slowLogs, slowArchive]));
+      }
+    }
+
+    return mergeAndDeduplicateLogs([tableRows])
+      .map(normalizeLegacyLogDate)
+      .sort((a: any, b: any) => Number(b.log_date) - Number(a.log_date))
+      .slice(0, cap);
+  };
+
+  const handleExportLegacyRescueCsv = async () => {
+    if (!selectedId) return;
+    setExportBusy(true);
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    try {
+      const rows = await buildLegacyRescueRows(selectedId, filter.start, filter.end, 200000);
+      if (!rows.length) {
+        Swal.fire({
+          title: tr('Report.Export', 'Export'),
+          text: 'No legacy rows found for the selected project/date range.',
+          icon: 'info',
+          heightAuto: false,
+        });
+        return;
+      }
+      const escapeCsv = (v: any) => {
+        const s = v == null ? '' : String(v);
+        if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+        return s;
+      };
+      const headers = ['project_id', 'lc_id', 'log_type', 'status_code', 'value', 'realval', 'unit', 'battery', 'log_date'];
+      const lines: string[] = [headers.join(',')];
+      rows.forEach((r: any) => {
+        lines.push(
+          headers.map((k) => {
+            if (k === 'log_date') return escapeCsv(format(new Date(Number(r.log_date || 0)), 'yyyy-MM-dd HH:mm:ss'));
+            return escapeCsv((r as any)[k]);
+          }).join(',')
+        );
+      });
+      const csvStr = '\uFEFF' + lines.join('\r\n');
+      const fileName = `legacy_rescue_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
+      if (platformType === 'web') {
+        const blob = new Blob([csvStr], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.click();
+        URL.revokeObjectURL(url);
+      } else if (platformType === 'android' || platformType === 'ios') {
+        await Filesystem.writeFile({ path: fileName, data: csvStr, directory: Directory.Cache, encoding: Encoding.UTF8 });
+        const { uri } = await Filesystem.getUri({ path: fileName, directory: Directory.Cache });
+        if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('skipResumeAlert', '1');
+        const shareResult = await openNativeDialogSafely(() => Share.share({ url: uri, title: 'Legacy Rescue Export', dialogTitle: 'Legacy Rescue Export' }));
+        if (shareResult.cancelled) {
+          recoverAfterNativeDialog();
+          if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('skipResumeAlert');
+          return;
+        }
+        nativeDeferredAfterShare(`Legacy rescue CSV exported (${rows.length} rows).`);
+      } else {
+        await Filesystem.writeFile({ path: fileName, data: csvStr, directory: Directory.Documents, encoding: Encoding.UTF8 });
+      }
+    } catch (err: any) {
+      console.error('[Reports Legacy Rescue] export error', err);
+      Swal.fire({ title: tr('Report.Export', 'Export'), text: 'Failed to export legacy rescue CSV.', icon: 'error', heightAuto: false });
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const handleLogsDiagnostics = async () => {
+    try {
+      const selectedPid = normalizeProjectId(selectedId || '');
+      const rowsByProject = lcs.filter((c: any) => normalizeProjectId(c.project_id) === selectedPid);
+      const lcSet = new Set(rowsByProject.map((c: any) => String(c.id)));
+      const describeTable = async (name: string, table: any) => {
+        const total = await table.count().catch(() => 0);
+        const newest = await table.orderBy('log_date').last().catch(() => null);
+        const oldest = await table.orderBy('log_date').first().catch(() => null);
+        const byProject = selectedPid
+          ? await table.filter((r: any) => normalizeProjectId(r?.project_id) === selectedPid).count().catch(() => 0)
+          : 0;
+        const byLcFallback = (selectedPid && lcSet.size > 0)
+          ? await table.filter((r: any) => lcSet.has(String(r?.lc_id ?? ''))).count().catch(() => 0)
+          : 0;
+        const fmt = (v: any) => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0) {
+            const ms = n < 1_000_000_000_000 ? n * 1000 : n;
+            return format(new Date(ms), 'yyyy-MM-dd HH:mm:ss');
+          }
+          const p = Date.parse(String(v ?? ''));
+          if (Number.isFinite(p)) return format(new Date(p), 'yyyy-MM-dd HH:mm:ss');
+          return 'n/a';
+        };
+        return `• ${name}: total=${Number(total).toLocaleString()}, byProject=${Number(byProject).toLocaleString()}, byLcFallback=${Number(byLcFallback).toLocaleString()}, oldest=${fmt(oldest?.log_date)}, newest=${fmt(newest?.log_date)}`;
+      };
+      const lines = await Promise.all([
+        describeTable('daily_logs', db.daily_logs),
+        describeTable('logs', db.logs),
+        describeTable('logs_archive', db.logs_archive),
+      ]);
+      await Swal.fire({
+        title: 'Logs diagnostics',
+        text: [`selected project=${selectedPid || 'n/a'}`, ...lines].join('\n'),
+        icon: 'info',
+        heightAuto: false,
+      });
+    } catch (err: any) {
+      console.error('[Reports Diagnostics] failed', err);
+      Swal.fire({ title: 'Logs diagnostics', text: 'Failed to run diagnostics.', icon: 'error', heightAuto: false });
+    }
+  };
+
+  const estimateProjectImageBytes = async () => {
+    try {
+      const list = await db.projects.toArray().catch(() => []);
+      let total = 0;
+      for (const p of list) {
+        const img = String(p?.p_image ?? '');
+        if (!img) continue;
+        const commaIdx = img.indexOf(',');
+        const payload = commaIdx >= 0 ? img.slice(commaIdx + 1) : img;
+        // Base64 payload: 4 chars ~= 3 bytes (rough estimate).
+        total += Math.floor((payload.length * 3) / 4);
+      }
+      return total;
+    } catch {
+      return 0;
+    }
+  };
+
+  const dirSizeBytes = async (directory: Directory, path = ''): Promise<number> => {
+    let total = 0;
+    try {
+      const res: any = await Filesystem.readdir({ directory, path });
+      const files: any[] = Array.isArray(res?.files) ? res.files : [];
+      for (const f of files) {
+        const name = typeof f === 'string' ? f : String(f?.name ?? '');
+        if (!name) continue;
+        const child = path ? `${path}/${name}` : name;
+        let st: any = null;
+        try {
+          st = await Filesystem.stat({ directory, path: child });
+        } catch {
+          continue;
+        }
+        const typ = String(st?.type ?? '').toLowerCase();
+        if (typ === 'directory') {
+          total += await dirSizeBytes(directory, child);
+        } else {
+          total += Number(st?.size || 0);
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return total;
+  };
+
+  const handleStorageDiagnostics = async () => {
+    try {
+      const [dailyCount, logsCount, archiveCount, pimgBytes, cacheBytes, docsBytes] = await Promise.all([
+        db.daily_logs.count().catch(() => 0),
+        db.logs.count().catch(() => 0),
+        db.logs_archive.count().catch(() => 0),
+        estimateProjectImageBytes(),
+        dirSizeBytes(Directory.Cache),
+        dirSizeBytes(Directory.Documents),
+      ]);
+      const fmt = (b: number) => `${(b / (1024 ** 3)).toFixed(2)} GB`;
+      await Swal.fire({
+        title: 'Storage diagnostics',
+        text: [
+          `daily_logs rows: ${Number(dailyCount).toLocaleString()}`,
+          `logs rows: ${Number(logsCount).toLocaleString()}`,
+          `logs_archive rows: ${Number(archiveCount).toLocaleString()}`,
+          `project images (p_image): ~${fmt(pimgBytes)}`,
+          `Cache directory: ~${fmt(cacheBytes)}`,
+          `Documents directory: ~${fmt(docsBytes)}`,
+        ].join('\n'),
+        icon: 'info',
+        heightAuto: false,
+      });
+    } catch (err: any) {
+      console.error('[Reports Storage Diagnostics] failed', err);
+      Swal.fire({ title: 'Storage diagnostics', text: 'Failed to run storage diagnostics.', icon: 'error', heightAuto: false });
+    }
+  };
+
+  const handleCleanupAppFiles = async () => {
+    const confirm = await Swal.fire({
+      title: 'Clean app files',
+      text: 'Delete exported/temp files from Cache and Documents? (Does not delete projects or LCs)',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Clean',
+      cancelButtonText: 'Cancel',
+      heightAuto: false,
+    });
+    if (!confirm.isConfirmed) return;
+    try {
+      const clearDir = async (directory: Directory, path = ''): Promise<void> => {
+        const res: any = await Filesystem.readdir({ directory, path }).catch(() => ({ files: [] }));
+        const files: any[] = Array.isArray(res?.files) ? res.files : [];
+        for (const f of files) {
+          const name = typeof f === 'string' ? f : String(f?.name ?? '');
+          if (!name) continue;
+          const child = path ? `${path}/${name}` : name;
+          const st: any = await Filesystem.stat({ directory, path: child }).catch(() => null);
+          const typ = String(st?.type ?? '').toLowerCase();
+          if (typ === 'directory') {
+            await clearDir(directory, child);
+            await Filesystem.rmdir({ directory, path: child, recursive: false }).catch(() => undefined);
+          } else {
+            await Filesystem.deleteFile({ directory, path: child }).catch(() => undefined);
+          }
+        }
+      };
+      // Most exports are written in Cache; some flows use Documents.
+      await Promise.all([clearDir(Directory.Cache), clearDir(Directory.Documents)]);
+      Swal.fire({
+        title: 'Clean app files',
+        text: 'Cache/Documents cleanup completed.',
+        icon: 'success',
+        heightAuto: false,
+      });
+    } catch (err: any) {
+      console.error('[Reports Cleanup] failed', err);
+      Swal.fire({ title: 'Clean app files', text: 'Cleanup failed.', icon: 'error', heightAuto: false });
+    }
+  };
   const handleCancelLoad = () => {
     loadReqIdRef.current += 1
     setLoading(false)
@@ -1582,6 +1972,11 @@ const Report: FC = () => {
             <div className="text-xs font-semibold text-slate-600 mb-1">Storage</div>
             <div className="text-xs text-slate-500 mb-2">
               {storageTotal > 0 ? `${formatGiB(totalUsedBytes)} used / ${formatGiB(storageTotal)} total` : 'Unavailable'}
+              {storageMetricSource !== 'device' && (
+                <span className="block text-[10px] text-amber-600 dark:text-amber-300">
+                  Estimated app storage quota (not full iPad capacity)
+                </span>
+              )}
             </div>
             <div className="w-full h-2 bg-slate-200 rounded overflow-hidden flex">
               <div

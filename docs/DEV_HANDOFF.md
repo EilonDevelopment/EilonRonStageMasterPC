@@ -69,6 +69,7 @@ npm run build && npx cap sync ios
 | 2026-04-15 | ios-development-ai | Mac | Daily raw reports redesign: new `daily_logs` store + clean migration reset of legacy report stores, ingest writes raw rows by `day_key` with rollover on first sample after midnight, Reports UI changed to project→day tree (today default), exports now mirror selected-day filtered UI without Data/Bulk columns, and added tablet storage usage bar. | local WIP |
 | 2026-04-17 | ios-development-ai | Mac | Reports + Monitor stabilization block: date-range reports (no day/hour tree), centered progress kept, 100k UI/export cap with faster IndexedDB streaming, optional hour/min filter for single-day range, refresh-only apply flow, pending-refresh label, segmented storage bar + low-space warning + auto-prune oldest daily logs, Gross/Net ingest fixes (`tare_applied` + `net_value`) and multiple tare consistency fixes in Monitor totals/status, plus ZERO safety guard (block if any group LC raw load >30% capacity), and visual version bump to `1.4.4`. | pending push |
 | 2026-04-17 | development-ai | Windows | Android UX parity fix for Monitor gate: keep `Can't be 0` dialog open (no instant dismiss on touch/menu events) and auto-redirect to `Settings` on app open if any current-project group has `overload=0`. | 26a529d |
+| 2026-04-20 | ios-development-ai | Mac | Shared BLE/Reports/Monitor sync block: Connect Device direct-PRR flow hardened (single auto-run per open, scan-in-progress dialog, manual-connect wins over auto-reconnect race via reconnect epoch), Monitor view pinch/pan overlay behavior stabilized, no-image manual LC placement fixed, optional background-image removal added, Reports cap raised to 300k, legacy-report recovery paths + storage-source labeling (`device` vs estimated quota) and diagnostics helpers. | pending push |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -81,6 +82,25 @@ npm run build && npx cap sync ios
   4) Left storage bar segmentation + low-space warning + no regressions while ingesting
 
 Primary touched files in this block: `src/pages/Reports/index.tsx`, `src/pages/Reports/index.css`, `src/hooks/useFunctions.tsx`, `src/Layout/CommonLayout.tsx`, `src/pages/Monitor/index.tsx`, `src/components/Monitor/MonitorView.tsx`, `src/components/Menu.tsx`, `src/helper/reportGrouping.ts`, `src/db.ts`.
+
+---
+
+**Android (`development-ai`) import checklist (shared block, 2026-04-20):**
+- `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
+- Validate BLE manual flow on tablet:
+  1) Menu -> `Connect Device` starts PRR scan immediately
+  2) Re-tap while scan is active shows "Scan in progress" (no duplicate scan)
+  3) During auto-reconnect retry window, manual Connect wins (no stale retry re-taking control)
+- Validate Monitor:
+  1) With image: pinch/zoom/pan + LC drag unchanged
+  2) Without image: drag LC from home lane into stage and keep visible/editable
+  3) Remove background image button works and keeps LC layout intact
+- Validate Reports:
+  1) 300k load cap behavior and performance
+  2) Storage section label/source handling (`device` vs estimated quota)
+  3) No regressions in refresh/export baseline flows
+
+Primary files in this block: `src/Layout/CommonLayout.tsx`, `src/components/Monitor/MonitorView.tsx`, `src/pages/Reports/index.tsx`, `src/hooks/useFunctions.tsx`, `src/db.ts`, `src/assets/i18n/en.json`, `src/components/Modals/ProjectSettingModal.tsx`, `src/context/AppContext.tsx`, `src/pages/Monitor/index.tsx`, `src/components/Monitor/MonitorView.css`.
 
 ---
 

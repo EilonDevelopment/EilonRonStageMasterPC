@@ -14,7 +14,6 @@ interface ProjectSettingModalProps {
   data: IProject;
   onAction: (project: IProject) => void;
   onClose: () => void;
-  onPdfAction: () => void;
 }
 
 const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
@@ -23,11 +22,9 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
     data,
     onAction,
     onClose,
-    onPdfAction,
   } = props;
   const { t } = useTranslation();
-  const { curProject } = useAppData();
-  const [project, setProject] = useState<IProject>({ show_graphs: false, cycle: false, report_interval_seconds: 60 } as IProject);
+  const [project, setProject] = useState<IProject>({ cycle: false, report_interval_seconds: 60 } as IProject);
   const { isMobile } = useAppData()
 
   useEffect(() => {
@@ -118,10 +115,8 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
       footerClasses={`${isMobile ? '' : 'px-6 py-2'}`}
       okTitle={t("Common.Okay")}
       cancelTitle={t("Common.Cancel")}
-      pdfHeaderEnable={true}
       onAction={() => onAction(project)}
       onClose={() => onClose()}
-      onPdfAction={() => onPdfAction()}
     >
       {visible && (
       <div className='flex flex-row items-center gap-2'>
@@ -181,21 +176,6 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
         onChange={e => handleChangeProject('pre_overload', e.target.value)}
       />
       )}
-      {visible && (
-      <div className='flex flex-row items-center gap-2'>
-        <IonToggle
-          enableOnOffLabels={true}
-          checked={project.show_graphs || false}
-          onChange={() => console.log('changed')}
-          onIonChange={e => handleChangeProject('show_graphs', e.target.checked)}
-        ></IonToggle>
-        <Text label={t('Project.ShowGraphs')} />
-      </div>
-      )}
-      {visible && (
-      <Text classes='text-danger' label={`${t('Project.Note')}: ${t('Project.NoteGraph')}`} />
-      )}
-      
     </Modal>
   )
 }

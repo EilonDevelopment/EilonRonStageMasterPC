@@ -89,6 +89,7 @@
     "AutoPlaceNoop": "Cell positions already match the auto grid.",
     "AutoPlaceDone": "Placed {{count}} cells on the image.",
     "AutoPlaceError": "Could not save layout.",
+    "HomeScroll": "Scroll home cells",
     "UndoLayout": "Undo last layout (up to 10 steps)",
     "Modal": {
       "GroupAction": "Group Actions",

@@ -62,3 +62,13 @@
     background-position: -200% 0;
   }
 }
+
+/* Always-visible home column scroll: track + thumb (no native overlay scrollbar). */
+.monitor-lc-column-scrolltrack {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.monitor-lc-home-scroll-thumb {
+  min-height: 36px;
+}

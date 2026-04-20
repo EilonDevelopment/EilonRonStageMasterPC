@@ -10,7 +10,7 @@ import {
   IonTitle,
   IonToolbar,
 } from '@ionic/react';
-import React, { FC, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import React, { FC, ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 // import { useLocation,  } from 'react-router';
@@ -30,7 +30,6 @@ import ErrorModal from '../components/Modals/ErrorModal';
 import SuccessModal from '../components/Modals/SuccessModal';
 import ProjectListModal from '../components/Modals/ProjectListModal';
 import ProofTestModal from '../components/Modals/ProofTestModal';
-import SelectDeviceModal from '../components/Modals/SelectDeviceModal';
 import BleDeviceListModal from '../components/Modals/BleDeviceListModal';
 import TotalizerModal from '../components/Modals/TotalizerModal';
 import DocumentModal from '../components/Modals/DocumentModal';
@@ -75,6 +74,8 @@ import { logEvent } from '../services/LogService';
 interface CommonLayoutProps {
   title?: string;
   classes?: string;
+  /** When true, IonContent does not scroll (e.g. Monitor view with fixed stage). */
+  contentScrollDisabled?: boolean;
   children: ReactNode;
   maxStatus?: boolean;
   loadStatus?: boolean;
@@ -135,6 +136,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const {
     title = '',
     classes = '',
+    contentScrollDisabled = false,
     children,
     maxStatus: max = false,
     loadStatus: load = true,
@@ -281,6 +283,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const [blePickerDevices, setBlePickerDevices] = useState<BleDiscoveredDevice[]>([]);
   const [blePickerType, setBlePickerType] = useState<'prr' | 'lc' | null>(null);
   const bleScanAbortRef = useRef(false);
+  const bleScanInProgressRef = useRef(false);
+  const connectDeviceAutoRunRef = useRef(false);
 
   useEffect(() => {
     locationRef.current = location.pathname + location.search + (location.hash || '')
@@ -655,10 +659,6 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     updateSuccessStr(t("Msg.ConfirmSetting"));
   }
 
-  const handlePdfAction = () => {
-    updateVisibleModal(ModalNames.ProjectInformation)
-  }
-
   const duplicate_project = () => {
     setDuplicated(true)
     setVisibleNew(true)
@@ -925,7 +925,40 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     handleCloseModal()
   }
 
+  /** Connect Device menu: run the same path as old "PRR" button, once per modal open. */
+  useEffect(() => {
+    if (visibleModal !== MENUS.ConnectDevice) {
+      connectDeviceAutoRunRef.current = false;
+      return;
+    }
+    if (connectDeviceAutoRunRef.current) return;
+    connectDeviceAutoRunRef.current = true;
+    handleSelectDevice('prr');
+  }, [visibleModal]);
+
   const handleStartScan = async (type: string) => {
+  if (type === 'prr') {
+    // Manual flow wins: cancel pending auto-reconnect retries and invalidate stale callbacks.
+    prrReconnectEpochRef.current += 1;
+    prrReconnectAttemptRef.current = 0;
+    prrReconnectInProgressRef.current = false;
+    if (prrReconnectTimerRef.current) {
+      clearTimeout(prrReconnectTimerRef.current);
+      prrReconnectTimerRef.current = null;
+    }
+  }
+  if (bleScanInProgressRef.current) {
+    await Swal.fire({
+      title: "Scan in progress",
+      text: "There is already a Bluetooth scan in progress.",
+      icon: "info",
+      confirmButtonText: "OK",
+      heightAuto: false,
+    });
+    void logEvent("WARN", "BLE scan ignored: already in progress", { type }, "BLE");
+    return;
+  }
+  bleScanInProgressRef.current = true;
   try {
     await BleClient.initialize();
 
@@ -943,9 +976,11 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       }
     }
 
-    bt_scan(type);
+    await bt_scan(type);
   } catch (error) {
     console.error("Error al verificar requisitos:", error);
+  } finally {
+    bleScanInProgressRef.current = false;
   }
 };
 
@@ -960,6 +995,15 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         prrBleDeviceIdRef.current = deviceId;
         prrBleDisplayNameRef.current =
           (displayName && displayName.trim()) || deviceId;
+        {
+          const trimmedName = (displayName && displayName.trim()) || '';
+          // Header: only the scan list title (e.g. numeric name), never the BLE address.
+          setPrrConnectedListName(
+            trimmedName && trimmedName !== deviceId ? trimmedName : null
+          );
+        }
+      } else {
+        setPrrConnectedListName(null);
       }
       updateBleConnected(true);
       if (type === 'prr') {
@@ -988,6 +1032,9 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       console.error(error);
       void logEvent("ERROR", "BLE notification setup failed", { error }, "BLE");
       updateBleConnected(false);
+      if (type === 'prr') {
+        setPrrConnectedListName(null);
+      }
       return false;
     }
   };
@@ -1252,6 +1299,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const lastReportTimeRef = useRef<Record<string, number>>({});
   /** Last PRR BLE peripheral id (iOS UUID). */
   const prrBleDeviceIdRef = useRef<string | null>(null);
+  /** Shown next to "PRR" on Monitor: first line of the scan list (name), not the BLE address. */
+  const [prrConnectedListName, setPrrConnectedListName] = useState<string | null>(null);
   /** Friendly name for PRR report rows (ID column); falls back to deviceId if unnamed. */
   const prrBleDisplayNameRef = useRef<string | null>(null);
   const lastPrrLinkEventRef = useRef<{ kind: 'connected' | 'disconnected'; ts: number } | null>(null);
@@ -1260,6 +1309,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const prrReconnectAttemptRef = useRef<number>(0);
   const prrReconnectInProgressRef = useRef<boolean>(false);
   const prrReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Invalidate stale auto-reconnect callbacks when user starts a manual connect flow. */
+  const prrReconnectEpochRef = useRef<number>(0);
   // Keep ref in sync every render so flushLcDisplayBuffer always merges buffer into latest lcs (preserves status_tare/tare)
   currentLcs.current = lcs;
 
@@ -2216,17 +2267,22 @@ const lastSoundTimeRef = useRef<number>(0);
     if (!targetDeviceId) return;
     if (prrReconnectInProgressRef.current) return;
     if (prrReconnectTimerRef.current) return;
+    const scheduleEpoch = prrReconnectEpochRef.current;
 
     const attempt = prrReconnectAttemptRef.current + 1;
     const delay = Math.min(PRR_RECONNECT_MAX_MS, PRR_RECONNECT_BASE_MS * Math.pow(2, Math.max(0, attempt - 1)));
     prrReconnectTimerRef.current = setTimeout(async () => {
       prrReconnectTimerRef.current = null;
+      if (scheduleEpoch !== prrReconnectEpochRef.current) {
+        return;
+      }
       if (bleConnectedRef.current) {
         prrReconnectAttemptRef.current = 0;
         return;
       }
       const reconnectDeviceId = prrBleDeviceIdRef.current;
       if (!reconnectDeviceId) return;
+      if (scheduleEpoch !== prrReconnectEpochRef.current) return;
 
       prrReconnectInProgressRef.current = true;
       prrReconnectAttemptRef.current = attempt;
@@ -2246,6 +2302,9 @@ const lastSoundTimeRef = useRef<number>(0);
         shouldRetry = true;
       } finally {
         prrReconnectInProgressRef.current = false;
+        if (scheduleEpoch !== prrReconnectEpochRef.current) {
+          return;
+        }
         if (shouldRetry && !bleConnectedRef.current) {
           schedulePrrAutoReconnect("retry_after_failure");
         }
@@ -2256,6 +2315,7 @@ const lastSoundTimeRef = useRef<number>(0);
   function bt_disconnect(deviceId: string): void {
     updateBleConnected(false);
     if (prrBleDeviceIdRef.current && String(prrBleDeviceIdRef.current) === String(deviceId)) {
+      setPrrConnectedListName(null);
       logPrrLinkEventSafely('disconnected');
       schedulePrrAutoReconnect("disconnect_callback");
     }
@@ -2522,13 +2582,26 @@ const lastSoundTimeRef = useRef<number>(0);
                     <span className="text-xs font-bold bg-danger text-white px-1.5 py-0.5 rounded w-max">{t("Common.TrErr")}</span>
                   }
                 </div>
-                <div className='flex flex-col'>
-                  <IonLabel color='dark' className='text-right -mb-1'>{`PRR ${connected ? batteryStatus : ''}`}</IonLabel>
-                  {/* <IonImg src={isDark ? batteryBlackIcon : batteryWhiteIcon} alt='battery' className='h-8 -mb-2' /> */}
-                  <FontAwesomeIcon icon={batteryIconRef.current} size='2x' color={`${isDark ? 'grey' : 'black'}`} />
-                </div>
-                <div className='relative flex items-center justify-center'>
-                  <IonImg src={connected ? bleConnectIcon : bleDisConnectIcon} alt='ble' className='w-10' />
+                <div className='flex flex-row items-center gap-2 shrink-0'>
+                  <div className='flex flex-col items-end'>
+                    <IonLabel color='dark' className='text-right -mb-1 m-0'>
+                      {`PRR${connected ? (batteryStatus ? ` ${batteryStatus}` : '') : ''}`}
+                    </IonLabel>
+                    <FontAwesomeIcon icon={batteryIconRef.current} size='2x' color={`${isDark ? 'grey' : 'black'}`} />
+                  </div>
+                  <div className='flex flex-row items-center gap-1.5 shrink-0'>
+                    <div className='relative flex items-center justify-center'>
+                      <IonImg src={connected ? bleConnectIcon : bleDisConnectIcon} alt='ble' className='w-10' />
+                    </div>
+                    {connected && prrConnectedListName ? (
+                      <span
+                        className='text-sm font-semibold text-black dark:text-white tabular-nums max-w-[5.5rem] sm:max-w-[6.5rem] truncate leading-tight text-center'
+                        title={prrConnectedListName}
+                      >
+                        {prrConnectedListName}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
               </div>
               {active_project.id && <Text
@@ -2596,9 +2669,12 @@ const lastSoundTimeRef = useRef<number>(0);
           }
         </IonToolbar>
       </IonHeader>
-      <IonContent className={platformType === 'android' ? 'safe-area-content' : ''}>
+      <IonContent
+        className={platformType === 'android' ? 'safe-area-content' : ''}
+        scrollY={!contentScrollDisabled}
+      >
         {title && <IonLabel>{title}</IonLabel>}
-        <div className={`flex flex-col ${classes}`}>
+        <div className={`flex flex-col min-h-0 ${classes}`}>
           {children}
         </div>
       </IonContent>
@@ -2687,7 +2763,6 @@ const lastSoundTimeRef = useRef<number>(0);
         data={active_project}
         onAction={handleSettingProject}
         onClose={() => setVisibleSetting(false)}
-        onPdfAction={() => handlePdfAction()}
       />
       <ErrorModal
         visible={errStr ? true : false}
@@ -2706,11 +2781,6 @@ const lastSoundTimeRef = useRef<number>(0);
         lcList={lcs.filter(item => item.groups)}
         unit={curProject.units || ''}
         data={selectedGroup}
-        onClose={() => handleCloseModal()}
-      />
-      <SelectDeviceModal
-        visible={visibleModal === MENUS.ConnectDevice}
-        onAction={handleSelectDevice}
         onClose={() => handleCloseModal()}
       />
       <TotalizerModal

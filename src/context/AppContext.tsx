@@ -306,6 +306,10 @@ export const AppDataProvider = (props: any) => {
       if (!c) return lcFromDb;
       return {
         ...lcFromDb,
+        // Keep in-memory layout: DB reload after curProject bumps (e.g. persist timer) must not
+        // stomp view_x/view_y that were just written from the monitor drag pipeline.
+        ...(c.view_x !== undefined && { view_x: c.view_x }),
+        ...(c.view_y !== undefined && { view_y: c.view_y }),
         ...(c.status_tare !== undefined && { status_tare: c.status_tare }),
         ...(c.tare !== undefined && { tare: c.tare }),
         ...(c.weightnotare !== undefined && { weightnotare: c.weightnotare }),
