@@ -69,6 +69,7 @@ const Modal: FC<ModalProps> = props => {
   const [driverName, setDriverName] = useState('');
   const [towedNo, setTowedNo] = useState('');
   const [deliveryNo, setDeliveryNo] = useState('');
+  const [keyboardInsetPx, setKeyboardInsetPx] = useState(0);
   const { isMobile } = useAppData();
   const handleDownloadPDF = () => {
     console.log('');
@@ -142,6 +143,37 @@ const Modal: FC<ModalProps> = props => {
       modal.current?.dismiss()
   }, [visible])
 
+  useEffect(() => {
+    if (!visible || !footerSlot) {
+      setKeyboardInsetPx(0);
+      return;
+    }
+
+    const updateKeyboardInset = () => {
+      const vv = window.visualViewport;
+      if (!vv) {
+        setKeyboardInsetPx(0);
+        return;
+      }
+      // On Android WebView, the layout viewport may not resize with the keyboard.
+      // visualViewport reflects the visible area, so we lift sticky footer by this inset.
+      const inset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      setKeyboardInsetPx(inset);
+    };
+
+    updateKeyboardInset();
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', updateKeyboardInset);
+    vv?.addEventListener('scroll', updateKeyboardInset);
+    window.addEventListener('resize', updateKeyboardInset);
+
+    return () => {
+      vv?.removeEventListener('resize', updateKeyboardInset);
+      vv?.removeEventListener('scroll', updateKeyboardInset);
+      window.removeEventListener('resize', updateKeyboardInset);
+    };
+  }, [visible, footerSlot]);
+
   return (
     <IonModal
       ref={modal}
@@ -204,6 +236,7 @@ const Modal: FC<ModalProps> = props => {
           {footerSlot && (
             <div
               className={`shrink-0 border-t border-gray-200 dark:border-gray-600 bg-white dark:bg-dark ${isMobile ? 'px-3' : 'px-4'} pt-3 pb-[max(12px,env(safe-area-inset-bottom,0px))]`}
+              style={keyboardInsetPx > 0 ? { paddingBottom: `${keyboardInsetPx + 12}px` } : undefined}
             >
               {footerSlot}
             </div>

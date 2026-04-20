@@ -223,6 +223,40 @@ const Settings: FC = () => {
     setVisibleAddModal(true)
   }
 
+  const resetEmptyGroupsAfterLcSave = async (nextProjectLcs: ILC[]) => {
+    if (!curProject?.id) return;
+    const pid = normalizeProjectId(curProject.id);
+    const usedGroupIds = new Set<string>();
+    nextProjectLcs.forEach((item) => {
+      (item.groups || '')
+        .split(',')
+        .map((g) => g.trim())
+        .filter(Boolean)
+        .forEach((g) => usedGroupIds.add(g));
+    });
+
+    const groupsToReset = groups.filter((g) => {
+      if (normalizeProjectId(g.project_id) !== pid) return false;
+      return !usedGroupIds.has(String(g.id));
+    });
+
+    if (groupsToReset.length === 0) return;
+
+    for (const group of groupsToReset) {
+      await db.groups
+        .filter((g: IGroup) => normalizeProjectId(g.project_id) === pid && String(g.id) === String(group.id))
+        .modify({ overload: '', tare: '', sum: '', title: `Grp ${group.id}` });
+    }
+
+    const resetIds = new Set(groupsToReset.map((g) => String(g.id)));
+    const nextGroups = groups.map((g) =>
+      resetIds.has(String(g.id))
+        ? { ...g, overload: '', tare: '', sum: '', title: `Grp ${g.id}` }
+        : g
+    );
+    updateGroups(nextGroups);
+  };
+
   const handleLCAction = async (type: string, lc: Partial<ILC> = {}) => {
     switch (type) {
       case 'save': {
@@ -313,6 +347,15 @@ const Settings: FC = () => {
           } else {
             await f_insert_lcs_bulk(newLCList);
           }
+
+          const editedLcId = lc.id ? String(lc.id) : '';
+          const nextProjectLcs = lcs
+            .filter((item) => normalizeProjectId(item.project_id) === normalizeProjectId(curProject.id))
+            .map((item) => (String(item.id) === editedLcId ? { ...item, groups: lcGroups } : item));
+          if (!lc.id && newLCList.length > 0) {
+            nextProjectLcs.push(...newLCList as ILC[]);
+          }
+          await resetEmptyGroupsAfterLcSave(nextProjectLcs);
 
           const groups_list = lcGroups.split(',');
           if (groups_list.length > 0) {

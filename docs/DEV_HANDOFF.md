@@ -71,6 +71,7 @@ npm run build && npx cap sync ios
 | 2026-04-17 | development-ai | Windows | Android UX parity fix for Monitor gate: keep `Can't be 0` dialog open (no instant dismiss on touch/menu events) and auto-redirect to `Settings` on app open if any current-project group has `overload=0`. | 26a529d |
 | 2026-04-20 | ios-development-ai | Mac | Shared BLE/Reports/Monitor sync block: Connect Device direct-PRR flow hardened (single auto-run per open, scan-in-progress dialog, manual-connect wins over auto-reconnect race via reconnect epoch), Monitor view pinch/pan overlay behavior stabilized, no-image manual LC placement fixed, optional background-image removal added, Reports cap raised to 300k, legacy-report recovery paths + storage-source labeling (`device` vs estimated quota) and diagnostics helpers. | pending push |
 | 2026-04-20 | development-ai | Windows | Android parity and stability pass: fixed duplicate/hidden BLE scan modal from cached views, kept `Scan in progress` dialog visible on Android touch, hardened large Reports loads (invalid timestamps + safe append path for near-300k), fit background image using real image dimensions for Android/iOS consistency, and bumped Android Play version to `1.4.5` (`versionCode 23`). | 1e516ba |
+| 2026-04-20 | ios-development-ai | Mac | Follow-up UX parity fixes: sticky Add LC footer/keyboard handling tuned for Android, Settings now auto-resets empty groups after LC group edits, and Monitor drag/drop hardened for extreme portrait images (home->stage fallback, keep home column x=0, wider stage->home drag slop, transparent stage layers, zoom overflow behavior, Home/Undo visible without background image). | pending push |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -102,6 +103,20 @@ Primary touched files in this block: `src/pages/Reports/index.tsx`, `src/pages/R
   3) No regressions in refresh/export baseline flows
 
 Primary files in this block: `src/Layout/CommonLayout.tsx`, `src/components/Monitor/MonitorView.tsx`, `src/pages/Reports/index.tsx`, `src/hooks/useFunctions.tsx`, `src/db.ts`, `src/assets/i18n/en.json`, `src/components/Modals/ProjectSettingModal.tsx`, `src/context/AppContext.tsx`, `src/pages/Monitor/index.tsx`, `src/components/Monitor/MonitorView.css`.
+
+---
+
+**Android (`development-ai`) import checklist (follow-up, 2026-04-20):**
+- `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
+- Validate Settings / Add LC modal on Android tablet:
+  1) In `Add LC`, `Cancel` / `Save` stay visible while scrolling and when keyboard is open
+  2) Edit LC groups: if a group becomes empty after removing the last LC, it auto-resets/clears in Settings
+- Validate Monitor with very tall portrait background image:
+  1) Home -> image drag remains reliable even when touchend coordinates are unstable
+  2) Stage -> Home drag follows finger farther left (reduced invisible wall effect)
+  3) Pinch zoom can overflow stage container when zoomed-in (less fixed-window feeling)
+  4) Home/Undo buttons remain visible and functional even with no background image
+- Primary files: `src/components/Monitor/MonitorView.tsx`, `src/components/Modals/Modal.tsx`, `src/pages/Settings/index.tsx`.
 
 ---
 

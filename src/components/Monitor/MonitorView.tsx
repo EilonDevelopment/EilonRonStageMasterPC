@@ -191,6 +191,10 @@ function clientPointFromDragStop(
   e: unknown,
   data: Partial<DraggableData>
 ): { x: number; y: number } | null {
+  const dataAny = data as DraggableData & { __clientX?: number; __clientY?: number };
+  if (Number.isFinite(dataAny.__clientX) && Number.isFinite(dataAny.__clientY)) {
+    return { x: Number(dataAny.__clientX), y: Number(dataAny.__clientY) };
+  }
   const p = getClientPoint(e);
   if (p) return p;
   const full = data as DraggableData;
@@ -363,7 +367,8 @@ function columnDisplayPosition(
 ): { x: number; y: number } {
   const pos = temp[index] ?? { x: 0, y: 0 };
   if (pos.x === 0 && pos.y === 0) return columnStackDefaultY(index, lcBoxHeight);
-  return pos;
+  // Home lane is vertical-only: never keep lateral offsets.
+  return { x: 0, y: pos.y };
 }
 
 /** Persisted temp: (0,0) means “use stacked slot” for this index */
@@ -372,9 +377,10 @@ function tempFromAbsoluteColumnPosition(
   abs: { x: number; y: number },
   lcBoxHeight: number
 ): { x: number; y: number } {
+  const normalizedAbs = { x: 0, y: abs.y };
   const def = columnStackDefaultY(index, lcBoxHeight);
-  if (abs.x === def.x && abs.y === def.y) return { x: 0, y: 0 };
-  return abs;
+  if (normalizedAbs.x === def.x && normalizedAbs.y === def.y) return { x: 0, y: 0 };
+  return normalizedAbs;
 }
 
 /**
@@ -533,6 +539,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
 
   /** WKWebView often sends wrong x/y on onStop after heavy layout (e.g. auto-place); onDrag still updates. */
   const lastDragPosRef = useRef({ x: 0, y: 0 });
+  const lastDragClientRef = useRef<{ x: number; y: number } | null>(null);
   const dragMovedRef = useRef(false);
 
   const {
@@ -593,18 +600,23 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
         }}
         onStart={() => {
           lastDragPosRef.current = { x: 0, y: 0 };
+          lastDragClientRef.current = null;
           dragMovedRef.current = false;
           onDragLiftChange?.(true, index);
         }}
-        onDrag={(_e, d) => {
+        onDrag={(dragEvt, d) => {
           if (!dragMovedRef.current) {
             dragMovedRef.current = true;
           }
           lastDragPosRef.current = { x: d.x, y: d.y };
+          const p = getClientPoint(dragEvt);
+          if (p) lastDragClientRef.current = p;
         }}
         onStop={(e, data) => {
           if (!dragMovedRef.current) {
-            onStop(e, data, index, x, y, false);
+            const p = getClientPoint(e);
+            const enriched = p ? { ...data, __clientX: p.x, __clientY: p.y } : data;
+            onStop(e, enriched as DraggableData, index, x, y, false);
           } else {
             const lx = lastDragPosRef.current.x;
             const ly = lastDragPosRef.current.y;
@@ -617,7 +629,10 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
               stopDeltasDead && (lx !== 0 || ly !== 0)
                 ? { ...data, x: lx, y: ly, deltaX: 1, deltaY: 0 }
                 : { ...data, x: lx, y: ly };
-            onStop(e, nudged, index, x, y, true);
+            const enriched = lastDragClientRef.current
+              ? { ...nudged, __clientX: lastDragClientRef.current.x, __clientY: lastDragClientRef.current.y }
+              : nudged;
+            onStop(e, enriched as DraggableData, index, x, y, true);
           }
           // After reposition (flushSync), not before: turning lift off immediately re-applies
           // overflow-hidden on the home column while nodes still sit mid-drag → clipped halves
@@ -1172,6 +1187,13 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     return { thumbHeight, thumbTop }
   }, [columnContentHeight, columnViewportH, columnScrollTop, columnScrollMax])
 
+  // Stage LCs need enough left slop to visually cross from the image box to Home.
+  // Include the fitted-image left offset inside content plus Home strip width.
+  const stageToHomeLeftSlop = Math.max(
+    LC_HOME_STRIP_WIDTH,
+    LC_HOME_STRIP_WIDTH + Math.max(0, Number(posInfo?.x ?? 0)) + 24
+  );
+
   useLayoutEffect(() => {
     const clamped = Math.min(Math.max(0, columnScrollTop), columnScrollMax)
     if (clamped !== columnScrollTop) setColumnScrollTop(clamped)
@@ -1279,16 +1301,12 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     ? 60000
     : stageLcDragging
       ? 10
-      : anyLcOnImageStage
-        ? 25
-        : 30
+      : 19
   const imagePanelStackZ = stageLcDragging
     ? 60000
     : columnLcDragging
       ? 10
-      : anyLcOnImageStage
-        ? 35
-        : 20
+      : 20
 
   useEffect(() => {
     setColumnScrollTop(0)
@@ -1523,6 +1541,37 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       return abs;
     };
 
+    const getPaintedImageRects = (
+      stageRect: DOMRect,
+      stageW: number,
+      stageH: number,
+      zoom: number,
+      pan: { x: number; y: number }
+    ) => {
+      const natural = imageNaturalSizeRef.current;
+      const srcWRaw = natural?.width ?? Number(curProject?.p_image_w) ?? stageW;
+      const srcHRaw = natural?.height ?? Number(curProject?.p_image_h) ?? stageH;
+      const srcW = Number.isFinite(srcWRaw) && srcWRaw > 0 ? srcWRaw : stageW;
+      const srcH = Number.isFinite(srcHRaw) && srcHRaw > 0 ? srcHRaw : stageH;
+      const painted = fitImageRectToViewport(stageW, stageH, srcW, srcH);
+      const left = stageRect.left + pan.x + painted.x * zoom;
+      const top = stageRect.top + pan.y + painted.y * zoom;
+      return {
+        logical: {
+          left: painted.x,
+          top: painted.y,
+          right: painted.x + painted.width,
+          bottom: painted.y + painted.height,
+        },
+        client: {
+          left,
+          top,
+          right: left + painted.width * zoom,
+          bottom: top + painted.height * zoom,
+        },
+      };
+    };
+
     if (!hasBackgroundImage || lcInColumnSlot(cur)) {
       if (!hasBackgroundImage) {
         const ptNoImg = clientPointFromDragStop(e, data);
@@ -1596,10 +1645,22 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
         if (pt.x >= rect.left && pt.x <= rect.right && pt.y >= rect.top && pt.y <= rect.bottom) {
           const z = Math.max(1e-6, stageViewZoomRef.current);
           const pan = stageViewPanRef.current;
+          const paintedRects = getPaintedImageRects(rect, iw, ih, z, pan);
+
           let nx = Math.round((pt.x - rect.left - LC_BOX_WIDTH / 2 - pan.x) / z);
           let ny = Math.round((pt.y - rect.top - LC_BOX_HEIGHT / 2 - pan.y) / z);
-          nx = Math.max(0, Math.min(Math.max(0, iw - LC_BOX_WIDTH), nx));
-          ny = Math.max(0, Math.min(Math.max(0, ih - LC_BOX_HEIGHT), ny));
+          const paintedMinX = Math.max(0, Math.round(paintedRects.logical.left));
+          const paintedMinY = Math.max(0, Math.round(paintedRects.logical.top));
+          const paintedMaxX = Math.max(
+            paintedMinX,
+            Math.round(paintedRects.logical.right - LC_BOX_WIDTH)
+          );
+          const paintedMaxY = Math.max(
+            paintedMinY,
+            Math.round(paintedRects.logical.bottom - LC_BOX_HEIGHT)
+          );
+          nx = Math.max(paintedMinX, Math.min(paintedMaxX, nx));
+          ny = Math.max(paintedMinY, Math.min(paintedMaxY, ny));
           const nudged = nudgeOffColumnSentinel(nx, ny);
           nx = nudged.x;
           ny = nudged.y;
@@ -1623,30 +1684,59 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
         }
       }
 
-      const prevDisplay = columnDisplayPosition(index, tempHomePositions, LC_BOX_HEIGHT);
-      const rawCol = resolveColumnAbs(prevDisplay, newAbs);
-      // Same snap as image→home: row grid + x=0 so a small drag cannot leave the cell
-      // half over the image strip (WKWebView / Draggable drift on x).
-      const colAbs = homeColumnDropGridPosition(
-        rawCol.y,
-        LC_BOX_HEIGHT,
-        lcBoundsBottom,
-        layoutList,
-        tempHomePositionsRef.current,
-        index
-      );
-      if (colAbs.x === prevDisplay.x && colAbs.y === prevDisplay.y) return;
-      flushSync(() => {
-        setLayoutUndoStack((stack) =>
-          pushLayoutUndoEntry(stack, {
-            positions: snapshotFromList(layoutList),
-            tempColumn: cloneTempColumn(tempHomePositionsRef.current),
-          })
+      // Android fallback: when touchend coordinates are stale/missing, dragging from Home toward
+      // the right can be mis-classified as Home reorder. If X moved clearly outside Home strip,
+      // force a stage drop at the nearest painted-image edge.
+      if (stage && dragGestureSeen && newAbs.x > Math.round(LC_HOME_STRIP_WIDTH * 0.6)) {
+        const rect = stage.getBoundingClientRect();
+        const z = Math.max(1e-6, stageViewZoomRef.current);
+        const pan = stageViewPanRef.current;
+        const paintedRects = getPaintedImageRects(rect, iw, ih, z, pan);
+        const fallbackClientX = paintedRects.client.left + 1;
+        const fallbackClientY = pt
+          ? Math.max(paintedRects.client.top + 1, Math.min(paintedRects.client.bottom - 1, pt.y))
+          : Math.round((paintedRects.client.top + paintedRects.client.bottom) / 2);
+        let nx = Math.round((fallbackClientX - rect.left - LC_BOX_WIDTH / 2 - pan.x) / z);
+        let ny = Math.round((fallbackClientY - rect.top - LC_BOX_HEIGHT / 2 - pan.y) / z);
+        const paintedMinX = Math.max(0, Math.round(paintedRects.logical.left));
+        const paintedMinY = Math.max(0, Math.round(paintedRects.logical.top));
+        const paintedMaxX = Math.max(
+          paintedMinX,
+          Math.round(paintedRects.logical.right - LC_BOX_WIDTH)
         );
-        setTempHomePositions((prev) => ({
-          ...prev,
-          [index]: tempFromAbsoluteColumnPosition(index, colAbs, LC_BOX_HEIGHT),
-        }));
+        const paintedMaxY = Math.max(
+          paintedMinY,
+          Math.round(paintedRects.logical.bottom - LC_BOX_HEIGHT)
+        );
+        nx = Math.max(paintedMinX, Math.min(paintedMaxX, nx));
+        ny = Math.max(paintedMinY, Math.min(paintedMaxY, ny));
+        const nudged = nudgeOffColumnSentinel(nx, ny);
+        const updatedItem: ILC = { ...cur, view_x: String(nudged.x), view_y: String(nudged.y) };
+        flushSync(() => {
+          setLayoutUndoStack((stack) =>
+            pushLayoutUndoEntry(stack, {
+              positions: snapshotFromList(layoutList),
+              tempColumn: cloneTempColumn(tempHomePositionsRef.current),
+            })
+          );
+          setTempHomePositions((prev) => {
+            const next = { ...prev };
+            delete next[index];
+            return next;
+          });
+          onMoveLC(updatedItem);
+        });
+        return;
+      }
+      // Image present + LC started in Home:
+      // if drop is not clearly on the painted image, keep exact original home slot.
+      // This prevents Android touch ambiguity from creating deep temporary Y positions
+      // that look like cells "sunk" behind the image area.
+      setTempHomePositions((prev) => {
+        if (!(index in prev)) return prev;
+        const next = { ...prev };
+        delete next[index];
+        return next;
       });
       return;
     }
@@ -1688,6 +1778,41 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
           onMoveLC({ ...cur, view_x: '0', view_y: '0' });
         });
         return;
+      }
+    }
+
+    const stagePt = clientPointFromDragStop(e, data);
+    const stage = imageStageRef.current;
+    if (stagePt && stage) {
+      const rect = stage.getBoundingClientRect();
+      if (stagePt.x >= rect.left && stagePt.x <= rect.right && stagePt.y >= rect.top && stagePt.y <= rect.bottom) {
+        const stageW = Math.max(1, sizeInfoRef.current.width || sizeInfo.width || 400);
+        const stageH = Math.max(1, sizeInfoRef.current.height || sizeInfo.height || 300);
+        const z = Math.max(1e-6, stageViewZoomRef.current);
+        const pan = stageViewPanRef.current;
+        const paintedRect = getPaintedImageRects(rect, stageW, stageH, z, pan);
+        const droppedOnPaintedImage =
+          stagePt.x >= paintedRect.client.left &&
+          stagePt.x <= paintedRect.client.right &&
+          stagePt.y >= paintedRect.client.top &&
+          stagePt.y <= paintedRect.client.bottom;
+        if (!droppedOnPaintedImage) {
+          flushSync(() => {
+            setLayoutUndoStack((stack) =>
+              pushLayoutUndoEntry(stack, {
+                positions: snapshotFromList(layoutList),
+                tempColumn: cloneTempColumn(tempHomePositionsRef.current),
+              })
+            );
+            setTempHomePositions((prev) => {
+              const next = { ...prev };
+              delete next[index];
+              return next;
+            });
+            onMoveLC({ ...cur, view_x: '0', view_y: '0' });
+          });
+          return;
+        }
       }
     }
 
@@ -1932,7 +2057,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   }
 
   const handleUndoLayout = async () => {
-    if (!hasBackgroundImage || locked || layoutProgress || layoutUndoStack.length === 0) return;
+    if (locked || layoutProgress || layoutUndoStack.length === 0) return;
     const entry = layoutUndoStack[layoutUndoStack.length - 1];
     const nextStack = layoutUndoStack.slice(0, -1);
     const merged = applyLayoutSnapshot(listRef.current, entry.positions);
@@ -1955,7 +2080,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   };
 
   const handleHomeLayoutClick = () => {
-    if (!hasBackgroundImage || locked || layoutProgress) return;
+    if (locked || layoutProgress) return;
     const layoutList = listRef.current;
     const anyOnImage = layoutList.some((item) => !lcInColumnSlot(item));
     const hasTemp = Object.keys(tempHomePositions).length > 0;
@@ -2273,16 +2398,17 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
           </div>
         </div>
         <div
-          className={`rnd-container relative flex min-h-0 min-w-0 flex-1 flex-col border border-black dark:border-inherit bg-[var(--ion-background-color,#1e1e1e)] ${
-            stageLcDragging ? 'overflow-visible' : 'overflow-hidden'
+          className={`rnd-container relative flex min-h-0 min-w-0 flex-1 flex-col border border-black dark:border-inherit ${
+            (stageLcDragging || stageViewZoom > 1.0001) ? 'overflow-visible' : 'overflow-hidden'
           }`}
-          style={{ zIndex: imagePanelStackZ }}
+          style={{ zIndex: imagePanelStackZ, backgroundColor: 'transparent' }}
         >
           <div
             ref={contentSideRef}
             className={`content-side relative z-0 flex h-full min-h-0 w-full min-w-0 flex-1 ${
-              stageLcDragging ? 'overflow-visible' : 'overflow-hidden'
+              (stageLcDragging || stageViewZoom > 1.0001) ? 'overflow-visible' : 'overflow-hidden'
             }`}
+            style={{ backgroundColor: 'transparent' }}
           >
             {/* Rnd bounds = visible content area only (no scroll/overflow outside the panel). */}
             <div
@@ -2317,21 +2443,22 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                   Inner layer uses logical sizeInfo × CSS scale so LCs stay aligned with the photo.
                 */}
                 <div
-                  className={`relative h-full w-full bg-[var(--ion-background-color,#1e1e1e)] ${
-                    stageLcDragging ? 'overflow-visible z-[3]' : 'overflow-hidden'
+                  className={`relative h-full w-full ${
+                    (stageLcDragging || stageViewZoom > 1.0001) ? 'overflow-visible z-[3]' : 'overflow-hidden'
                   }`}
-                  style={{ isolation: 'isolate' }}
+                  style={{ isolation: 'isolate', backgroundColor: 'transparent' }}
                 >
                   <div
                     ref={imageStageRef}
-                    className={`absolute left-0 top-0 box-border bg-[var(--ion-background-color,#1e1e1e)] ${
-                      stageLcDragging ? 'overflow-visible' : 'overflow-hidden'
+                    className={`absolute left-0 top-0 box-border ${
+                      (stageLcDragging || stageViewZoom > 1.0001) ? 'overflow-visible' : 'overflow-hidden'
                     }`}
                     style={{
                       width: sizeInfo?.width ?? frameDefaultSize.width,
                       height: sizeInfo?.height ?? frameDefaultSize.height,
                       touchAction: 'none',
                       isolation: 'isolate',
+                      backgroundColor: 'transparent',
                     }}
                     onPointerDownCapture={onStagePinchPointerDownCapture}
                     onPointerMoveCapture={onStagePinchPointerMoveCapture}
@@ -2350,7 +2477,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                         zIndex: -1,
                         minWidth: '80px',
                         minHeight: '80px',
-                        backgroundColor: 'var(--ion-background-color,#1e1e1e)',
+                        backgroundColor: 'transparent',
                         backgroundImage: `url(${JSON.stringify(curProject.p_image)})`,
                         backgroundSize: 'contain',
                         backgroundPosition: 'center',
@@ -2402,7 +2529,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                             boundsRight={boundsRight}
                             boundsBottom={boundsBottom}
                             dragScale={1}
-                            boundsLeftSlop={LC_HOME_STRIP_WIDTH}
+                            boundsLeftSlop={stageToHomeLeftSlop}
                             groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
                             onDragLiftChange={onStageLcDragLift}
                             onStop={(_e, data, idx, baseX, baseY, dragGestureSeen = false) =>
@@ -2466,7 +2593,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                           boundsRight={boundsRight}
                           boundsBottom={boundsBottom}
                           dragScale={1}
-                          boundsLeftSlop={LC_HOME_STRIP_WIDTH}
+                          boundsLeftSlop={stageToHomeLeftSlop}
                           groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
                           onDragLiftChange={onStageLcDragLift}
                           onStop={(_e, data, idx, baseX, baseY, dragGestureSeen = false) =>
@@ -2525,28 +2652,24 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
               <IonButton color="medium" className="m-0" onClick={() => setLocked(v => !v)}>
                 <IonIcon slot="icon-only" icon={locked ? lockClosedOutline : lockOpenOutline} size="small"></IonIcon>
               </IonButton>
-              {hasBackgroundImage && (
-                <>
-                  <IonButton
-                    color="medium"
-                    className="m-0"
-                    disabled={locked || layoutProgress}
-                    onClick={() => handleHomeLayoutClick()}
-                    title={t('Monitor.Modal.SendToHome')}
-                  >
-                    <IonIcon slot="icon-only" icon={homeOutline} size="small"></IonIcon>
-                  </IonButton>
-                  <IonButton
-                    color="medium"
-                    className="m-0"
-                    disabled={locked || layoutProgress || layoutUndoStack.length === 0}
-                    onClick={() => void handleUndoLayout()}
-                    title={t('Monitor.UndoLayout')}
-                  >
-                    <IonIcon slot="icon-only" icon={arrowUndoOutline} size="small"></IonIcon>
-                  </IonButton>
-                </>
-              )}
+              <IonButton
+                color="medium"
+                className="m-0"
+                disabled={locked || layoutProgress}
+                onClick={() => handleHomeLayoutClick()}
+                title={t('Monitor.Modal.SendToHome')}
+              >
+                <IonIcon slot="icon-only" icon={homeOutline} size="small"></IonIcon>
+              </IonButton>
+              <IonButton
+                color="medium"
+                className="m-0"
+                disabled={locked || layoutProgress || layoutUndoStack.length === 0}
+                onClick={() => void handleUndoLayout()}
+                title={t('Monitor.UndoLayout')}
+              >
+                <IonIcon slot="icon-only" icon={arrowUndoOutline} size="small"></IonIcon>
+              </IonButton>
             </div>
           </div>
         </div>
