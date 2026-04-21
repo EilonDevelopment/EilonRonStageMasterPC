@@ -115,6 +115,27 @@ const Settings: FC = () => {
 
   const columns = [
     {
+      field: '__uiRowIndex',
+      headerName: '#',
+      flex: 0.055,
+      minWidth: 44,
+      sortable: false,
+      filterable: false,
+      disableReorder: true,
+      // eslint-disable-next-line
+      // @ts-ignore
+      renderCell: (params) => {
+        const sortedIds = params.api.getSortedRowIds();
+        const idx = sortedIds.indexOf(params.id);
+        const n = idx >= 0 ? idx + 1 : '';
+        return (
+          <span className="text-dark dark:text-light col-item text-center tabular-nums block w-full">
+            {n}
+          </span>
+        );
+      },
+    },
+    {
       flex: 0.079,
       minWidth: 60,
       field: 'id',
@@ -484,6 +505,12 @@ const Settings: FC = () => {
           classes='border px-2 py-1 bg-danger text-white cursor-pointer'
           textClasses='text-white font-medium'
           onAction={() => deleteList.length > 0 && setVisibleDeleteModal(true)}
+        />
+      </div>
+      <div className="flex items-center justify-start px-0.5 pb-1 pt-0.5">
+        <Text
+          label={t('Setting.LcListTotal', { count: LCList.length })}
+          classes="text-sm font-medium text-dark/80 dark:text-light/80"
         />
       </div>
       <div className="flex flex-col rounded-md dark:bg-dark w-full min-w-0">

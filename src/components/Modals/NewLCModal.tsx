@@ -27,7 +27,7 @@ const NewLCModal: FC<NewLCModalProps> = props => {
   const { f_verify_lc_id } = useFunctions()
 
   const [lc, setLC] = useState<Partial<ILC>>({
-    underload: '-2',
+    underload: '-10',
     total_sum: false,
     ...data,
   });
@@ -54,7 +54,7 @@ const NewLCModal: FC<NewLCModalProps> = props => {
 
   useEffect(() => {
     setLC((v: any) => ({
-      underload: '-2',
+      underload: '-10',
       calibration_offset: '1',
       ...data,
       total_sum: data?.total_sum ?? false

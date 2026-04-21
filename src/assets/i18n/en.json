@@ -167,6 +167,7 @@
     "Units": "ID's (for example: 10-15,18,0,25-46)",
     "Group": "Group",
     "Groups": "Groups",
+    "LcListTotal": "Total load cells: {{count}}",
     "Check": "Check",
     "GroupName": "Group Name",
     "CalibrationModal": {

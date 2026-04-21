@@ -152,6 +152,7 @@
     "Units": "ID's (for example: 10-15,18,0,25-46)",
     "Group": "Group",
     "Groups": "グループ",
+    "LcListTotal": "ロードセル合計: {{count}}",
     "Check": "Check",
     "GroupName": "Group Name",
     "CalibrationModal": {

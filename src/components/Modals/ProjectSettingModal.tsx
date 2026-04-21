@@ -6,7 +6,7 @@ import SelectButtons from '../Buttons/SelectButtons';
 import { IProject } from '../../helper/types';
 import { Unit_List, Windmeter_Unit_List } from '../../helper/constants';
 import TextInput from '../TextInput';
-import { IonToggle } from '@ionic/react';
+import { IonButton, IonToggle } from '@ionic/react';
 import useAppData from '../../hooks/useAppData';
 
 interface ProjectSettingModalProps {
@@ -110,11 +110,19 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
       header={t("Project.ProjectSettingTitle")}
       visible={visible}
       // classes='w-max h-80 overflow-auto'
-      classes={`w-[550px] overflow-auto ${isMobile ? ' max-h-[335px] ' : ''} `}
+      classes={`w-[550px] ${isMobile ? ' max-h-[335px] ' : ''} `}
       contentClasses={`py-4 gap-4 ${isMobile ? '' : 'px-7 gap-5'}`}
-      footerClasses={`${isMobile ? '' : 'px-6 py-2'}`}
-      okTitle={t("Common.Okay")}
-      cancelTitle={t("Common.Cancel")}
+      showFooter={false}
+      footerSlot={(
+        <div className="flex w-full justify-end gap-2">
+          <IonButton color="secondary" onClick={() => onClose()}>
+            {t("Common.Cancel")}
+          </IonButton>
+          <IonButton color="primary" onClick={() => onAction(project)}>
+            {t("Common.Okay")}
+          </IonButton>
+        </div>
+      )}
       onAction={() => onAction(project)}
       onClose={() => onClose()}
     >

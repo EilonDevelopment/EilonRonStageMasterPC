@@ -411,6 +411,15 @@ input[type="file"] {
   touch-action: manipulation;
 }
 
+/* Force hamburger icon contrast regardless of Ionic color inheritance */
+.menu-hamburger-btn .menu-hamburger-icon {
+  color: #111827 !important;
+}
+
+body.dark .menu-hamburger-btn .menu-hamburger-icon {
+  color: #f3f4f6 !important;
+}
+
 /* Toast list should not intercept taps meant for the page */
 .Toastify__toast-container {
   pointer-events: none;

@@ -72,6 +72,7 @@ npm run build && npx cap sync ios
 | 2026-04-20 | ios-development-ai | Mac | Shared BLE/Reports/Monitor sync block: Connect Device direct-PRR flow hardened (single auto-run per open, scan-in-progress dialog, manual-connect wins over auto-reconnect race via reconnect epoch), Monitor view pinch/pan overlay behavior stabilized, no-image manual LC placement fixed, optional background-image removal added, Reports cap raised to 300k, legacy-report recovery paths + storage-source labeling (`device` vs estimated quota) and diagnostics helpers. | pending push |
 | 2026-04-20 | development-ai | Windows | Android parity and stability pass: fixed duplicate/hidden BLE scan modal from cached views, kept `Scan in progress` dialog visible on Android touch, hardened large Reports loads (invalid timestamps + safe append path for near-300k), fit background image using real image dimensions for Android/iOS consistency, and bumped Android Play version to `1.4.5` (`versionCode 23`). | 1e516ba |
 | 2026-04-20 | ios-development-ai | Mac | Follow-up UX parity fixes: sticky Add LC footer/keyboard handling tuned for Android, Settings now auto-resets empty groups after LC group edits, and Monitor drag/drop hardened for extreme portrait images (home->stage fallback, keep home column x=0, wider stage->home drag slop, transparent stage layers, zoom overflow behavior, Home/Undo visible without background image). | pending push |
+| 2026-04-21 | ios-development-ai | Mac | UX/interaction cleanup block: Settings list got paginated UI index + total LC counter; More Settings modal footer made sticky on Android; Add LC default underload changed to `-10`; menu visual polish (logo/menu width balance, subtle divider/version, language selector restyle, remove send-logs item, light-mode header label/icon contrast). Monitor Home flow redesigned: no home drag, touch-scroll over full home area, click-to-send LC to canvas first free slot, double-tap on canvas LC returns to Home first free slot, and canvas-wide placement (including non-image area) with overlap/clipping fixes. | pending push |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -117,6 +118,27 @@ Primary files in this block: `src/Layout/CommonLayout.tsx`, `src/components/Moni
   3) Pinch zoom can overflow stage container when zoomed-in (less fixed-window feeling)
   4) Home/Undo buttons remain visible and functional even with no background image
 - Primary files: `src/components/Monitor/MonitorView.tsx`, `src/components/Modals/Modal.tsx`, `src/pages/Settings/index.tsx`.
+
+---
+
+**Android (`development-ai`) import checklist (UI + Monitor interaction redesign, 2026-04-21):**
+- `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
+- Validate menu/header UI parity:
+  1) Hamburger icon + `Total Weight` + `PRR` labels are black in light mode, readable in dark mode
+  2) Side menu width/logo/language selector spacing looks aligned on Android tablet
+  3) `Send logs to the developer` no longer appears in side menu
+- Validate Settings:
+  1) LC list first column shows UI index respecting pagination
+  2) Total LC count appears above grid and updates after add/delete
+  3) In Add LC, default underload is `-10`
+  4) More Settings `OK` / `Cancel` remain visible with keyboard open
+- Validate Monitor redesigned Home interactions:
+  1) Home has no manual scrollbar strip; vertical touch scroll works on whole home area (cells + empty space)
+  2) Home LCs are not draggable; single tap moves LC to canvas first free grid slot
+  3) On-canvas LC supports drag/drop across full canvas (including non-image area)
+  4) Double tap on on-canvas LC returns it to Home first free slot
+  5) No LC overlap/clipping in top-left canvas fringe after repeated home->canvas taps
+- Primary files: `src/components/Monitor/MonitorView.tsx`, `src/pages/Settings/index.tsx`, `src/components/Modals/NewLCModal.tsx`, `src/components/Modals/ProjectSettingModal.tsx`, `src/components/Menu.tsx`, `src/components/Menu.css`, `src/Layout/CommonLayout.tsx`, `src/theme/variables.css`, `src/assets/i18n/en.json`, `src/assets/i18n/jp.json`.
 
 ---
 

@@ -25,7 +25,7 @@ import {
   sunnyOutline,
   timerOutline,
   tvOutline,
-  mailOutline, // <--- AÑADE ESTO
+  mailOutline,
 } from 'ionicons/icons';
 import { MENUS, ModalMenus, ModalNames, ROUTES } from '../helper/constants';
 
@@ -339,16 +339,15 @@ const Menu: React.FC = () => {
   return (
     <>
       {/* swipeGesture={false}: open side menu only from toolbar hamburger, not edge drag (iOS/Android). */}
-      <IonMenu contentId="main" type="overlay" swipeGesture={false}>
+      <IonMenu contentId="main" type="overlay" swipeGesture={false} className="main-side-menu">
         <IonContent className='main-content' >
           <IonList id="inbox-list" className='bg-transparent dark:bg-dark'>
-            <IonImg src={themeToggle ? darkLogo : lightLogo} alt='logo'></IonImg>
-            <div className='flex flex-row items-center justify-between px-3 mb-4 gap-6'>
-              <div className="flex flex-col text-dark dark:text-light min-w-0 flex-1 ion-select-language-wrapper">
-                <span className="ion-select-language-label text-xs font-medium mb-1">{t("Language")}</span>
+            <IonImg src={themeToggle ? darkLogo : lightLogo} alt='logo' className='menu-logo'></IonImg>
+            <div className='menu-top-row flex flex-row items-center justify-between mb-4 gap-3'>
+              <div className="menu-language-wrap min-w-0 ion-select-language-wrapper">
                 <IonSelect
                   value={lang}
-                  className="ion-select-language text-dark dark:text-light"
+                  className="ion-select-language"
                   interface="popover"
                   onIonChange={(e) => handleChangeLang(e.detail.value)}
                 >
@@ -358,9 +357,9 @@ const Menu: React.FC = () => {
               </div>
               {/* { mode !== 'dark' ? */}
               {themeToggle ?
-                <IonIcon src={moonOutline} color='dark' className='text-xl cursor-pointer' onClick={() => handleChangeMode()} />
+                <IonIcon src={moonOutline} color='dark' className='menu-theme-toggle text-xl cursor-pointer' onClick={() => handleChangeMode()} />
                 :
-                <IonIcon src={sunnyOutline} className='text-xl cursor-pointer' onClick={() => handleChangeMode()} />
+                <IonIcon src={sunnyOutline} className='menu-theme-toggle text-xl cursor-pointer' onClick={() => handleChangeMode()} />
               }
             </div>
             {appPages.map((appPage, index) => {
@@ -374,7 +373,7 @@ const Menu: React.FC = () => {
                   return (
                     <IonItem
                       key={index}
-                      className={`bg-white dark:bg-dark cursor-pointer ${textClass}`}
+                      className={`menu-first-item-divider bg-white dark:bg-dark cursor-pointer ${textClass}`}
                       routerDirection="none"
                       lines="none"
                       detail={false}
@@ -402,7 +401,7 @@ const Menu: React.FC = () => {
                   return (
                     <IonMenuToggle key={index} className='bg-white dark:bg-dark' autoHide={false}>
                       <IonItem
-                        className={`bg-white dark:bg-dark cursor-pointer ${textClass}`}
+                        className={`${index === 0 ? 'menu-first-item-divider ' : ''}bg-white dark:bg-dark cursor-pointer ${textClass}`}
                         lines="none"
                         detail={false}
                         onPointerUp={(e) => runFromTouchPointerUp(`menu:${appPage.title}`, e, () => { updateVisibleModal(appPage.title); void closeMainMenu(); })}
@@ -421,7 +420,7 @@ const Menu: React.FC = () => {
                 return (
                   <IonMenuToggle key={index} autoHide={false}>
                     <IonItem
-                      className={`bg-white dark:bg-dark ${textClass}`}
+                      className={`${index === 0 ? 'menu-first-item-divider ' : ''}bg-white dark:bg-dark ${textClass}`}
                       routerDirection="none"
                       lines="none"
                       detail={false}
@@ -454,22 +453,7 @@ const Menu: React.FC = () => {
             }
           </IonList>
 
-          
-          
-            <IonItem
-            className='flex items-center gap-2 p-2 cursor-pointer'
-            button
-            onPointerUp={(e) => runFromTouchPointerUp('menu:sendlogs', e, () => { void handleSendLogsToDeveloper(); })}
-            onClick={() => runFromClick('menu:sendlogs', () => { void handleSendLogsToDeveloper(); })}
-            detail={false}
-          >
-            <IonIcon slot="start" icon={mailOutline} />
-            <IonLabel>Send logs to the developer</IonLabel>
-          </IonItem>
-          
-
-
-          <h1>version-1.4.5</h1>
+          <div className="menu-version">version-1.4.5</div>
         </IonContent>
       </IonMenu>
     </>

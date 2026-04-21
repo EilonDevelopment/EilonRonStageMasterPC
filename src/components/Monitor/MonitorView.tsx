@@ -500,11 +500,15 @@ type MonitorLcBoxProps = {
   dragScale?: number;
   /** Extra pixels Draggable may move left (on-image only) so release can land over the home strip. */
   boundsLeftSlop?: number;
+  /** Extra pixels Draggable may move above 0 (on-image only). */
+  boundsTopSlop?: number;
   /** Home column: this LC is the one under the finger — paint above siblings and the image panel. */
   columnLiftRaised?: boolean;
   groupHighlight?: boolean;
   /** `columnIndex` is list index (home column); optional for stage LCs. */
   onDragLiftChange?: (active: boolean, columnIndex?: number) => void;
+  onCellClick?: (item: ILC, index: number) => void;
+  onCellDoubleTap?: (item: ILC, index: number) => void;
   onStop: (
     e: DraggableEvent,
     data: DraggableData,
@@ -531,9 +535,12 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     boundsBottom,
     dragScale = 1,
     boundsLeftSlop = 0,
+    boundsTopSlop = 0,
     columnLiftRaised = false,
     groupHighlight,
     onDragLiftChange,
+    onCellClick,
+    onCellDoubleTap,
     onStop,
   } = props;
 
@@ -541,6 +548,8 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
   const lastDragPosRef = useRef({ x: 0, y: 0 });
   const lastDragClientRef = useRef<{ x: number; y: number } | null>(null);
   const dragMovedRef = useRef(false);
+  const lastTapAtRef = useRef(0);
+  const suppressClickUntilRef = useRef(0);
 
   const {
     id,
@@ -594,7 +603,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
         disabled={!!disabled || locked}
         bounds={{
           left: -x - boundsLeftSlop,
-          top: -y,
+          top: -y - boundsTopSlop,
           right: boundsRight,
           bottom: boundsBottom,
         }}
@@ -633,6 +642,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
               ? { ...nudged, __clientX: lastDragClientRef.current.x, __clientY: lastDragClientRef.current.y }
               : nudged;
             onStop(e, enriched as DraggableData, index, x, y, true);
+            suppressClickUntilRef.current = Date.now() + 250;
           }
           // After reposition (flushSync), not before: turning lift off immediately re-applies
           // overflow-hidden on the home column while nodes still sit mid-drag → clipped halves
@@ -644,6 +654,24 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
           className={`handle monitor-lc-handle border w-20 h-10.5 flex flex-col text-xs rounded cursor-pointer shrink-0${groupHighlight ? ' ring-4 ring-primary ring-offset-1 z-[20] relative' : ''}`}
           style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none' }}
           onPointerDownCapture={() => onDragLiftChange?.(true, index)}
+          onPointerUp={(ev) => {
+            if (dragMovedRef.current) return;
+            if (!onCellDoubleTap || ev.pointerType !== 'touch') return;
+            const now = Date.now();
+            if (now - lastTapAtRef.current <= 350) {
+              lastTapAtRef.current = 0;
+              onCellDoubleTap(item, index);
+              ev.preventDefault();
+              ev.stopPropagation();
+              return;
+            }
+            lastTapAtRef.current = now;
+          }}
+          onDoubleClick={() => onCellDoubleTap?.(item, index)}
+          onClick={() => {
+            if (Date.now() < suppressClickUntilRef.current) return;
+            onCellClick?.(item, index);
+          }}
         >
           <div className="top-side bg-black text-white text-center rounded-t-sm py-0.5">{title ? title : id}</div>
           <div
@@ -682,9 +710,12 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     prev.boundsRight === next.boundsRight &&
     prev.boundsBottom === next.boundsBottom &&
     (prev.boundsLeftSlop ?? 0) === (next.boundsLeftSlop ?? 0) &&
+    (prev.boundsTopSlop ?? 0) === (next.boundsTopSlop ?? 0) &&
     prev.columnLiftRaised === next.columnLiftRaised &&
     prev.groupHighlight === next.groupHighlight &&
-    prev.onDragLiftChange === next.onDragLiftChange
+    prev.onDragLiftChange === next.onDragLiftChange &&
+    prev.onCellClick === next.onCellClick &&
+    prev.onCellDoubleTap === next.onCellDoubleTap
   );
 });
 
@@ -855,11 +886,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   const LC_BOX_HEIGHT = 43
   /** Extra pixels around the home strip for “drop back to home” hit-testing (fat finger / WKWebView). */
   const HOME_STRIP_DROP_SLACK_PX = 16
-  /** Dedicated scrollbar strip so vertical pans on cells don’t steal IonContent scroll. */
-  const LC_SCROLLBAR_GUTTER = 10
-  /** Air gap between cell column and scrollbar (same strip width budget). */
-  const LC_HOME_SCROLL_GAP = 4
-  const LC_HOME_STRIP_WIDTH = LC_BOX_WIDTH + LC_HOME_SCROLL_GAP + LC_SCROLLBAR_GUTTER
+  const LC_HOME_STRIP_WIDTH = LC_BOX_WIDTH
 
   /** LCs shown in the left “home” lane (no image, or still at 0,0). */
   const columnLaneEntries = useMemo(
@@ -1174,19 +1201,6 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     [columnContentHeight, columnViewportH]
   )
 
-  const homeScrollbarMetrics = useMemo(() => {
-    const trackH = columnViewportH
-    const THUMB_MIN = 22
-    if (columnScrollMax <= 0 || columnContentHeight <= 0) {
-      return { thumbHeight: trackH, thumbTop: 0 }
-    }
-    const thumbHeight = Math.max(THUMB_MIN, (trackH / columnContentHeight) * trackH)
-    const thumbMaxTop = Math.max(0, trackH - thumbHeight)
-    const thumbTop =
-      thumbMaxTop <= 0 ? 0 : (columnScrollTop / columnScrollMax) * thumbMaxTop
-    return { thumbHeight, thumbTop }
-  }, [columnContentHeight, columnViewportH, columnScrollTop, columnScrollMax])
-
   // Stage LCs need enough left slop to visually cross from the image box to Home.
   // Include the fitted-image left offset inside content plus Home strip width.
   const stageToHomeLeftSlop = Math.max(
@@ -1199,52 +1213,41 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     if (clamped !== columnScrollTop) setColumnScrollTop(clamped)
   }, [columnScrollTop, columnScrollMax])
 
-  const homeScrollThumbDragRef = useRef<{
+  const homeTouchScrollRef = useRef<{
     pointerId: number
     startY: number
     startScroll: number
-    thumbMaxTop: number
-    maxScroll: number
   } | null>(null)
 
-  const onHomeScrollThumbPointerDown = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
+  const onHomeTouchScrollPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const maxScroll = Math.max(0, columnContentHeight - columnViewportH)
+    if (maxScroll <= 0 || e.pointerType !== 'touch') return
+    homeTouchScrollRef.current = {
+      pointerId: e.pointerId,
+      startY: e.clientY,
+      startScroll: columnScrollTopRef.current,
+    }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }, [columnContentHeight, columnViewportH])
+
+  const onHomeTouchScrollPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = homeTouchScrollRef.current
+    if (!d || e.pointerId !== d.pointerId) return
+    const maxScroll = Math.max(0, columnContentHeight - columnViewportH)
+    if (maxScroll <= 0) return
+    const dy = e.clientY - d.startY
+    const next = Math.min(Math.max(0, d.startScroll - dy), maxScroll)
+    if (Math.abs(dy) > 2) {
       e.preventDefault()
       e.stopPropagation()
-      const trackH = columnViewportH
-      const maxScroll = Math.max(0, columnContentHeight - trackH)
-      const THUMB_MIN = 22
-      const thumbHeight =
-        maxScroll <= 0
-          ? trackH
-          : Math.max(THUMB_MIN, (trackH / Math.max(columnContentHeight, 1)) * trackH)
-      const thumbMaxTop = Math.max(0, trackH - thumbHeight)
-      homeScrollThumbDragRef.current = {
-        pointerId: e.pointerId,
-        startY: e.clientY,
-        startScroll: columnScrollTopRef.current,
-        thumbMaxTop,
-        maxScroll,
-      }
-      e.currentTarget.setPointerCapture(e.pointerId)
-    },
-    [columnContentHeight, columnViewportH]
-  )
-
-  const onHomeScrollThumbPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const d = homeScrollThumbDragRef.current
-    if (!d || e.pointerId !== d.pointerId) return
-    const dy = e.clientY - d.startY
-    const delta =
-      d.thumbMaxTop > 0 && d.maxScroll > 0 ? (dy / d.thumbMaxTop) * d.maxScroll : 0
-    const next = Math.min(Math.max(0, d.startScroll + delta), d.maxScroll)
+    }
     setColumnScrollTop(next)
-  }, [])
+  }, [columnContentHeight, columnViewportH])
 
-  const onHomeScrollThumbPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const d = homeScrollThumbDragRef.current
+  const onHomeTouchScrollPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = homeTouchScrollRef.current
     if (d && e.pointerId === d.pointerId) {
-      homeScrollThumbDragRef.current = null
+      homeTouchScrollRef.current = null
       try {
         e.currentTarget.releasePointerCapture(e.pointerId)
       } catch {
@@ -1252,24 +1255,6 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       }
     }
   }, [])
-
-  const onHomeScrollTrackPointerDown = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      if ((e.target as HTMLElement).closest('.monitor-lc-home-scroll-thumb')) return
-      const trackH = columnViewportH
-      const maxScroll = Math.max(0, columnContentHeight - trackH)
-      if (maxScroll <= 0) return
-      const rect = e.currentTarget.getBoundingClientRect()
-      const y = e.clientY - rect.top
-      const THUMB_MIN = 22
-      const thumbHeight = Math.max(THUMB_MIN, (trackH / Math.max(columnContentHeight, 1)) * trackH)
-      const thumbMaxTop = trackH - thumbHeight
-      const wantTop = Math.max(0, Math.min(thumbMaxTop, y - thumbHeight / 2))
-      const scroll = thumbMaxTop <= 0 ? 0 : (wantTop / thumbMaxTop) * maxScroll
-      setColumnScrollTop(scroll)
-    },
-    [columnContentHeight, columnViewportH]
-  )
 
   const onHomeLaneWheel = useCallback(
     (e: React.WheelEvent) => {
@@ -1541,6 +1526,23 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       return abs;
     };
 
+    const getCanvasLogicalBounds = () => {
+      const canvasW = Math.max(LC_BOX_WIDTH, imageBoundsRight);
+      const canvasH = Math.max(LC_BOX_HEIGHT, imageBoundsBottom);
+      const offX = Math.round(Number(posInfoRef.current?.x ?? posInfo.x ?? 0));
+      const offY = Math.round(Number(posInfoRef.current?.y ?? posInfo.y ?? 0));
+      const minX = -offX;
+      const minY = -offY;
+      const maxX = canvasW - offX - LC_BOX_WIDTH;
+      const maxY = canvasH - offY - LC_BOX_HEIGHT;
+      return {
+        minX,
+        minY,
+        maxX: Math.max(minX, maxX),
+        maxY: Math.max(minY, maxY),
+      };
+    };
+
     const getPaintedImageRects = (
       stageRect: DOMRect,
       stageW: number,
@@ -1645,22 +1647,11 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
         if (pt.x >= rect.left && pt.x <= rect.right && pt.y >= rect.top && pt.y <= rect.bottom) {
           const z = Math.max(1e-6, stageViewZoomRef.current);
           const pan = stageViewPanRef.current;
-          const paintedRects = getPaintedImageRects(rect, iw, ih, z, pan);
-
           let nx = Math.round((pt.x - rect.left - LC_BOX_WIDTH / 2 - pan.x) / z);
           let ny = Math.round((pt.y - rect.top - LC_BOX_HEIGHT / 2 - pan.y) / z);
-          const paintedMinX = Math.max(0, Math.round(paintedRects.logical.left));
-          const paintedMinY = Math.max(0, Math.round(paintedRects.logical.top));
-          const paintedMaxX = Math.max(
-            paintedMinX,
-            Math.round(paintedRects.logical.right - LC_BOX_WIDTH)
-          );
-          const paintedMaxY = Math.max(
-            paintedMinY,
-            Math.round(paintedRects.logical.bottom - LC_BOX_HEIGHT)
-          );
-          nx = Math.max(paintedMinX, Math.min(paintedMaxX, nx));
-          ny = Math.max(paintedMinY, Math.min(paintedMaxY, ny));
+          const canvasBounds = getCanvasLogicalBounds();
+          nx = Math.max(canvasBounds.minX, Math.min(canvasBounds.maxX, nx));
+          ny = Math.max(canvasBounds.minY, Math.min(canvasBounds.maxY, ny));
           const nudged = nudgeOffColumnSentinel(nx, ny);
           nx = nudged.x;
           ny = nudged.y;
@@ -1686,30 +1677,20 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
 
       // Android fallback: when touchend coordinates are stale/missing, dragging from Home toward
       // the right can be mis-classified as Home reorder. If X moved clearly outside Home strip,
-      // force a stage drop at the nearest painted-image edge.
+      // force a stage drop near the left side of the canvas.
       if (stage && dragGestureSeen && newAbs.x > Math.round(LC_HOME_STRIP_WIDTH * 0.6)) {
         const rect = stage.getBoundingClientRect();
         const z = Math.max(1e-6, stageViewZoomRef.current);
         const pan = stageViewPanRef.current;
-        const paintedRects = getPaintedImageRects(rect, iw, ih, z, pan);
-        const fallbackClientX = paintedRects.client.left + 1;
+        const fallbackClientX = rect.left + 1;
         const fallbackClientY = pt
-          ? Math.max(paintedRects.client.top + 1, Math.min(paintedRects.client.bottom - 1, pt.y))
-          : Math.round((paintedRects.client.top + paintedRects.client.bottom) / 2);
+          ? Math.max(rect.top + 1, Math.min(rect.bottom - 1, pt.y))
+          : Math.round((rect.top + rect.bottom) / 2);
         let nx = Math.round((fallbackClientX - rect.left - LC_BOX_WIDTH / 2 - pan.x) / z);
         let ny = Math.round((fallbackClientY - rect.top - LC_BOX_HEIGHT / 2 - pan.y) / z);
-        const paintedMinX = Math.max(0, Math.round(paintedRects.logical.left));
-        const paintedMinY = Math.max(0, Math.round(paintedRects.logical.top));
-        const paintedMaxX = Math.max(
-          paintedMinX,
-          Math.round(paintedRects.logical.right - LC_BOX_WIDTH)
-        );
-        const paintedMaxY = Math.max(
-          paintedMinY,
-          Math.round(paintedRects.logical.bottom - LC_BOX_HEIGHT)
-        );
-        nx = Math.max(paintedMinX, Math.min(paintedMaxX, nx));
-        ny = Math.max(paintedMinY, Math.min(paintedMaxY, ny));
+        const canvasBounds = getCanvasLogicalBounds();
+        nx = Math.max(canvasBounds.minX, Math.min(canvasBounds.maxX, nx));
+        ny = Math.max(canvasBounds.minY, Math.min(canvasBounds.maxY, ny));
         const nudged = nudgeOffColumnSentinel(nx, ny);
         const updatedItem: ILC = { ...cur, view_x: String(nudged.x), view_y: String(nudged.y) };
         flushSync(() => {
@@ -1781,41 +1762,6 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       }
     }
 
-    const stagePt = clientPointFromDragStop(e, data);
-    const stage = imageStageRef.current;
-    if (stagePt && stage) {
-      const rect = stage.getBoundingClientRect();
-      if (stagePt.x >= rect.left && stagePt.x <= rect.right && stagePt.y >= rect.top && stagePt.y <= rect.bottom) {
-        const stageW = Math.max(1, sizeInfoRef.current.width || sizeInfo.width || 400);
-        const stageH = Math.max(1, sizeInfoRef.current.height || sizeInfo.height || 300);
-        const z = Math.max(1e-6, stageViewZoomRef.current);
-        const pan = stageViewPanRef.current;
-        const paintedRect = getPaintedImageRects(rect, stageW, stageH, z, pan);
-        const droppedOnPaintedImage =
-          stagePt.x >= paintedRect.client.left &&
-          stagePt.x <= paintedRect.client.right &&
-          stagePt.y >= paintedRect.client.top &&
-          stagePt.y <= paintedRect.client.bottom;
-        if (!droppedOnPaintedImage) {
-          flushSync(() => {
-            setLayoutUndoStack((stack) =>
-              pushLayoutUndoEntry(stack, {
-                positions: snapshotFromList(layoutList),
-                tempColumn: cloneTempColumn(tempHomePositionsRef.current),
-              })
-            );
-            setTempHomePositions((prev) => {
-              const next = { ...prev };
-              delete next[index];
-              return next;
-            });
-            onMoveLC({ ...cur, view_x: '0', view_y: '0' });
-          });
-          return;
-        }
-      }
-    }
-
     let nx = newAbs.x;
     let ny = newAbs.y;
     const ox = parseInt(String(cur.view_x ?? '0'), 10) || 0;
@@ -1860,9 +1806,12 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       }
     }
 
-    const clampedImg = clampLcToImageRect(nx, ny, imgWOn, imgHOn, LC_BOX_WIDTH, LC_BOX_HEIGHT);
-    nx = clampedImg.x;
-    ny = clampedImg.y;
+    const canvasBounds = getCanvasLogicalBounds();
+    nx = Math.max(canvasBounds.minX, Math.min(canvasBounds.maxX, nx));
+    ny = Math.max(canvasBounds.minY, Math.min(canvasBounds.maxY, ny));
+    const nudged = nudgeOffColumnSentinel(nx, ny);
+    nx = nudged.x;
+    ny = nudged.y;
 
     if (nx === ox && ny === oy) return;
 
@@ -1877,6 +1826,92 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       onMoveLC(updatedItem);
     });
   };
+
+  const findFirstFreeStageGridPosition = useCallback((layoutList: ILC[]) => {
+    const stageW = hasBackgroundImage
+      ? Math.max(LC_BOX_WIDTH, imageBoundsRight)
+      : Math.max(LC_BOX_WIDTH, contentSideRef.current?.clientWidth || imageBoundsRight || LC_BOX_WIDTH);
+    const stageH = hasBackgroundImage
+      ? Math.max(LC_BOX_HEIGHT, imageBoundsBottom)
+      : Math.max(LC_BOX_HEIGHT, contentSideRef.current?.clientHeight || imageBoundsBottom || LC_BOX_HEIGHT);
+    const offX = hasBackgroundImage ? Math.round(Number(posInfoRef.current?.x ?? posInfo.x ?? 0)) : 0;
+    const offY = hasBackgroundImage ? Math.round(Number(posInfoRef.current?.y ?? posInfo.y ?? 0)) : 0;
+    const minX = hasBackgroundImage ? -offX : 0;
+    const minY = hasBackgroundImage ? -offY : 0;
+    const maxX = hasBackgroundImage ? (stageW - offX - LC_BOX_WIDTH) : (stageW - LC_BOX_WIDTH);
+    const maxY = hasBackgroundImage ? (stageH - offY - LC_BOX_HEIGHT) : (stageH - LC_BOX_HEIGHT);
+    const usableW = Math.max(LC_BOX_WIDTH, maxX - minX + LC_BOX_WIDTH);
+    const usableH = Math.max(LC_BOX_HEIGHT, maxY - minY + LC_BOX_HEIGHT);
+    const cols = Math.max(1, Math.floor(usableW / LC_BOX_WIDTH));
+    const rows = Math.max(1, Math.floor(usableH / LC_BOX_HEIGHT));
+    const occupied = new Set<string>();
+    layoutList.forEach((item) => {
+      if (lcInColumnSlot(item)) return;
+      const x = parseInt(String(item.view_x ?? '0'), 10) || 0;
+      const y = parseInt(String(item.view_y ?? '0'), 10) || 0;
+      const c = Math.max(0, Math.min(cols - 1, Math.round((x - minX) / LC_BOX_WIDTH)));
+      const r = Math.max(0, Math.min(rows - 1, Math.round((y - minY) / LC_BOX_HEIGHT)));
+      occupied.add(`${r}:${c}`);
+    });
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const key = `${r}:${c}`;
+        if (occupied.has(key)) continue;
+        const x = Math.max(minX, Math.min(maxX, minX + c * LC_BOX_WIDTH));
+        const y = Math.max(minY, Math.min(maxY, minY + r * LC_BOX_HEIGHT));
+        return nudgeOffColumnSentinel(x, y);
+      }
+    }
+    return nudgeOffColumnSentinel(minX, minY);
+  }, [LC_BOX_HEIGHT, LC_BOX_WIDTH, hasBackgroundImage, imageBoundsBottom, imageBoundsRight, posInfo.x, posInfo.y]);
+
+  const handleHomeCellClickToCanvas = useCallback((item: ILC, index: number) => {
+    if (locked || layoutProgress) return;
+    const layoutList = listRef.current;
+    if (!layoutList[index] || !lcInColumnSlot(layoutList[index])) return;
+    const nextPos = findFirstFreeStageGridPosition(layoutList);
+    flushSync(() => {
+      setLayoutUndoStack((stack) =>
+        pushLayoutUndoEntry(stack, {
+          positions: snapshotFromList(layoutList),
+          tempColumn: cloneTempColumn(tempHomePositionsRef.current),
+        })
+      );
+      setTempHomePositions((prev) => {
+        const next = { ...prev };
+        delete next[index];
+        return next;
+      });
+      onMoveLC({ ...item, view_x: String(nextPos.x), view_y: String(nextPos.y) });
+    });
+  }, [findFirstFreeStageGridPosition, layoutProgress, locked, onMoveLC]);
+
+  const handleStageCellDoubleTapToHome = useCallback((item: ILC, index: number) => {
+    if (locked || layoutProgress) return;
+    const layoutList = listRef.current;
+    if (!layoutList[index] || lcInColumnSlot(layoutList[index])) return;
+    const colAbs = homeColumnDropGridPosition(
+      0,
+      LC_BOX_HEIGHT,
+      lcBoundsBottom,
+      layoutList,
+      tempHomePositionsRef.current,
+      index
+    );
+    flushSync(() => {
+      setLayoutUndoStack((stack) =>
+        pushLayoutUndoEntry(stack, {
+          positions: snapshotFromList(layoutList),
+          tempColumn: cloneTempColumn(tempHomePositionsRef.current),
+        })
+      );
+      setTempHomePositions((prev) => ({
+        ...prev,
+        [index]: tempFromAbsoluteColumnPosition(index, colAbs, LC_BOX_HEIGHT),
+      }));
+      onMoveLC({ ...item, view_x: '0', view_y: '0' });
+    });
+  }, [LC_BOX_HEIGHT, layoutProgress, lcBoundsBottom, locked, onMoveLC]);
 
   const forceSceneRepaint = useCallback(() => {
     // WKWebView / Android WebView can keep stale composited snapshots after many absolute-position moves.
@@ -2314,6 +2349,11 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
             key={`lc-col-${lcRenderEpoch}`}
             className={`flex min-w-0 flex-row items-stretch ${columnLcDragging ? 'overflow-visible' : ''}`}
             style={{ height: columnViewportH }}
+            onPointerDown={onHomeTouchScrollPointerDown}
+            onPointerMove={onHomeTouchScrollPointerMove}
+            onPointerUp={onHomeTouchScrollPointerUp}
+            onPointerCancel={onHomeTouchScrollPointerUp}
+            onWheel={onHomeLaneWheel}
           >
             <div
               ref={lcColumnRef}
@@ -2326,7 +2366,6 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                   minHeight: columnContentHeight,
                   transform: `translate3d(0, ${-columnScrollTop}px, 0)`,
                 }}
-                onWheel={onHomeLaneWheel}
               >
                 {columnLaneEntries.map(({ item, index }) => {
                   const displayPos = columnDisplayPosition(index, tempHomePositions, LC_BOX_HEIGHT);
@@ -2344,11 +2383,12 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                       loadMode={load}
                       bleConnected={bleConnected}
                       locked={locked}
+                      disabled={true}
                       boundsRight={lcBoundsRight - displayPos.x}
                       boundsBottom={lcBoundsBottom - displayPos.y}
                       columnLiftRaised={columnDragLiftIndex === index}
                       groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
-                      onDragLiftChange={onColumnHomeDragLift}
+                      onCellClick={handleHomeCellClickToCanvas}
                       onStop={(_e, data, idx, baseX, baseY, dragGestureSeen = false) =>
                         reposition_lc(
                           _e,
@@ -2361,39 +2401,6 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                   );
                 })}
               </div>
-            </div>
-            <div
-              aria-hidden
-              className="shrink-0"
-              style={{ width: LC_HOME_SCROLL_GAP, height: columnViewportH }}
-            />
-            <div
-              className="monitor-lc-column-scrolltrack relative shrink-0 overflow-hidden border-l border-black/25 dark:border-white/20"
-              style={{ width: LC_SCROLLBAR_GUTTER, height: columnViewportH }}
-              onPointerDown={onHomeScrollTrackPointerDown}
-            >
-              <div
-                className="pointer-events-none absolute inset-x-1 top-1 bottom-1 rounded-lg bg-slate-400/25 dark:bg-white/15"
-                aria-hidden
-              />
-              <div
-                role="slider"
-                aria-label={t('Monitor.HomeScroll') || 'Home cells scroll'}
-                aria-valuemin={0}
-                aria-valuemax={columnScrollMax}
-                aria-valuenow={Math.round(columnScrollTop)}
-                tabIndex={0}
-                className="monitor-lc-home-scroll-thumb absolute left-0.5 right-0.5 rounded-md border border-slate-600/50 bg-slate-500 shadow-md dark:border-slate-400/40 dark:bg-slate-400"
-                style={{
-                  height: homeScrollbarMetrics.thumbHeight,
-                  top: homeScrollbarMetrics.thumbTop,
-                  touchAction: 'none',
-                }}
-                onPointerDown={onHomeScrollThumbPointerDown}
-                onPointerMove={onHomeScrollThumbPointerMove}
-                onPointerUp={onHomeScrollThumbPointerUp}
-                onPointerCancel={onHomeScrollThumbPointerUp}
-              />
             </div>
           </div>
         </div>
@@ -2444,14 +2451,14 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                 */}
                 <div
                   className={`relative h-full w-full ${
-                    (stageLcDragging || stageViewZoom > 1.0001) ? 'overflow-visible z-[3]' : 'overflow-hidden'
+                    (hasBackgroundImage || stageLcDragging || stageViewZoom > 1.0001) ? 'overflow-visible z-[3]' : 'overflow-hidden'
                   }`}
                   style={{ isolation: 'isolate', backgroundColor: 'transparent' }}
                 >
                   <div
                     ref={imageStageRef}
                     className={`absolute left-0 top-0 box-border ${
-                      (stageLcDragging || stageViewZoom > 1.0001) ? 'overflow-visible' : 'overflow-hidden'
+                      (hasBackgroundImage || stageLcDragging || stageViewZoom > 1.0001) ? 'overflow-visible' : 'overflow-hidden'
                     }`}
                     style={{
                       width: sizeInfo?.width ?? frameDefaultSize.width,
@@ -2504,12 +2511,22 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                           x: Math.round(logicalPos.x * stageViewZoom + stageViewPan.x),
                           y: Math.round(logicalPos.y * stageViewZoom + stageViewPan.y),
                         }
-                        const imgW = sizeInfo.width ?? 400;
-                        const imgH = sizeInfo.height ?? 300;
-                        const maxDispX = stageViewPan.x + (imgW - LC_BOX_WIDTH) * stageViewZoom;
-                        const maxDispY = stageViewPan.y + (imgH - LC_BOX_HEIGHT) * stageViewZoom;
-                        const boundsRight = Math.max(-displayPos.x, maxDispX - displayPos.x);
-                        const boundsBottom = Math.max(-displayPos.y, maxDispY - displayPos.y);
+                        const canvasW = Math.max(LC_BOX_WIDTH, imageBoundsRight);
+                        const canvasH = Math.max(LC_BOX_HEIGHT, imageBoundsBottom);
+                        const offX = Math.round(Number(posInfoRef.current?.x ?? posInfo.x ?? 0));
+                        const offY = Math.round(Number(posInfoRef.current?.y ?? posInfo.y ?? 0));
+                        const minLogicalX = -offX;
+                        const minLogicalY = -offY;
+                        const maxLogicalX = Math.max(minLogicalX, canvasW - offX - LC_BOX_WIDTH);
+                        const maxLogicalY = Math.max(minLogicalY, canvasH - offY - LC_BOX_HEIGHT);
+                        const minDispX = stageViewPan.x + minLogicalX * stageViewZoom;
+                        const minDispY = stageViewPan.y + minLogicalY * stageViewZoom;
+                        const maxDispX = stageViewPan.x + maxLogicalX * stageViewZoom;
+                        const maxDispY = stageViewPan.y + maxLogicalY * stageViewZoom;
+                        const boundsRight = Math.max(minDispX - displayPos.x, maxDispX - displayPos.x);
+                        const boundsBottom = Math.max(minDispY - displayPos.y, maxDispY - displayPos.y);
+                        const dynamicLeftSlop = Math.max(stageToHomeLeftSlop, Math.ceil(-minDispX) + 6);
+                        const dynamicTopSlop = Math.max(0, Math.ceil(-minDispY) + 6);
                         // Important: include x/y so Draggable remounts after saving a new base position.
                         const key = `${lcRenderEpoch}-${item.id}-${normalizeProjectId(item.project_id)}-${logicalPos.x}-${logicalPos.y}-${stageViewZoom.toFixed(3)}-${Math.round(stageViewPan.x)}-${Math.round(stageViewPan.y)}`;
 
@@ -2529,9 +2546,11 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                             boundsRight={boundsRight}
                             boundsBottom={boundsBottom}
                             dragScale={1}
-                            boundsLeftSlop={stageToHomeLeftSlop}
+                            boundsLeftSlop={dynamicLeftSlop}
+                            boundsTopSlop={dynamicTopSlop}
                             groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
                             onDragLiftChange={onStageLcDragLift}
+                            onCellDoubleTap={handleStageCellDoubleTapToHome}
                             onStop={(_e, data, idx, baseX, baseY, dragGestureSeen = false) =>
                               reposition_lc(
                                 _e,
@@ -2596,6 +2615,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                           boundsLeftSlop={stageToHomeLeftSlop}
                           groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
                           onDragLiftChange={onStageLcDragLift}
+                          onCellDoubleTap={handleStageCellDoubleTapToHome}
                           onStop={(_e, data, idx, baseX, baseY, dragGestureSeen = false) =>
                             reposition_lc(
                               _e,

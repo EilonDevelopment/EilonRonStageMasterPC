@@ -2587,19 +2587,22 @@ const lastSoundTimeRef = useRef<number>(0);
           <IonButtons slot="start">
             <button
               type="button"
-              className="bg-transparent border-0 p-2 cursor-pointer flex items-center justify-center"
+              className="menu-hamburger-btn bg-transparent border-0 p-2 cursor-pointer flex items-center justify-center"
               onPointerUp={handleHamburgerPointerUp}
               onClick={handleHamburgerClick}
               aria-label="Open menu"
             >
-              <IonIcon icon={menuOutline} color='dark' className="text-2xl" />
+              <IonIcon
+                icon={menuOutline}
+                className="menu-hamburger-icon text-2xl"
+              />
             </button>
           </IonButtons>
           {location.pathname === ROUTES.Monitor &&
             <div className='flex flex-row justify-between'>
               <div className='flex flex-row items-center gap-4'>
                 <div className='flex flex-col'>
-                  <IonLabel color='dark'>{t("Monitor.Header.TotalWeight")}</IonLabel>
+                  <IonLabel className='!text-black dark:!text-white'>{t("Monitor.Header.TotalWeight")}</IonLabel>
                   {bleConnected ? (curProject.total_overload && (Number(totalWeightHtml)) > (Number(curProject.total_overload)) ?
                     <div className="text-xs font-bold bg-danger text-white px-1.5 py-0.5 rounded w-max" dangerouslySetInnerHTML={{ __html: totalWeightHtml }} />
                     : <div className='text-black dark:text-white' dangerouslySetInnerHTML={{ __html: totalWeightHtml }} />)
@@ -2610,7 +2613,7 @@ const lastSoundTimeRef = useRef<number>(0);
                 </div>
                 <div className='flex flex-row items-center gap-2 shrink-0'>
                   <div className='flex flex-col items-end'>
-                    <IonLabel color='dark' className='text-right -mb-1 m-0'>
+                    <IonLabel className='text-right -mb-1 m-0 !text-black dark:!text-white'>
                       {`PRR${connected ? (batteryStatus ? ` ${batteryStatus}` : '') : ''}`}
                     </IonLabel>
                     <FontAwesomeIcon icon={batteryIconRef.current} size='2x' color={`${isDark ? 'grey' : 'black'}`} />
