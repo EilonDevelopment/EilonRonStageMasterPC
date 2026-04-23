@@ -453,7 +453,7 @@ const Menu: React.FC = () => {
             }
           </IonList>
 
-          <div className="menu-version">version-1.4.6</div>
+          <div className="menu-version">version-1.4.7</div>
         </IonContent>
       </IonMenu>
     </>

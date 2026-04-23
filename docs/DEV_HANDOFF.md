@@ -74,6 +74,7 @@ npm run build && npx cap sync ios
 | 2026-04-20 | ios-development-ai | Mac | Follow-up UX parity fixes: sticky Add LC footer/keyboard handling tuned for Android, Settings now auto-resets empty groups after LC group edits, and Monitor drag/drop hardened for extreme portrait images (home->stage fallback, keep home column x=0, wider stage->home drag slop, transparent stage layers, zoom overflow behavior, Home/Undo visible without background image). | pending push |
 | 2026-04-21 | ios-development-ai | Mac | UX/interaction cleanup block: Settings list got paginated UI index + total LC counter; More Settings modal footer made sticky on Android; Add LC default underload changed to `-10`; menu visual polish (logo/menu width balance, subtle divider/version, language selector restyle, remove send-logs item, light-mode header label/icon contrast). Monitor Home flow redesigned: no home drag, touch-scroll over full home area, click-to-send LC to canvas first free slot, double-tap on canvas LC returns to Home first free slot, and canvas-wide placement (including non-image area) with overlap/clipping fixes. | pending push |
 | 2026-04-23 | ios-development-ai | Mac | Stability + UX follow-up: project-switch runtime now clears transient BLE display caches and uses active-project filtering in live parse path (prevents stalled/mixed LC updates after switching projects online). Group single-tap behavior changed to direct Show-only toggle (no visual modal prompt), keeping highlight on group card only; external ring highlight clipping fixed by adding top spacing in group strip. Group tare/untare is now persisted to DB (`lcs` + `groups`) so switching projects and returning does not clear tared groups. Also includes platform version/orientation updates merged in branch state (`1.4.6`, landscape lock). | pending push |
+| 2026-04-23 | ios-development-ai | Mac | Release version alignment for next store rollout: menu label bumped to `1.4.7`, Android Play version updated to `versionName 1.4.7` + `versionCode 24`, and iOS/TestFlight updated to `MARKETING_VERSION 1.4.7` + `CURRENT_PROJECT_VERSION 25`. | pending push |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -160,6 +161,18 @@ Primary files in this block: `src/Layout/CommonLayout.tsx`, `src/components/Moni
   1) Side menu version label shows `1.4.6`
   2) App stays landscape-only on Android
 - Primary files: `src/Layout/CommonLayout.tsx`, `src/pages/Monitor/index.tsx`, `src/components/Monitor/MonitorView.tsx`, `android/app/src/main/AndroidManifest.xml`, `ios/App/App/Info.plist`, `ios/App/App.xcodeproj/project.pbxproj`.
+
+---
+
+**Android (`development-ai`) import checklist (release version bump, 2026-04-23):**
+- `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
+- Validate Android release metadata:
+  1) `android/app/build.gradle` has `versionName "1.4.7"` and `versionCode 24`
+  2) Side menu footer shows `version-1.4.7`
+- Validate iOS release metadata after merge on Mac branch:
+  1) `MARKETING_VERSION = 1.4.7`
+  2) `CURRENT_PROJECT_VERSION = 25`
+- Primary files: `src/components/Menu.tsx`, `android/app/build.gradle`, `ios/App/App.xcodeproj/project.pbxproj`.
 
 ---
 
