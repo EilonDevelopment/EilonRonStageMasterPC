@@ -978,31 +978,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       return
     }
 
-    // After the first LC lands on the image, forceSceneRepaint / ResizeObserver often refit the Rnd
-    // box by a few pixels. view_x/view_y are in *stage* pixel space — keep the same visual spot by
-    // scaling stored coords when width/height change (no-op when only pos changes).
-    if (fitChanged) {
-      const layoutList = listRef.current
-      const toUpdate: ILC[] = []
-      for (const item of layoutList) {
-        if (lcInColumnSlot(item)) continue
-        const ox = parseInt(String(item.view_x ?? '0'), 10) || 0
-        const oy = parseInt(String(item.view_y ?? '0'), 10) || 0
-        const nx = Math.round((ox * baseW) / prevW)
-        const ny = Math.round((oy * baseH) / prevH)
-        const clamped = clampLcToImageRect(nx, ny, baseW, baseH, LC_BOX_WIDTH, LC_BOX_HEIGHT)
-        if (clamped.x !== ox || clamped.y !== oy) {
-          toUpdate.push({ ...item, view_x: String(clamped.x), view_y: String(clamped.y) })
-        }
-      }
-      if (toUpdate.length > 0) {
-        flushSync(() => {
-          for (const u of toUpdate) {
-            onMoveLC(u)
-          }
-        })
-      }
-    }
+    // Keep persisted LC coordinates stable across project switches / refits.
+    // Re-scaling here caused occasional drift relative to canvas after changing projects.
 
     setSizeInfo(size)
     setPosInfo(pos)

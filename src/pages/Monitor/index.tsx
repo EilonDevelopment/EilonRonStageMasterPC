@@ -1165,7 +1165,27 @@ const Monitor: FC = () => {
     singleTapTimerRef.current = setTimeout(() => {
       singleTapTimerRef.current = null
       lastGroupTapRef.current = { id: '', at: 0 }
-      openGroupVisualModal(group)
+      if (!unique_group_lcs(group.id)) {
+        fire_error('This group contain non unique load cells');
+        return;
+      }
+      if (turned_off_Devices(group.id)) {
+        fire_error('This group contains non-transmitting load cells')
+      }
+      selectedRef.current = group
+      // Single tap toggles "show only" for this group.
+      // Keep highlight only on the group card (not on individual LCs).
+      setGroupVisual((prev) => {
+        const gid = String(group.id)
+        if (prev?.groupId === gid && prev.only) {
+          return null
+        }
+        return {
+          groupId: gid,
+          only: true,
+          highlight: false,
+        }
+      })
     }, SINGLE_TAP_DELAY_MS)
   }
 
@@ -1705,10 +1725,13 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
   const tare_group = async (groupShownId: string) => {
     const gid = String(groupShownId)
     const groupRow = groups.find((g) => String(g.id) === gid)
+    const currentProjectId = curProject?.id
+    const currentProjectNorm = normalizeProjectId(currentProjectId)
     if (!groupRow) {
       console.warn('[TARE] Group not found:', gid)
       return
     }
+    if (!currentProjectId) return
     const matchingLCs = lcs.filter(lc => liveLC.some(live => live.id === lc.id));
     try {
       const toUpdate: ILC[] = []
@@ -1742,6 +1765,27 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
           return u ?? item;
         });
         updateLCs(updatedLcs);
+        // Persist per-LC tare flags/values so project switch keeps group tare state.
+        await db.transaction('rw', db.lcs, db.groups, async () => {
+          for (const lcRow of toUpdate) {
+            await db.lcs
+              .filter((row: any) =>
+                String(row.id) === String(lcRow.id) &&
+                normalizeProjectId(row.project_id) === currentProjectNorm
+              )
+              .modify({
+                tare: lcRow.tare,
+                status_tare: true,
+                weightnotare: lcRow.weightnotare,
+              });
+          }
+          await db.groups
+            .filter((g: any) =>
+              String(g.id) === gid &&
+              normalizeProjectId(g.project_id) === currentProjectNorm
+            )
+            .modify({ tare: 'true' });
+        });
       } else {
         void 0; // No LCs to update (e.g. no live data or group mismatch)
       }
@@ -1760,13 +1804,17 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
 
   const untare_group = async (groupShownId: string) => {
     const gid = String(groupShownId)
+    const currentProjectId = curProject?.id
+    const currentProjectNorm = normalizeProjectId(currentProjectId)
     try {
       let nextLcs = lcs
       const ids: number[] = []
+      const lcIdsToUntare = new Set<string>()
       lcs.forEach((lc, index) => {
         const g = lc.groups?.split(',').map((x) => String(x).trim()) ?? []
         if (g.includes(gid)) {
           ids.push(index)
+          lcIdsToUntare.add(String(lc.id))
         }
       })
       if (ids.length > 0) {
@@ -1775,6 +1823,29 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
         );
         nextLcs = updatedLcs
         updateLCs(updatedLcs);
+        if (currentProjectId) {
+          await db.transaction('rw', db.lcs, db.groups, async () => {
+            for (const lcRow of updatedLcs) {
+              if (!lcIdsToUntare.has(String(lcRow.id))) continue;
+              await db.lcs
+                .filter((row: any) =>
+                  String(row.id) === String(lcRow.id) &&
+                  normalizeProjectId(row.project_id) === currentProjectNorm
+                )
+                .modify({
+                  status_tare: false,
+                  tare: 0,
+                  weightnotare: undefined,
+                });
+            }
+            await db.groups
+              .filter((g: any) =>
+                String(g.id) === gid &&
+                normalizeProjectId(g.project_id) === currentProjectNorm
+              )
+              .modify({ tare: '' });
+          });
+        }
       }
       const groupRow = groups.find((g) => String(g.id) === gid)
       if (groupRow) {
@@ -1937,7 +2008,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
       onTareAction={handleTareAction}
     >
       <div className='flex flex-col flex-1 min-h-0 gap-1 overflow-hidden'>
-      <div className='grid grid-cols-16 h-10 w-full shrink-0 overflow-visible'>
+      <div className='grid grid-cols-16 h-11 pt-1 w-full shrink-0 overflow-visible'>
         {groups.map((item: IGroup, index: number) => {
           // console.log(item);
             let v = parseFloat(item.sum ?? '')

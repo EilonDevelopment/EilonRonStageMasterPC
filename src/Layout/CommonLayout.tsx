@@ -1593,6 +1593,18 @@ const lastSoundTimeRef = useRef<number>(0);
   useEffect(() => {
     curProjectRef.current = curProject
   }, [curProject])
+  useEffect(() => {
+    const prevNorm = normalizeProjectId(prevCurProjectIdRef.current);
+    const nextNorm = normalizeProjectId(curProject?.id);
+    if (!nextNorm || prevNorm === nextNorm) return;
+    // Project switched while BLE stream is running: reset transient UI caches so next project starts clean.
+    prevCurProjectIdRef.current = curProject?.id;
+    lcDisplayBufferRef.current = {};
+    dataTimeByIdRef.current = [];
+    setDataTimeById([]);
+    timeoutHandledRef.current = false;
+    lastUpdatedRef.current = Date.now();
+  }, [curProject?.id, dataTimeByIdRef, lastUpdatedRef, timeoutHandledRef]);
   let warnId = 0
   // Safety (overload/underload → updateWarnList, maxStatusToggle, loadStatusToggle) runs immediately per packet.
   // Display updates (updateLCs, dataTimeById) are batched every LC_DISPLAY_BATCH_MS to reduce UI load.
@@ -1628,10 +1640,13 @@ const lastSoundTimeRef = useRef<number>(0);
       }
     } else if (a[2] <= 10) {
       const lc = parseInt('0x' + toHexString([a[3], a[4], a[5]]), 16);
-      if (!f_check_lc_in_project(lc.toString())) {
-        return;
-      }
-      if (f_check_lc_in_project(lc.toString())?.length == 0) {
+      const liveProject = curProjectRef.current?.id ? curProjectRef.current : curProject;
+      const liveProjectIdNorm = normalizeProjectId(liveProject?.id);
+      const liveProjectLcs = (lcsRef?.current ?? currentLcs.current ?? []).filter(
+        (item: any) => normalizeProjectId(item.project_id) === liveProjectIdNorm
+      );
+      const lcExistsInLiveProject = liveProjectLcs.some((item: any) => String(item.id) === String(lc));
+      if (!lcExistsInLiveProject) {
         return;
       }
 
@@ -1682,8 +1697,8 @@ const lastSoundTimeRef = useRef<number>(0);
         return;
       }
 
-      // Use active project units so conversion is always correct; normalize (trim, first token) so "KG"/"KG L:MS" both → kg
-      const unitsRaw = (currentUnitsRef.current ?? active_project?.units) ?? 'M.TON';
+      // Use currently selected project units so conversion follows the active project after project switch.
+      const unitsRaw = (currentUnitsRef.current ?? liveProject?.units) ?? 'M.TON';
       const u = String(unitsRaw).toLowerCase().replace(/\./g, '').trim().split(/\s+/)[0] ?? 'mton';
       const fx = (u === 'mton') ? 3 : 0;
       const rawWeightMton = lc > 10 ? Number(weight) : null;
@@ -1705,7 +1720,7 @@ const lastSoundTimeRef = useRef<number>(0);
       }
 
       // Use lcsRef so BLE callback sees latest zero (updated synchronously when user zeros); fallback to currentLcs
-      const projectLcs = (lcsRef?.current ?? []).filter((item: any) => normalizeProjectId(item.project_id) === normalizeProjectId(active_project?.id));
+      const projectLcs = liveProjectLcs;
       const l = f_lc_by_id(lc, projectLcs.length > 0 ? projectLcs : (currentLcs.current ?? [])) as ILC
       const calibrationOffset = parseFloat(l?.calibration_offset ? l?.calibration_offset : '1')
       const psw = parseFloat(l?.psw ?? '0')
@@ -1730,9 +1745,11 @@ const lastSoundTimeRef = useRef<number>(0);
         // realval = realval/100;
         // weight = weight/100;
         const speedInMetersPerSecond = realval;
-        const targetUnit = active_project.windmeter_units;
+        const targetUnit = liveProject?.windmeter_units;
         const weight: number = f_convert_wind_speed(speedInMetersPerSecond, targetUnit);
-        maybeLogLcValue(lc, active_project.id, weight, realval, overload, underload, lc_btry);
+        if (liveProject?.id) {
+          maybeLogLcValue(lc, liveProject.id, weight, realval, overload, underload, lc_btry);
+        }
         const windLcItem = currentLcs.current?.find(item => item.id === lc.toString()) 
           || lcs.find(item => item.id === lc.toString());
         if (windLcItem) {
@@ -2142,12 +2159,16 @@ const lastSoundTimeRef = useRef<number>(0);
           onTareAction('untare', '0');
         }
 
-        maybeLogLcValue(lc, active_project.id, weight, realval, l?.overload, l?.underload, lc_btry);
+        if (liveProject?.id) {
+          maybeLogLcValue(lc, liveProject.id, weight, realval, l?.overload, l?.underload, lc_btry);
+        }
         draw_chart_line(lc, weight);
 
         // for calibration process
 
-        const in_group = lcs.find((x: any) => x.id == lc);
+        const in_group = (lcsRef?.current ?? lcs).find(
+          (x: any) => x.id == lc && normalizeProjectId(x.project_id) === liveProjectIdNorm
+        );
         const proof_test = {
           status: 1,
           selected_group: '',

@@ -73,6 +73,7 @@ npm run build && npx cap sync ios
 | 2026-04-20 | development-ai | Windows | Android parity and stability pass: fixed duplicate/hidden BLE scan modal from cached views, kept `Scan in progress` dialog visible on Android touch, hardened large Reports loads (invalid timestamps + safe append path for near-300k), fit background image using real image dimensions for Android/iOS consistency, and bumped Android Play version to `1.4.5` (`versionCode 23`). | 1e516ba |
 | 2026-04-20 | ios-development-ai | Mac | Follow-up UX parity fixes: sticky Add LC footer/keyboard handling tuned for Android, Settings now auto-resets empty groups after LC group edits, and Monitor drag/drop hardened for extreme portrait images (home->stage fallback, keep home column x=0, wider stage->home drag slop, transparent stage layers, zoom overflow behavior, Home/Undo visible without background image). | pending push |
 | 2026-04-21 | ios-development-ai | Mac | UX/interaction cleanup block: Settings list got paginated UI index + total LC counter; More Settings modal footer made sticky on Android; Add LC default underload changed to `-10`; menu visual polish (logo/menu width balance, subtle divider/version, language selector restyle, remove send-logs item, light-mode header label/icon contrast). Monitor Home flow redesigned: no home drag, touch-scroll over full home area, click-to-send LC to canvas first free slot, double-tap on canvas LC returns to Home first free slot, and canvas-wide placement (including non-image area) with overlap/clipping fixes. | pending push |
+| 2026-04-23 | ios-development-ai | Mac | Stability + UX follow-up: project-switch runtime now clears transient BLE display caches and uses active-project filtering in live parse path (prevents stalled/mixed LC updates after switching projects online). Group single-tap behavior changed to direct Show-only toggle (no visual modal prompt), keeping highlight on group card only; external ring highlight clipping fixed by adding top spacing in group strip. Group tare/untare is now persisted to DB (`lcs` + `groups`) so switching projects and returning does not clear tared groups. Also includes platform version/orientation updates merged in branch state (`1.4.6`, landscape lock). | pending push |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -139,6 +140,26 @@ Primary files in this block: `src/Layout/CommonLayout.tsx`, `src/components/Moni
   4) Double tap on on-canvas LC returns it to Home first free slot
   5) No LC overlap/clipping in top-left canvas fringe after repeated home->canvas taps
 - Primary files: `src/components/Monitor/MonitorView.tsx`, `src/pages/Settings/index.tsx`, `src/components/Modals/NewLCModal.tsx`, `src/components/Modals/ProjectSettingModal.tsx`, `src/components/Menu.tsx`, `src/components/Menu.css`, `src/Layout/CommonLayout.tsx`, `src/theme/variables.css`, `src/assets/i18n/en.json`, `src/assets/i18n/jp.json`.
+
+---
+
+**Android (`development-ai`) import checklist (runtime + group UX/tare persistence, 2026-04-23):**
+- `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
+- Validate project switch while PRR remains connected:
+  1) Project A live values update normally
+  2) Switch to project B and confirm immediate live updates (no "stalled"/mixed values)
+  3) Switch back to A and confirm values remain stable
+- Validate group strip UX:
+  1) Single tap on group now toggles Show-only directly (no highlight/show-only chooser dialog)
+  2) Tapping selected group again clears Show-only
+  3) Focus ring remains external and fully visible (not clipped at top)
+- Validate tare persistence:
+  1) Apply tare to a group, switch to another project, return: group tare + LC tare state remains
+  2) Untare persists after project switch as well
+- Validate native/version alignment after merge:
+  1) Side menu version label shows `1.4.6`
+  2) App stays landscape-only on Android
+- Primary files: `src/Layout/CommonLayout.tsx`, `src/pages/Monitor/index.tsx`, `src/components/Monitor/MonitorView.tsx`, `android/app/src/main/AndroidManifest.xml`, `ios/App/App/Info.plist`, `ios/App/App.xcodeproj/project.pbxproj`.
 
 ---
 
