@@ -386,6 +386,17 @@ ion-content.safe-area-content::part(scroll) {
   padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 64px) !important;
 }
 
+/* Monitor needs almost full-height canvas; keep only a small bottom inset to avoid Android nav overlap. */
+ion-content.monitor-safe-area-content {
+  --padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0px);
+  --padding-end: env(safe-area-inset-right, 0px);
+  --padding-start: env(safe-area-inset-left, 0px);
+}
+
+ion-content.monitor-safe-area-content::part(scroll) {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0px) !important;
+}
+
 /* --- FIX PARA SOLAPAMIENTO DE BARRA DE ESTADO (TOP) --- */
 
 /* Asegura que el Toolbar respete el espacio del reloj y la batería */

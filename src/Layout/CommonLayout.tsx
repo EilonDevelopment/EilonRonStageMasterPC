@@ -2720,7 +2720,13 @@ const lastSoundTimeRef = useRef<number>(0);
         </IonToolbar>
       </IonHeader>
       <IonContent
-        className={platformType === 'android' ? 'safe-area-content' : ''}
+        className={
+          platformType === 'android'
+            ? location.pathname === ROUTES.Monitor
+              ? 'monitor-safe-area-content'
+              : 'safe-area-content'
+            : ''
+        }
         scrollY={!contentScrollDisabled}
       >
         {title && <IonLabel>{title}</IonLabel>}
