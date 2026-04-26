@@ -12,8 +12,12 @@ let suspendTimer: number | null = null;
 let primingListenersAttached = false;
 
 const SUSPEND_AFTER_MS = 8000;
+const isNativeIos = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios';
 
 function scheduleAudioSuspend(): void {
+  // iOS WKWebView can require a fresh user gesture after some suspend/resume cycles.
+  // Keep alarm audio context alive on native iOS to avoid "mute until touch" regressions.
+  if (isNativeIos) return;
   if (suspendTimer != null) window.clearTimeout(suspendTimer);
   suspendTimer = window.setTimeout(() => {
     suspendTimer = null;

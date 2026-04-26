@@ -41,6 +41,8 @@
 	<array>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UIRequiresFullScreen</key>
+	<true/>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
 	<!-- Export compliance: app uses only exempt encryption (HTTPS, system APIs). See App Store Connect encryption docs. -->

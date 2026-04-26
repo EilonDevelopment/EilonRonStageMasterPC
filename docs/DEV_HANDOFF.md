@@ -75,6 +75,7 @@ npm run build && npx cap sync ios
 | 2026-04-21 | ios-development-ai | Mac | UX/interaction cleanup block: Settings list got paginated UI index + total LC counter; More Settings modal footer made sticky on Android; Add LC default underload changed to `-10`; menu visual polish (logo/menu width balance, subtle divider/version, language selector restyle, remove send-logs item, light-mode header label/icon contrast). Monitor Home flow redesigned: no home drag, touch-scroll over full home area, click-to-send LC to canvas first free slot, double-tap on canvas LC returns to Home first free slot, and canvas-wide placement (including non-image area) with overlap/clipping fixes. | pending push |
 | 2026-04-23 | ios-development-ai | Mac | Stability + UX follow-up: project-switch runtime now clears transient BLE display caches and uses active-project filtering in live parse path (prevents stalled/mixed LC updates after switching projects online). Group single-tap behavior changed to direct Show-only toggle (no visual modal prompt), keeping highlight on group card only; external ring highlight clipping fixed by adding top spacing in group strip. Group tare/untare is now persisted to DB (`lcs` + `groups`) so switching projects and returning does not clear tared groups. Also includes platform version/orientation updates merged in branch state (`1.4.6`, landscape lock). | pending push |
 | 2026-04-23 | ios-development-ai | Mac | Release version alignment for next store rollout: menu label bumped to `1.4.7`, Android Play version updated to `versionName 1.4.7` + `versionCode 24`, and iOS/TestFlight updated to `MARKETING_VERSION 1.4.7` + `CURRENT_PROJECT_VERSION 25`. | pending push |
+| 2026-04-26 | ios-development-ai | Mac | Hotfix block: iOS upload fix for landscape-only build (`UIRequiresFullScreen=true`), Reports delete button reworked to partial deletion by active filters (project + date/hour + status) across `daily_logs` and legacy stores, alarm audio no longer auto-suspends on native iOS (fixes mute-until-touch), and Android Home lane touch-scroll now works from empty background areas (not only when dragging from an LC tile). | pending push |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -173,6 +174,23 @@ Primary files in this block: `src/Layout/CommonLayout.tsx`, `src/components/Moni
   1) `MARKETING_VERSION = 1.4.7`
   2) `CURRENT_PROJECT_VERSION = 25`
 - Primary files: `src/components/Menu.tsx`, `android/app/build.gradle`, `ios/App/App.xcodeproj/project.pbxproj`.
+
+---
+
+**Android (`development-ai`) import checklist (hotfix parity + reports delete, 2026-04-26):**
+- `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
+- Validate Monitor Home lane on Android tablet:
+  1) Vertical scroll works when finger starts on LC tiles
+  2) Vertical scroll also works when finger starts on empty background spaces in Home column
+- Validate Reports delete behavior:
+  1) Delete button removes only rows matching current filters (project + date range + single-day hour range + status toggles)
+  2) Deleting filtered rows does not leave stale rows reappearing from legacy fallback tables
+  3) Loading overlay closes correctly after delete (no stuck "Loading report..." state)
+- Validate iOS upload compatibility after merge-back:
+  1) `Info.plist` contains `UIRequiresFullScreen=true` so landscape-only iPad upload passes App Store validation
+- Validate iOS runtime alarm audio:
+  1) After long idle time, warning beeps continue without requiring a new touch to "wake" audio
+- Primary files: `src/pages/Reports/index.tsx`, `src/services/alarmFeedback.ts`, `src/components/Monitor/MonitorView.tsx`, `ios/App/App/Info.plist`.
 
 ---
 

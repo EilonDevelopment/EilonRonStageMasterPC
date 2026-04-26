@@ -1514,12 +1514,12 @@ const Report: FC = () => {
     setPendingRefresh(true);
   };
 
-  const handleRemove = () => {
+  const handleRemove = async () => {
     if (!selectedId) return;
     const pidNorm = normalizeProjectId(selectedId);
-    Swal.fire({
+    const result = await Swal.fire({
       title: 'Delete Logs',
-      text: 'Delete all logs for this project? This cannot be undone.',
+      text: 'Delete only logs matching current project + date/status/hour filters? This cannot be undone.',
       icon: 'warning',
       showCancelButton: true,
       confirmButtonColor: '#3085d6',
@@ -1527,22 +1527,137 @@ const Report: FC = () => {
       confirmButtonText: t("Common.Confirm"),
       cancelButtonText: t("Common.Cancel"),
       heightAuto: false
-    }).then((result) => {
-      if (!result.value) return;
-      setLoading(true);
-      db.daily_logs
-        .filter((log: any) => normalizeProjectId(log.project_id) === pidNorm)
-        .primaryKeys()
-        .then((keys) => db.daily_logs.bulkDelete(keys))
-        .then(() => {
-          setLogList(null);
-          setLoading(false);
-        })
-        .catch((error) => {
-          console.error('Failed to delete logs:', error);
-          setLoading(false);
-        });
     });
+    if (!result.value) return;
+
+    const q = reportGroupQuery(reportIntervalSeconds);
+    const filterEnabled = q.ok || q.overload || q.danger || q.underload || q.trerr;
+    const activeStatuses = new Set<string>();
+    if (q.ok) activeStatuses.add('ok');
+    if (q.overload) activeStatuses.add('overload');
+    if (q.danger) activeStatuses.add('danger');
+    if (q.underload) activeStatuses.add('underload');
+    if (q.trerr) activeStatuses.add('err');
+    const inSelectedStatus = (row: any) => {
+      if (!filterEnabled) return true;
+      const lt = String(row?.log_type || '').toLowerCase();
+      if (lt === 'prr_connected' || lt === 'prr_disconnected') return true;
+      const status = String(row?.status_code || lt || '').toLowerCase();
+      return activeStatuses.has(status);
+    };
+
+    const startMs = getTime(startOfDay(filter.start));
+    const endMs = getTime(endOfDay(filter.end));
+    const startSec = Math.floor(startMs / 1000);
+    const endSec = Math.floor(endMs / 1000);
+    const isSingleDay = format(filter.start, 'yyyy-MM-dd') === format(filter.end, 'yyyy-MM-dd');
+    const timeWindow = (isSingleDay && activeTimeRange) ? activeTimeRange : null;
+    const inSelectedHour = (logDateValue: any) => {
+      if (!timeWindow) return true;
+      const ms = Number(logDateValue || 0);
+      if (!Number.isFinite(ms) || ms <= 0) return false;
+      const d = new Date(ms);
+      const mins = d.getHours() * 60 + d.getMinutes();
+      return mins >= timeWindow.startMin && mins <= timeWindow.endMin;
+    };
+
+    const pidNum = Number(pidNorm);
+    const pidCandidates: any[] = [];
+    if (pidNorm) pidCandidates.push(pidNorm);
+    if (Number.isFinite(pidNum)) pidCandidates.push(pidNum);
+
+    const CHUNK = 5000;
+    let deletedCount = 0;
+    setLoading(true);
+    setLoadProgressPct(2);
+    setLoadProgressText('Deleting filtered logs...');
+    try {
+      // Primary store (current reports pipeline)
+      for (const pidCandidate of pidCandidates) {
+        let upper = endMs;
+        while (upper >= startMs) {
+          const slice = await db.daily_logs
+            .where('[project_id+day_key+log_date]')
+            .between(
+              [pidCandidate, format(new Date(startMs), 'yyyy-MM-dd'), startMs],
+              [pidCandidate, format(new Date(endMs), 'yyyy-MM-dd'), upper],
+              true,
+              true
+            )
+            .reverse()
+            .limit(CHUNK)
+            .toArray();
+          if (!slice || slice.length === 0) break;
+          const toDelete = slice
+            .filter((row: any) => {
+              const dt = Number(row?.log_date || 0);
+              if (!(dt >= startMs && dt <= endMs)) return false;
+              if (!inSelectedHour(dt)) return false;
+              return inSelectedStatus(row);
+            })
+            .map((row: any) => row.id)
+            .filter((id: any) => id != null);
+          if (toDelete.length > 0) {
+            await db.daily_logs.bulkDelete(toDelete);
+            deletedCount += toDelete.length;
+          }
+          const oldest = Number(slice[slice.length - 1]?.log_date ?? startMs) - 1;
+          if (!Number.isFinite(oldest) || oldest < startMs) break;
+          upper = oldest;
+          setLoadProgressText(`Deleting daily logs... ${deletedCount.toLocaleString()} removed`);
+        }
+      }
+
+      // Legacy stores (so deleted rows do not reappear through fallback reads)
+      const deleteLegacyFromTable = async (table: any, label: string) => {
+        for (const pidCandidate of pidCandidates) {
+          const rowsMs = await table
+            .where('[project_id+log_date]')
+            .between([pidCandidate, startMs], [pidCandidate, endMs], true, true)
+            .toArray()
+            .catch(() => []);
+          const rowsSec = await table
+            .where('[project_id+log_date]')
+            .between([pidCandidate, startSec], [pidCandidate, endSec], true, true)
+            .toArray()
+            .catch(() => []);
+          const mergedRows = mergeAndDeduplicateLogs([rowsMs, rowsSec]).map(normalizeLegacyLogDate);
+          const toDelete = mergedRows
+            .filter((row: any) => inSelectedHour(row?.log_date) && inSelectedStatus(row))
+            .map((row: any) => row.id)
+            .filter((id: any) => id != null);
+          if (toDelete.length > 0) {
+            await table.bulkDelete(toDelete);
+            deletedCount += toDelete.length;
+          }
+          setLoadProgressText(`Deleting ${label}... ${deletedCount.toLocaleString()} removed`);
+        }
+      };
+      await deleteLegacyFromTable(db.logs, 'legacy logs');
+      await deleteLegacyFromTable(db.logs_archive, 'legacy archive');
+
+      setLogList(null);
+      setRawLogs(null);
+      setPendingRefresh(true);
+      await Swal.fire({
+        title: tr('Report.Load', 'Report'),
+        text: `Deleted ${deletedCount.toLocaleString()} filtered logs.`,
+        icon: 'success',
+        heightAuto: false,
+      });
+    } catch (error) {
+      console.error('Failed to delete logs:', error);
+      await Swal.fire({
+        title: tr('Report.Load', 'Report'),
+        text: 'Failed to delete filtered logs.',
+        icon: 'error',
+        heightAuto: false,
+      });
+    } finally {
+      setLoading(false);
+      setLoadProgressPct(0);
+      setLoadProgressText('');
+    }
   }
   const handleRefresh = () => {
     if (!selectedId) {

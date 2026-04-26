@@ -2325,7 +2325,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
           <div
             key={`lc-col-${lcRenderEpoch}`}
             className={`flex min-w-0 flex-row items-stretch ${columnLcDragging ? 'overflow-visible' : ''}`}
-            style={{ height: columnViewportH }}
+            style={{ height: columnViewportH, touchAction: 'none' }}
             onPointerDown={onHomeTouchScrollPointerDown}
             onPointerMove={onHomeTouchScrollPointerMove}
             onPointerUp={onHomeTouchScrollPointerUp}
@@ -2335,7 +2335,11 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
             <div
               ref={lcColumnRef}
               className={`relative w-20 shrink-0 ${columnLcDragging ? 'overflow-visible' : 'overflow-hidden'}`}
-              style={{ height: columnViewportH }}
+              style={{ height: columnViewportH, touchAction: 'none' }}
+              onPointerDown={onHomeTouchScrollPointerDown}
+              onPointerMove={onHomeTouchScrollPointerMove}
+              onPointerUp={onHomeTouchScrollPointerUp}
+              onPointerCancel={onHomeTouchScrollPointerUp}
             >
               <div
                 className={`relative z-10 ${columnLcDragging ? '' : 'isolate'}`}
