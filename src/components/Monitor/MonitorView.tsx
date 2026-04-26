@@ -365,22 +365,19 @@ function columnDisplayPosition(
   temp: Record<number, { x: number; y: number }>,
   lcBoxHeight: number
 ): { x: number; y: number } {
-  const pos = temp[index] ?? { x: 0, y: 0 };
-  if (pos.x === 0 && pos.y === 0) return columnStackDefaultY(index, lcBoxHeight);
+  const pos = temp[index];
+  if (!pos) return columnStackDefaultY(index, lcBoxHeight);
   // Home lane is vertical-only: never keep lateral offsets.
   return { x: 0, y: pos.y };
 }
 
-/** Persisted temp: (0,0) means “use stacked slot” for this index */
+/** Persisted temp absolute position for Home lane (x is normalized to 0). */
 function tempFromAbsoluteColumnPosition(
-  index: number,
+  _index: number,
   abs: { x: number; y: number },
-  lcBoxHeight: number
+  _lcBoxHeight: number
 ): { x: number; y: number } {
-  const normalizedAbs = { x: 0, y: abs.y };
-  const def = columnStackDefaultY(index, lcBoxHeight);
-  if (normalizedAbs.x === def.x && normalizedAbs.y === def.y) return { x: 0, y: 0 };
-  return normalizedAbs;
+  return { x: 0, y: abs.y };
 }
 
 /**
@@ -420,21 +417,32 @@ function homeColumnDropGridPosition(
   return pickRow(maxRow + 1);
 }
 
-function compactHomeTempAfterRemoving(
+function compactHomeTemp(
   layoutList: ILC[],
-  removedIndex: number,
-  lcBoxH: number
+  lcBoxH: number,
+  forcedHomeIndex?: number
 ): Record<number, { x: number; y: number }> {
   const next: Record<number, { x: number; y: number }> = {};
   let slot = 0;
   layoutList.forEach((item, j) => {
-    if (j === removedIndex) return;
-    if (!lcInColumnSlot(item)) return;
+    const shouldBeInHome = j === forcedHomeIndex || lcInColumnSlot(item);
+    if (!shouldBeInHome) return;
     const abs = { x: 0, y: slot * lcBoxH };
     next[j] = tempFromAbsoluteColumnPosition(j, abs, lcBoxH);
     slot += 1;
   });
   return next;
+}
+
+function compactHomeTempAfterRemoving(
+  layoutList: ILC[],
+  removedIndex: number,
+  lcBoxH: number
+): Record<number, { x: number; y: number }> {
+  return compactHomeTemp(
+    layoutList.map((item, j) => (j === removedIndex ? { ...item, view_x: '1', view_y: '1' } : item)),
+    lcBoxH
+  );
 }
 
 /** (0,0) is reserved for column; nudge so on-image layout does not collapse into column slot */
@@ -1746,10 +1754,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
               tempColumn: cloneTempColumn(tempHomePositionsRef.current),
             })
           );
-          setTempHomePositions((prev) => ({
-            ...prev,
-            [index]: tempFromAbsoluteColumnPosition(index, colAbs, LC_BOX_HEIGHT),
-          }));
+          setTempHomePositions(compactHomeTemp(layoutList, LC_BOX_HEIGHT, index));
           onMoveLC({ ...cur, view_x: '0', view_y: '0' });
         });
         return;
@@ -1895,10 +1900,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
           tempColumn: cloneTempColumn(tempHomePositionsRef.current),
         })
       );
-      setTempHomePositions((prev) => ({
-        ...prev,
-        [index]: tempFromAbsoluteColumnPosition(index, colAbs, LC_BOX_HEIGHT),
-      }));
+      setTempHomePositions(compactHomeTemp(layoutList, LC_BOX_HEIGHT, index));
       onMoveLC({ ...item, view_x: '0', view_y: '0' });
     });
   }, [LC_BOX_HEIGHT, layoutProgress, lcBoundsBottom, locked, onMoveLC]);
