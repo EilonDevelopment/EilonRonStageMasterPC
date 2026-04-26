@@ -420,6 +420,23 @@ function homeColumnDropGridPosition(
   return pickRow(maxRow + 1);
 }
 
+function compactHomeTempAfterRemoving(
+  layoutList: ILC[],
+  removedIndex: number,
+  lcBoxH: number
+): Record<number, { x: number; y: number }> {
+  const next: Record<number, { x: number; y: number }> = {};
+  let slot = 0;
+  layoutList.forEach((item, j) => {
+    if (j === removedIndex) return;
+    if (!lcInColumnSlot(item)) return;
+    const abs = { x: 0, y: slot * lcBoxH };
+    next[j] = tempFromAbsoluteColumnPosition(j, abs, lcBoxH);
+    slot += 1;
+  });
+  return next;
+}
+
 /** (0,0) is reserved for column; nudge so on-image layout does not collapse into column slot */
 function nudgeOffColumnSentinel(nx: number, ny: number): { x: number; y: number } {
   if (nx === 0 && ny === 0) return { x: 1, y: 1 };
@@ -1854,14 +1871,10 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
           tempColumn: cloneTempColumn(tempHomePositionsRef.current),
         })
       );
-      setTempHomePositions((prev) => {
-        const next = { ...prev };
-        delete next[index];
-        return next;
-      });
+      setTempHomePositions(compactHomeTempAfterRemoving(layoutList, index, LC_BOX_HEIGHT));
       onMoveLC({ ...item, view_x: String(nextPos.x), view_y: String(nextPos.y) });
     });
-  }, [findFirstFreeStageGridPosition, layoutProgress, locked, onMoveLC]);
+  }, [LC_BOX_HEIGHT, findFirstFreeStageGridPosition, layoutProgress, locked, onMoveLC]);
 
   const handleStageCellDoubleTapToHome = useCallback((item: ILC, index: number) => {
     if (locked || layoutProgress) return;

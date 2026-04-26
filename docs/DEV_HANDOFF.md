@@ -76,6 +76,7 @@ npm run build && npx cap sync ios
 | 2026-04-23 | ios-development-ai | Mac | Stability + UX follow-up: project-switch runtime now clears transient BLE display caches and uses active-project filtering in live parse path (prevents stalled/mixed LC updates after switching projects online). Group single-tap behavior changed to direct Show-only toggle (no visual modal prompt), keeping highlight on group card only; external ring highlight clipping fixed by adding top spacing in group strip. Group tare/untare is now persisted to DB (`lcs` + `groups`) so switching projects and returning does not clear tared groups. Also includes platform version/orientation updates merged in branch state (`1.4.6`, landscape lock). | pending push |
 | 2026-04-23 | ios-development-ai | Mac | Release version alignment for next store rollout: menu label bumped to `1.4.7`, Android Play version updated to `versionName 1.4.7` + `versionCode 24`, and iOS/TestFlight updated to `MARKETING_VERSION 1.4.7` + `CURRENT_PROJECT_VERSION 25`. | pending push |
 | 2026-04-26 | ios-development-ai | Mac | Hotfix block: iOS upload fix for landscape-only build (`UIRequiresFullScreen=true`), Reports delete button reworked to partial deletion by active filters (project + date/hour + status) across `daily_logs` and legacy stores, alarm audio no longer auto-suspends on native iOS (fixes mute-until-touch), and Android Home lane touch-scroll now works from empty background areas (not only when dragging from an LC tile). | pending push |
+| 2026-04-26 | ios-development-ai | Mac | Monitor Home-column compaction tweak: when user single-taps an LC in Home to move it to canvas, all LCs below shift up one slot immediately (no gaps left in Home lane). This avoids persistent empty slots and keeps Android touch-scroll behavior consistent. | pending push |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -182,6 +183,7 @@ Primary files in this block: `src/Layout/CommonLayout.tsx`, `src/components/Moni
 - Validate Monitor Home lane on Android tablet:
   1) Vertical scroll works when finger starts on LC tiles
   2) Vertical scroll also works when finger starts on empty background spaces in Home column
+  3) After moving an LC from Home to canvas by single tap, remaining Home LCs compact upward with no empty gaps
 - Validate Reports delete behavior:
   1) Delete button removes only rows matching current filters (project + date range + single-day hour range + status toggles)
   2) Deleting filtered rows does not leave stale rows reappearing from legacy fallback tables
