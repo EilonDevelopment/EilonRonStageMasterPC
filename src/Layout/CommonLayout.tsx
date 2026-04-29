@@ -247,6 +247,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const [selectedGroup, setSelectedGroup] = useState<IProofTest | null>(null)
   const [connected, setConnected] = useState<boolean>(false);
   const [layoutKey, setLayoutKey] = useState(0);
+  const [newProjectSettingsFlow, setNewProjectSettingsFlow] = useState(false);
+  const startupMonitorGateRunRef = useRef(false);
 
   const [visibleDelete, setVisibleDelete] = useState<boolean>(false);
   const [deleteProject, setDeleteProject] = useState<string>('');
@@ -537,6 +539,35 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     setGroupList(groups)
   }, [groups])
 
+  useEffect(() => {
+    if (startupMonitorGateRunRef.current) return;
+    if (location.pathname !== ROUTES.Monitor) return;
+    if (!curProject?.id) return;
+    let cancelled = false;
+    void (async () => {
+      const pid = normalizeProjectId(curProject.id);
+      const [projectLcs, projectGroups] = await Promise.all([
+        db.lcs.filter((lc: any) => normalizeProjectId(lc.project_id) === pid).toArray(),
+        db.groups.filter((g: any) => normalizeProjectId(g.project_id) === pid).toArray(),
+      ]);
+      if (cancelled) return;
+      const hasLcs = projectLcs.length > 0;
+      const activeGroups = projectGroups.filter((g: any) => String(g.overload ?? '').trim() !== '');
+      const hasActiveGroups = activeGroups.length > 0;
+      const hasInvalidOverload = activeGroups.some((g: any) => {
+        const ov = Number(g.overload);
+        return !Number.isFinite(ov) || ov <= 0;
+      });
+      startupMonitorGateRunRef.current = true;
+      if (!hasLcs || !hasActiveGroups || hasInvalidOverload) {
+        history.replace(ROUTES.Settings);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [curProject?.id, history, location.pathname]);
+
   // useEffect(() => {
   //   if (logs.length > 0) {
   //     const filtered = logs.filter(item => item.value && item.overload && item.underload && (item.value > item.overload || item.value < item.overload * (1 + item.underload / 1000)))
@@ -598,7 +629,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       const { id, last_settings_change,title, ...data } = active_project;
       newData = { ...data,title: project_name, last_settings_change: getTime(new Date()) }
     } else
-      newData = { title: project_name, units: unit_type, last_settings_change: getTime(new Date()), pre_overload: 100, windmeter_units: 'MS', total_overload: 100, show_graphs: false };
+      newData = { title: project_name, units: unit_type, last_settings_change: getTime(new Date()), pre_overload: 100, windmeter_units: 'MS', total_overload: 500, show_graphs: false };
     const res: string = await f_use_insert_project(newData);
 
     if (res != '') {
@@ -612,6 +643,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       }
       else {
         setTimeout(function () {
+          setNewProjectSettingsFlow(true)
           setVisibleNew(false)
           setVisibleSetting(true)
         }, 500)
@@ -676,6 +708,10 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     setSelectProject(project);
     activeProjectRef.current = project;
     setVisibleSetting(false);
+    if (newProjectSettingsFlow) {
+      setNewProjectSettingsFlow(false);
+      history.push(ROUTES.Settings);
+    }
     updateSuccessStr(t("Msg.ConfirmSetting"));
   }
 

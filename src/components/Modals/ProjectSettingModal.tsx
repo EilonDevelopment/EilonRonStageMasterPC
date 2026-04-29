@@ -26,6 +26,14 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
   const { t } = useTranslation();
   const [project, setProject] = useState<IProject>({ cycle: false, report_interval_seconds: 60 } as IProject);
   const { isMobile } = useAppData()
+  const DEFAULT_TOTAL_OVERLOAD_KG = 500;
+
+  const getDefaultTotalOverloadByUnits = (units?: string) => {
+    const u = String(units || 'KG').toUpperCase();
+    if (u === 'LBS') return (DEFAULT_TOTAL_OVERLOAD_KG * 2.20462).toFixed(2); // 1102.31
+    if (u === 'M.TON') return (DEFAULT_TOTAL_OVERLOAD_KG / 1000).toFixed(3); // 0.500
+    return String(DEFAULT_TOTAL_OVERLOAD_KG); // KG
+  };
 
   useEffect(() => {
     // setProject({
@@ -100,7 +108,11 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
       } else {
         fixed = 3;
       }
-      setProject(v => ({ ...v, total_overload: (parseFloat(project?.total_overload ?? '231.999') * multiply).toFixed(fixed) }))
+      const currentTotalOverload =
+        project?.total_overload !== undefined && String(project.total_overload).trim() !== ''
+          ? String(project.total_overload)
+          : getDefaultTotalOverloadByUnits(project.units);
+      setProject(v => ({ ...v, total_overload: (parseFloat(currentTotalOverload) * multiply).toFixed(fixed) }))
     }
     setProject((v) => ({ ...v, [field]: value }))
   }
@@ -151,7 +163,7 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
       <TextInput
         label={t("Project.TotalOverload")}
         type='number'
-        value={project.total_overload || ''}
+        value={project.total_overload || getDefaultTotalOverloadByUnits(project.units)}
         onChange={e => handleChangeProject('total_overload', e.target.value)}
       />
       )}

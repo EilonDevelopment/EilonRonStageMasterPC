@@ -4,7 +4,7 @@ import CommonLayout from '../../Layout/CommonLayout';
 import { IGroup, ILC, IProject } from '../../helper/types';
 import Button from '../../components/Buttons/Button';
 import CustomDataGrid from '../../components/CustomDataGrid';
-import { addOutline, removeOutline } from 'ionicons/icons';
+import { addOutline, createOutline, removeOutline } from 'ionicons/icons';
 import useAppData from '../../hooks/useAppData';
 import NewLCModal from '../../components/Modals/NewLCModal';
 import { getNewLCIds, getValidLcIdList, normalizeProjectId } from '../../helper/functions';
@@ -15,6 +15,7 @@ import LoadingModal from '../../components/Modals/LoadingModal';
 import Text from '../../components/Text';
 import GroupModal from '../../components/Modals/GroupModal';
 import CalibrationModal from '../../components/Modals/CalibrationModal';
+import BulkEditLCModal, { BulkEditLcPayload } from '../../components/Modals/BulkEditLCModal';
 import { db } from '../../db'
 import useFunctions from '../../hooks/useFunctions';
 import './index.css';
@@ -35,6 +36,7 @@ const Settings: FC = () => {
 
   const [loading, setLoading] = useState<boolean>(false);
   const [visibleAddModal, setVisibleAddModal] = useState<boolean>(false);
+  const [visibleBulkEditModal, setVisibleBulkEditModal] = useState<boolean>(false);
   const [calibrationModalMode, setVisibleCalibrationModal] = useState<CalibrationModalMode>(CalibrationModalMode.None);
   const [selectedProject, setSelectedProject] = useState<IProject>({} as IProject);
   const [LCList, setLCList] = useState<ILC[]>([])
@@ -78,10 +80,10 @@ const Settings: FC = () => {
   // }, [groups])
 
   const handleDeleteList = (id: string) => {
-    if (deleteList.includes(id))
-      setDeleteList(v => v.filter(item => item !== id))
-    else
-      setDeleteList(v => [...v, id])
+    setDeleteList((prev) => {
+      if (prev.includes(id)) return prev.filter((item) => item !== id);
+      return [...prev, id];
+    });
   }
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     const isChecked = e.target.checked;
@@ -95,8 +97,7 @@ const Settings: FC = () => {
     }
   };
 
-  const handleDeleteCheck = (e: ChangeEvent<HTMLIonCheckboxElement>, id: string) => {
-    e.preventDefault()
+  const handleDeleteCheck = (_e: any, id: string) => {
     handleDeleteList(id)
   }
 
@@ -229,9 +230,18 @@ const Settings: FC = () => {
       ),
       // eslint-disable-next-line
       //@ts-ignore
-      renderCell: ({ row }) => <div onClick={(e) => handleDeleteCheck(e, row.id)}>
-        <input type='checkbox' checked={deleteList.includes(row.id)} onChange={(e: any) => handleDeleteCheck(e, row.id)} />
-      </div>
+      renderCell: ({ row }) => (
+        <label
+          className="flex w-full h-full min-h-[32px] items-center justify-center cursor-pointer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type='checkbox'
+            checked={deleteList.includes(row.id)}
+            onChange={(e: any) => handleDeleteCheck(e, row.id)}
+          />
+        </label>
+      )
     },
   ];
 
@@ -243,6 +253,102 @@ const Settings: FC = () => {
     setLCItem({} as ILC)
     setVisibleAddModal(true)
   }
+
+  const normalizeGroupsString = (raw: string) =>
+    String(raw || '')
+      .split(',')
+      .map((g) => g.trim())
+      .filter(Boolean)
+      .join(',');
+
+  const handleBulkEditAction = async (type: 'save', payload: BulkEditLcPayload) => {
+    if (type !== 'save') return;
+    if (!curProject?.id) return;
+    const pid = normalizeProjectId(curProject.id);
+    const targetIds = new Set(payload.ids.map((id) => String(id).trim()).filter(Boolean));
+    if (targetIds.size === 0) {
+      updateErrStr('Select at least one LC ID.');
+      return;
+    }
+    if (!Object.values(payload.overrides).some(Boolean)) {
+      updateErrStr('Select at least one override field.');
+      return;
+    }
+
+    const projectLcs = lcs.filter((lc) => normalizeProjectId(lc.project_id) === pid);
+    const targetLcs = projectLcs.filter((lc) => targetIds.has(String(lc.id)));
+    if (targetLcs.length === 0) {
+      updateErrStr('No matching LCs found in current project for the selected IDs.');
+      return;
+    }
+
+    const { overrides, values } = payload;
+    if (overrides.overload) {
+      const ov = Number(values.overload);
+      if (!Number.isFinite(ov) || ov <= 0) {
+        updateErrStr(t('Msg.ErrOverload'));
+        return;
+      }
+    }
+    if (overrides.underload) {
+      const un = Number(values.underload);
+      if (!Number.isFinite(un)) {
+        updateErrStr(t('Msg.ErrUnderloadBigger'));
+        return;
+      }
+    }
+    if (overrides.psw) {
+      const p = Number(values.psw);
+      if (!Number.isFinite(p) || p < 0) {
+        updateErrStr(t('Msg.ErrPSWNegative'));
+        return;
+      }
+    }
+
+    try {
+      const updatesByLcId = new Map<string, ILC>();
+      targetLcs.forEach((lc) => {
+        const next: ILC = { ...lc };
+        if (overrides.title) next.title = values.title;
+        if (overrides.psw) next.psw = values.psw;
+        if (overrides.underload) next.underload = values.underload;
+        if (overrides.overload) next.overload = values.overload;
+        if (overrides.total_sum) next.total_sum = values.total_sum;
+        if (overrides.groups) next.groups = normalizeGroupsString(values.groups);
+
+        const ov = Number(next.overload);
+        const un = Number(next.underload);
+        if (Number.isFinite(ov) && Number.isFinite(un) && un > ov) {
+          throw new Error(`LC ${next.id}: underload cannot be greater than overload.`);
+        }
+        updatesByLcId.set(String(next.lc_id), next);
+      });
+
+      const updatedAllLcs = lcs.map((lc) => {
+        const updated = updatesByLcId.get(String(lc.lc_id));
+        return updated ? updated : lc;
+      });
+
+      await db.transaction('rw', db.lcs, async () => {
+        const updates = Array.from(updatesByLcId.values());
+        for (const updated of updates) {
+          await db.lcs.put(updated);
+        }
+      });
+
+      updateLCs(updatedAllLcs);
+      if (overrides.groups) {
+        await ensureGroupsActivated(normalizeGroupsString(values.groups).split(',').filter(Boolean));
+        const updatedProjectLcs = updatedAllLcs.filter((lc) => normalizeProjectId(lc.project_id) === pid);
+        await resetEmptyGroupsAfterLcSave(updatedProjectLcs);
+      }
+      setDeleteList([]);
+      setSelectAll(false);
+      setVisibleBulkEditModal(false);
+    } catch (error: any) {
+      updateErrStr(String(error?.message || error || 'Failed to bulk edit LCs.'));
+    }
+  };
 
   const resetEmptyGroupsAfterLcSave = async (nextProjectLcs: ILC[]) => {
     if (!curProject?.id) return;
@@ -261,21 +367,54 @@ const Settings: FC = () => {
       return !usedGroupIds.has(String(g.id));
     });
 
-    if (groupsToReset.length === 0) return;
-
-    for (const group of groupsToReset) {
-      await db.groups
-        .filter((g: IGroup) => normalizeProjectId(g.project_id) === pid && String(g.id) === String(group.id))
-        .modify({ overload: '', tare: '', sum: '', title: `Grp ${group.id}` });
+    if (groupsToReset.length > 0) {
+      for (const group of groupsToReset) {
+        await db.groups
+          .filter((g: IGroup) => normalizeProjectId(g.project_id) === pid && String(g.id) === String(group.id))
+          .modify({ overload: '', tare: '', sum: '', title: `Grp ${group.id}` });
+      }
     }
 
-    const resetIds = new Set(groupsToReset.map((g) => String(g.id)));
-    const nextGroups = groups.map((g) =>
-      resetIds.has(String(g.id))
-        ? { ...g, overload: '', tare: '', sum: '', title: `Grp ${g.id}` }
-        : g
+    // Always refresh from DB so newly activated groups (e.g. overload "0") are not overwritten
+    // by stale in-memory snapshots during the same save cycle.
+    const refreshed = await db.groups
+      .filter((g: IGroup) => normalizeProjectId(g.project_id) === pid)
+      .toArray();
+    const sorted = [...refreshed].sort((a, b) => parseInt(a.id || '0') - parseInt(b.id || '0'));
+    updateGroups(sorted);
+  };
+
+  const ensureGroupsActivated = async (groupIdsRaw: string[]) => {
+    if (!curProject?.id) return;
+    const pid = normalizeProjectId(curProject.id);
+    const defaultOverload = '0';
+    const groupIds = Array.from(
+      new Set(
+        (groupIdsRaw || [])
+          .map((g) => String(g).trim())
+          .filter((g) => /^\d+$/.test(g))
+      )
     );
-    updateGroups(nextGroups);
+    if (groupIds.length === 0) return;
+
+    for (const gid of groupIds) {
+      await db.groups
+        .filter((g: IGroup) => normalizeProjectId(g.project_id) === pid && String(g.id) === gid)
+        .modify((g: any) => {
+          const currentOv = Number(g.overload);
+          const hasValidOv = Number.isFinite(currentOv) && currentOv > 0;
+          g.title = g.title || `Grp ${gid}`;
+          if (!hasValidOv) g.overload = defaultOverload;
+          if (g.tare == null) g.tare = '';
+          if (g.sum == null) g.sum = '';
+        });
+    }
+
+    const refreshed = await db.groups
+      .filter((g: IGroup) => normalizeProjectId(g.project_id) === pid)
+      .toArray();
+    const sorted = [...refreshed].sort((a, b) => parseInt(a.id || '0') - parseInt(b.id || '0'));
+    updateGroups(sorted);
   };
 
   const handleLCAction = async (type: string, lc: Partial<ILC> = {}) => {
@@ -378,13 +517,9 @@ const Settings: FC = () => {
           }
           await resetEmptyGroupsAfterLcSave(nextProjectLcs);
 
-          const groups_list = lcGroups.split(',');
+          const groups_list = lcGroups.split(',').map((g) => g.trim()).filter(Boolean);
           if (groups_list.length > 0) {
-            for (const g of groups_list) {
-              if (!isNaN(parseInt(g)) && groups[parseInt(g) - 1]?.id) {
-                await f_save_group(normalizeProjectId(curProject.id), g, `Grp ${g}`, '0');
-              }
-            }
+            await ensureGroupsActivated(groups_list);
           }
           await f_project_groups();
         } catch (e) {
@@ -472,7 +607,10 @@ const Settings: FC = () => {
   }
   const gOverload = (overload: string) => {
     const f = curProject.units === Unit_List[2].value ? 3 : 0
-    const res = overload && parseFloat(overload).toFixed(f).toString()
+    if (overload == null || String(overload).trim() === '') return '';
+    const parsed = Number(overload);
+    if (!Number.isFinite(parsed)) return '';
+    const res = parsed.toFixed(f).toString()
     return res
   }
   return (
@@ -484,20 +622,33 @@ const Settings: FC = () => {
             className={`flex flex-col border-l border-dark cursor-pointer ${index === groups.length - 1 && 'border-r'}`}
             onClick={() => setSelectedGroup(item)}
           >
-            <Text classes='h-1/2 bg-primary text-dark !text-xs flex items-center justify-center' label={(item.overload) ? item.title : ''} />
+            <Text
+              classes='h-1/2 bg-primary text-dark !text-xs flex items-center justify-center'
+              label={(item.overload != null && String(item.overload).trim() !== '') ? item.title : ''}
+            />
             <Text classes='h-1/2 bg-medium text-dark !text-xs flex items-center justify-center' label={gOverload(item.overload)} />
           </div>
         ))}
       </div>
       <div className='flex flex-row items-center justify-between'>
-        <Button
-          icon={addOutline}
-          iconColorDisable={true}
-          title={t('Setting.AddLC')}
-          classes='border px-2 py-1 bg-primary text-white cursor-pointer'
-          textClasses='text-white font-medium'
-          onAction={() => handleNewLC()}
-        />
+        <div className='flex flex-row items-center gap-2'>
+          <Button
+            icon={addOutline}
+            iconColorDisable={true}
+            title={t('Setting.AddLC')}
+            classes='border px-2 py-1 bg-primary text-white cursor-pointer'
+            textClasses='text-white font-medium'
+            onAction={() => handleNewLC()}
+          />
+          <Button
+            icon={createOutline}
+            iconColorDisable={true}
+            title={t('Setting.EditLC')}
+            classes='border px-2 py-1 bg-primary text-white cursor-pointer'
+            textClasses='text-white font-medium'
+            onAction={() => setVisibleBulkEditModal(true)}
+          />
+        </div>
         <Button
           icon={removeOutline}
           iconColorDisable={true}
@@ -525,6 +676,12 @@ const Settings: FC = () => {
         data={LCItem}
         onAction={handleLCAction}
         onClose={() => setVisibleAddModal(false)}
+      />
+      <BulkEditLCModal
+        visible={visibleBulkEditModal}
+        initialIds={deleteList}
+        onAction={handleBulkEditAction}
+        onClose={() => setVisibleBulkEditModal(false)}
       />
       {calibrationModalMode !== CalibrationModalMode.None && <CalibrationModal
         data={LCItem}
