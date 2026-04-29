@@ -12,6 +12,7 @@ import useAppData from '../../hooks/useAppData';
 interface ProjectSettingModalProps {
   visible: boolean;
   data: IProject;
+  unitsOnly?: boolean;
   onAction: (project: IProject) => void;
   onClose: () => void;
 }
@@ -20,6 +21,7 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
   const {
     visible,
     data,
+    unitsOnly = false,
     onAction,
     onClose,
   } = props;
@@ -159,7 +161,7 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
         
       </div>
       )}
-      {visible && (
+      {!unitsOnly && visible && (
       <TextInput
         label={t("Project.TotalOverload")}
         type='number'
@@ -167,7 +169,7 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
         onChange={e => handleChangeProject('total_overload', e.target.value)}
       />
       )}
-      {visible && (
+      {!unitsOnly && visible && (
       <div className='flex flex-row items-center gap-2'>
         <IonToggle
           enableOnOffLabels={true}
@@ -177,7 +179,7 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
         <Text label={t('Project.ReportsCycle')} />
       </div>
       )}
-      {visible && (
+      {!unitsOnly && visible && (
       <TextInput
         label={t('Project.ReportInterval')}
         type='number'
@@ -185,10 +187,10 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = props => {
         onChange={e => handleChangeProject('report_interval_seconds', e.target.value)}
       />
       )}
-      {visible && (
+      {!unitsOnly && visible && (
       <Text classes='text-muted text-xs' label={t('Project.ReportIntervalHint')} />
       )}
-      {visible && (
+      {!unitsOnly && visible && (
       <TextInput
         label={`${t("Project.PreoverloadWarning")} (%)`}
         type='number'

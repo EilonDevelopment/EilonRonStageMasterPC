@@ -18,7 +18,7 @@ import { useTranslation } from 'react-i18next';
 // import { useLocation,  } from 'react-router';
 import { useHistory, useLocation } from 'react-router-dom';
 import { App as CapApp } from '@capacitor/app';
-import { bluetoothOutline, checkmarkSharp, closeSharp, duplicateOutline, menuOutline, settingsOutline, trashOutline } from 'ionicons/icons';
+import { bluetoothOutline, checkmarkSharp, closeSharp, documentOutline, duplicateOutline, menuOutline, settingsOutline, trashOutline } from 'ionicons/icons';
 
 import { batteryBlackIcon, loadIcon, battIcon, maxIcon, maxActiveIcon, roundPictureIcon, tareIcon, tareActiveIcon, toolbarlistIcon, toolbarprogIcon, toolbarstopIcon, warningErrorIcon, bleConnectIcon, bleDisConnectIcon, batteryWhiteIcon } from '../assets/icons';
 import NewProjectModal from '../components/Modals/NewProjectModal';
@@ -49,6 +49,7 @@ import { useTheme } from '@emotion/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBatteryEmpty, faBatteryQuarter, faBatteryHalf, faBatteryThreeQuarters, faBatteryFull, faBoltLightning, IconDefinition } from '@fortawesome/free-solid-svg-icons';
 import { format, getTime, getUnixTime } from 'date-fns';
+import { jsPDF } from 'jspdf';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 // COORDINATION (iOS Mac branch / Android Windows branch): BLE + native CSV import logic
@@ -240,6 +241,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const [visibleBeforeAlert, setVisibleBeforeAlert] = useState<boolean>(false);
   const [visibleNew, setVisibleNew] = useState<boolean>(false);
   const [visibleSetting, setVisibleSetting] = useState<boolean>(false);
+  const [settingModalMode, setSettingModalMode] = useState<'full' | 'units-only'>('full');
   const [duplicated, setDuplicated] = useState<boolean>(false);
   const [confirmTitle, setConfirmTitle] = useState<string>('');
 
@@ -645,6 +647,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         setTimeout(function () {
           setNewProjectSettingsFlow(true)
           setVisibleNew(false)
+          setSettingModalMode('full')
           setVisibleSetting(true)
         }, 500)
       }
@@ -828,6 +831,253 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     } catch (err) {
       console.error('Error al compartir logs:', err);
       updateErrStr('No se encontró el archivo de logs o el dispositivo no permite compartir.');
+    }
+  };
+
+  const exportMonitorSnapshot = async () => {
+    const pid = normalizeProjectId(active_project?.id);
+    const projectLcs = (lcsRef.current ?? lcs).filter((item: any) => normalizeProjectId(item.project_id) === pid);
+    if (!projectLcs.length) {
+      Swal.fire({ title: 'Export', text: 'No load cells available for snapshot.', icon: 'info', heightAuto: false });
+      return;
+    }
+    const now = new Date();
+    const getLcStatus = (item: any) => {
+      const rawVal = String(item?.value ?? '').trim();
+      const isErr = rawVal === 'Tr.Err' || rawVal === 'Tr. Err' || Number(rawVal) === -99999999;
+      const grossNum = Number(item?.value);
+      const overNum = Number(item?.overload);
+      const underNum = Number(item?.underload);
+      let status = 'OK';
+      if (isErr || !Number.isFinite(grossNum)) status = 'TR.ERR';
+      else if (Number.isFinite(overNum) && overNum > 0 && grossNum >= overNum * 1.3) status = 'DANGER';
+      else if (Number.isFinite(overNum) && grossNum > overNum) status = 'OVERLOAD';
+      else if (Number.isFinite(underNum) && grossNum < underNum) status = 'UNDERLOAD';
+      return status;
+    };
+    const formatDualKgLbs = (valueRaw: any, unitRaw: any) => {
+      const value = Number(valueRaw);
+      if (!Number.isFinite(value)) return String(valueRaw ?? '');
+      const u = String(unitRaw ?? '').toUpperCase().replace(/\s+/g, '');
+      let kg: number | null = null;
+      if (u === 'KG' || u === 'KGS') kg = value;
+      else if (u === 'LBS' || u === 'LB') kg = value / 2.20462;
+      else if (u === 'M.TON' || u === 'MTON' || u === 'MTONS') kg = value * 1000;
+      if (kg == null) return `${value.toFixed(2)} ${unitRaw ?? ''}`.trim();
+      const lbs = kg * 2.20462;
+      return `${kg.toFixed(2)} KG\n${lbs.toFixed(2)} LBS`;
+    };
+
+    const rows = projectLcs.map((item: any) => {
+      const rawVal = String(item?.value ?? '').trim();
+      const isErr = rawVal === 'Tr.Err' || rawVal === 'Tr. Err' || Number(rawVal) === -99999999;
+      const grossNum = Number(item?.value);
+      const netCandidate = item?.status_tare && item?.weightnotare != null && String(item.weightnotare).trim() !== '' ? Number(item.weightnotare) : grossNum;
+      const useNetDisplay = !!tareStatusRef.current && !!item?.status_tare;
+      const displayNum = useNetDisplay ? netCandidate : grossNum;
+      const unit = Number(item?.id) <= 10 ? (active_project?.windmeter_units || '') : (active_project?.units || '');
+      return {
+        Name: String(item?.title || ''),
+        ID: String(item?.id || ''),
+        Status: getLcStatus(item),
+        Gross: isErr ? 'Tr.Err' : formatDualKgLbs(grossNum, unit),
+        Net: isErr || !Number.isFinite(netCandidate) ? 'Tr.Err' : formatDualKgLbs(netCandidate, unit),
+        Battery: item?.battery ? `${item.battery}%` : '',
+        Time: format(now, 'yyyy-MM-dd HH:mm:ss'),
+        groups: String(item?.groups || ''),
+        displayNum: Number.isFinite(displayNum) ? displayNum : NaN,
+        displayUnit: unit,
+      };
+    });
+    const groupRows = (groupsRef.current || [])
+      .filter((g: any) => normalizeProjectId(g.project_id) === pid && String(g.overload ?? '').trim() !== '')
+      .sort((a: any, b: any) => Number(a.id || 0) - Number(b.id || 0))
+      .map((g: any) => {
+        const idStr = String(g.id);
+        const rowsInGroup = rows.filter((r: any) => r.groups.split(',').map((x: string) => x.trim()).includes(idStr));
+        const sum = rowsInGroup.reduce((acc: number, r: any) => acc + (Number.isFinite(r.displayNum) ? r.displayNum : 0), 0);
+        const alerts = rowsInGroup.reduce((acc: Record<string, number>, r: any) => {
+          acc[r.Status] = (acc[r.Status] || 0) + 1;
+          return acc;
+        }, {});
+        const unit = rowsInGroup[0]?.displayUnit || active_project?.units || '';
+        return {
+          id: idStr,
+          title: g.title || `Grp ${idStr}`,
+          unit,
+          total: `${sum.toFixed(2)} ${unit}`.trim(),
+          alerts,
+          rows: rowsInGroup,
+        };
+      });
+    const prrId = prrConnectedListName || 'N/A';
+    const prrStatus = connected ? 'Connected' : 'Disconnected';
+    const batteryStr = `${Math.max(0, Math.min(100, Number(btry) || 0))}%`;
+
+    const pick = await Swal.fire({
+      title: 'Export snapshot',
+      text: 'Choose export format',
+      showCancelButton: true,
+      showDenyButton: true,
+      confirmButtonText: 'CSV',
+      denyButtonText: 'PDF',
+      cancelButtonText: 'Cancel',
+      heightAuto: false,
+    });
+    if (pick.isDismissed) return;
+
+    const isCsv = pick.isConfirmed;
+    const fileBase = `monitor_snapshot_${format(now, 'yyyy-MM-dd_HH-mm')}`;
+    const isWeb = platformType === 'web';
+    const isNative = platformType === 'android' || platformType === 'ios';
+    const isUserCancelledError = (err: any) => {
+      const msg = String(err?.message || err || '').toLowerCase();
+      return msg.includes('cancel') || msg.includes('canceled') || msg.includes('cancelled') || msg.includes('aborted');
+    };
+
+    try {
+      if (isCsv) {
+        const esc = (v: any) => {
+          const s = String(v ?? '');
+          return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+        };
+        const lines: string[] = [];
+        lines.push(`Snapshot,${esc(active_project?.title || '')},${esc(format(now, 'yyyy-MM-dd HH:mm:ss'))}`);
+        lines.push(`PRR,${esc(prrId)},${esc(prrStatus)},Battery,${esc(batteryStr)}`);
+        lines.push('');
+        lines.push('Name,ID,Status,Gross,Net,Battery,Time');
+        rows.forEach((r: any) => lines.push([r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(esc).join(',')));
+        groupRows.forEach((g: any) => {
+          lines.push('');
+          lines.push(`Group ${esc(g.id)} - ${esc(g.title)},Total Weight,${esc(g.total)},Alerts,${esc(JSON.stringify(g.alerts))}`);
+          lines.push('Name,ID,Status,Gross,Net,Battery,Time');
+          g.rows.forEach((r: any) => lines.push([r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(esc).join(',')));
+        });
+        const csv = lines.join('\r\n');
+        const fileName = `${fileBase}.csv`;
+        if (isWeb) {
+          const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = fileName;
+          a.click();
+          URL.revokeObjectURL(url);
+          return;
+        }
+        const dir = isNative ? Directory.Cache : Directory.Documents;
+        await Filesystem.writeFile({ path: fileName, data: `\uFEFF${csv}`, directory: dir, encoding: Encoding.UTF8 });
+        if (isNative) {
+          const { uri } = await Filesystem.getUri({ path: fileName, directory: dir });
+          await Share.share({ url: uri, title: 'Export snapshot', dialogTitle: 'Export snapshot' });
+        } else {
+          Swal.fire({ title: 'Export', text: 'Snapshot exported successfully.', icon: 'success', heightAuto: false });
+        }
+        return;
+      }
+
+      const doc = new jsPDF('p', 'mm', 'a4');
+      const margin = 10;
+      const pageW = doc.internal.pageSize.getWidth();
+      const headers = ['Name', 'ID', 'Status', 'Gross', 'Net', 'Battery', 'Time'];
+      const colWidths = [30, 16, 22, 28, 28, 16, 38];
+      const rowHeight = 10;
+      let y = margin;
+      const maxY = doc.internal.pageSize.getHeight() - margin;
+      const ensureSpace = (needed = rowHeight) => {
+        if (y + needed <= maxY) return;
+        doc.addPage();
+        y = margin;
+      };
+      const drawTableHeader = () => {
+        doc.setFillColor(240, 240, 240);
+        doc.rect(margin, y, pageW - margin * 2, rowHeight, 'F');
+        headers.forEach((h, i) => doc.text(h, margin + (i === 0 ? 2 : colWidths.slice(0, i).reduce((a, b) => a + b, 0) + 2), y + 5));
+        y += rowHeight;
+      };
+      doc.setFontSize(14);
+      doc.text('Monitor Snapshot', margin, y);
+      y += 7;
+      doc.setFontSize(9);
+      doc.text(`Project: ${active_project?.title || ''}`, margin, y);
+      y += 5;
+      doc.text(`PRR: ${prrId} | Status: ${prrStatus} | Battery: ${batteryStr}`, margin, y);
+      y += 5;
+      doc.text(`Generated: ${format(now, 'yyyy-MM-dd HH:mm:ss')}`, margin, y);
+      y += 7;
+      doc.setFontSize(8);
+      ensureSpace(rowHeight);
+      drawTableHeader();
+      rows.forEach((r) => {
+        ensureSpace(rowHeight);
+        const row = [
+          [String(r.Name).slice(0, 22)],
+          [String(r.ID).slice(0, 22)],
+          [String(r.Status).slice(0, 22)],
+          String(r.Gross || '').split('\n').map((s) => s.slice(0, 22)),
+          String(r.Net || '').split('\n').map((s) => s.slice(0, 22)),
+          [String(r.Battery).slice(0, 22)],
+          [String(r.Time).slice(0, 22)],
+        ];
+        row.forEach((cellLines, ii) => {
+          const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
+          doc.text(cellLines, x, y + 4);
+        });
+        y += rowHeight;
+      });
+      groupRows.forEach((g: any) => {
+        ensureSpace(16);
+        y += 6;
+        const alertLabel = `OK:${g.alerts.OK || 0} U:${g.alerts.UNDERLOAD || 0} O:${g.alerts.OVERLOAD || 0} D:${g.alerts.DANGER || 0} E:${g.alerts['TR.ERR'] || 0}`;
+        doc.setFontSize(9);
+        doc.text(`Group ${g.id} - ${g.title} | Total: ${g.total} | ${alertLabel}`, margin, y);
+        y += 5;
+        doc.setFontSize(8);
+        ensureSpace(rowHeight);
+        drawTableHeader();
+        g.rows.forEach((r: any) => {
+          ensureSpace(rowHeight);
+          const row = [
+            [String(r.Name).slice(0, 22)],
+            [String(r.ID).slice(0, 22)],
+            [String(r.Status).slice(0, 22)],
+            String(r.Gross || '').split('\n').map((s: string) => s.slice(0, 22)),
+            String(r.Net || '').split('\n').map((s: string) => s.slice(0, 22)),
+            [String(r.Battery).slice(0, 22)],
+            [String(r.Time).slice(0, 22)],
+          ];
+          row.forEach((cellLines: any, ii: number) => {
+            const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
+            doc.text(cellLines, x, y + 4);
+          });
+          y += rowHeight;
+        });
+        y += 2;
+      });
+      const fileName = `${fileBase}.pdf`;
+      if (isWeb) {
+        const blob = doc.output('blob');
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+      const data = doc.output('datauristring').split(',')[1];
+      const dir = isNative ? Directory.Cache : Directory.Documents;
+      await Filesystem.writeFile({ path: fileName, data, directory: dir });
+      if (isNative) {
+        const { uri } = await Filesystem.getUri({ path: fileName, directory: dir });
+        await Share.share({ url: uri, title: 'Export snapshot', dialogTitle: 'Export snapshot' });
+      } else {
+        Swal.fire({ title: 'Export', text: 'Snapshot exported successfully.', icon: 'success', heightAuto: false });
+      }
+    } catch (err) {
+      if (isUserCancelledError(err)) return;
+      console.error('Snapshot export error:', err);
+      Swal.fire({ title: 'Export', text: 'Failed to export snapshot.', icon: 'error', heightAuto: false });
     }
   };
 
@@ -1714,8 +1964,8 @@ const lastSoundTimeRef = useRef<number>(0);
       const capacity: any = f_lc_capacity_id(lc);
       const nominalCapacityMton = Number(capacity?.mton ?? 0);
       const hasNominalCapacity = Number.isFinite(nominalCapacityMton) && nominalCapacityMton > 0;
-      // Protocol noise guard: reject physically impossible negative spikes below -10% nominal capacity.
-      const minValidNegativeMton = hasNominalCapacity ? -(nominalCapacityMton * 0.1) : Number.NEGATIVE_INFINITY;
+      // Noise guard with high tolerance: only reject extreme negative spikes (< -200% nominal capacity).
+      const minValidNegativeMton = hasNominalCapacity ? -(nominalCapacityMton * 2) : Number.NEGATIVE_INFINITY;
 
       if (lc > 10 && hasNominalCapacity && weight > nominalCapacityMton * 2) {
         // something disturbed, number wrong 
@@ -1723,8 +1973,7 @@ const lastSoundTimeRef = useRef<number>(0);
       }
 
       if (lc > 10 && realval < minValidNegativeMton) {
-        // something disturbed, number wrong 
-        void logEvent("INFO", "Disturbed negative value filtered", {
+        void logEvent("INFO", "Extreme negative value filtered", {
           lc,
           realval,
           minAllowed: minValidNegativeMton,
@@ -2690,9 +2939,21 @@ const lastSoundTimeRef = useRef<number>(0);
                   </div>
                 </div>
               </div>
-              {active_project.id && <Text
-                label={`${active_project.title} - ${t('Monitor.Header.Title')} | ${t('Monitor.Header.Units')}: ${active_project.units} | ${active_project.windmeter_units}`}
-              />}
+              {active_project.id && (
+                <div className='flex items-center gap-1'>
+                  <Text label={`${active_project.title} - ${t('Monitor.Header.Title')} |`} />
+                  <button
+                    type='button'
+                    className='bg-transparent p-0 m-0 border-none cursor-pointer text-inherit'
+                    onClick={() => {
+                      setSettingModalMode('units-only');
+                      setVisibleSetting(true);
+                    }}
+                  >
+                    <Text label={`${t('Monitor.Header.Units')}: ${active_project.units} | ${active_project.windmeter_units}`} />
+                  </button>
+                </div>
+              )}
               <div className='flex flex-row items-end gap-2 pr-2'>
                 <IonImg
                   src={warningErrorIcon}
@@ -2717,6 +2978,16 @@ const lastSoundTimeRef = useRef<number>(0);
                   }
                 />
                 <IonImg src={load ? loadIcon : battIcon} className='h-10 w-10 cursor-pointer' onClick={() => loadStatusToggle(!load)} />
+                {location.pathname === ROUTES.Monitor && active_project.id ? (
+                  <button
+                    type='button'
+                    className='h-10 w-10 rounded-full border border-gray-400 dark:border-gray-500 flex items-center justify-center text-gray-700 dark:text-gray-100 bg-transparent'
+                    onClick={() => { void exportMonitorSnapshot(); }}
+                    title='Export snapshot'
+                  >
+                    <IonIcon icon={documentOutline} className='text-xl' />
+                  </button>
+                ) : null}
               </div>
               {/* <IonTitle>{title || "Projects"}</IonTitle> */}
             </div>
@@ -2737,7 +3008,10 @@ const lastSoundTimeRef = useRef<number>(0);
                   <Button
                     title={t('Common.Settings')}
                     icon={settingsOutline}
-                    onAction={() => setVisibleSetting(true)}
+                    onAction={() => {
+                      setSettingModalMode('full');
+                      setVisibleSetting(true);
+                    }}
                   />
                   <Button
                     title={t('Common.Duplicate')}
@@ -2853,8 +3127,12 @@ const lastSoundTimeRef = useRef<number>(0);
       <ProjectSettingModal
         visible={visibleSetting}
         data={active_project}
+        unitsOnly={settingModalMode === 'units-only'}
         onAction={handleSettingProject}
-        onClose={() => setVisibleSetting(false)}
+        onClose={() => {
+          setVisibleSetting(false);
+          setSettingModalMode('full');
+        }}
       />
       <ErrorModal
         visible={errStr ? true : false}

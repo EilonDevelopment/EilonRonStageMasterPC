@@ -1,14 +1,16 @@
 import React, { FC, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Modal from './Modal';
 import { useTranslation } from 'react-i18next';
 import Text from '../Text';
 import { ILC } from '../../helper/types';
 import TextInput from '../TextInput';
-import { IonToggle } from '@ionic/react';
+import { IonIcon, IonToggle } from '@ionic/react';
 import Button from '../Buttons/Button';
 import { getNewLCIds } from '../../helper/functions';
 import useAppData from '../../hooks/useAppData';
 import useFunctions from '../../hooks/useFunctions';
+import { informationCircleOutline } from 'ionicons/icons';
 interface NewLCModalProps {
   visible: boolean;
   data: Partial<ILC>;
@@ -33,6 +35,8 @@ const NewLCModal: FC<NewLCModalProps> = props => {
   });
   const [groups, setGroups] = useState<string>('')
   const [visibleGroups, setVisibleGroups] = useState<boolean>(true);
+  const [infoPopover, setInfoPopover] = useState<{ text: string; x: number; y: number } | null>(null);
+  const infoPopoverRef = useRef<HTMLDivElement | null>(null);
   const { isMobile, updateErrStr, curProject } = useAppData()
   const refIDInput = useRef<HTMLInputElement>(null)
   const SetvisibleCapacityRef = useRef<boolean>(false)
@@ -69,6 +73,17 @@ const NewLCModal: FC<NewLCModalProps> = props => {
   useEffect(() => {
     setLC(v => ({ ...v, groups }))
   }, [groups])
+
+  useEffect(() => {
+    if (!infoPopover) return;
+    const handleOutsidePointerDown = (ev: PointerEvent) => {
+      const target = ev.target as Node | null;
+      if (infoPopoverRef.current && target && infoPopoverRef.current.contains(target)) return;
+      setInfoPopover(null);
+    };
+    document.addEventListener('pointerdown', handleOutsidePointerDown);
+    return () => document.removeEventListener('pointerdown', handleOutsidePointerDown);
+  }, [infoPopover]);
 
   const handleChangeProject = (field: string, value: string | boolean) => {
     let id_cap: any
@@ -122,6 +137,25 @@ const NewLCModal: FC<NewLCModalProps> = props => {
   }
 
   const formGrid = `grid w-full grid-cols-1 sm:grid-cols-2 gap-3 ${isMobile ? '' : 'sm:gap-4'}`;
+  const showFieldInfo = (ev: React.MouseEvent<HTMLButtonElement>, text: string) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const popW = 230;
+    const popH = 76;
+    const pad = 8;
+    const placeRight = rect.right + popW + pad <= window.innerWidth;
+    const nextX = placeRight ? rect.right + 8 : rect.left - popW - 8;
+    const nextY = Math.min(
+      window.innerHeight - popH - pad,
+      Math.max(pad, rect.top + rect.height / 2 - popH / 2)
+    );
+    setInfoPopover({
+      text,
+      x: Math.max(pad, nextX),
+      y: nextY,
+    });
+  };
 
   return (
     <Modal
@@ -190,26 +224,65 @@ const NewLCModal: FC<NewLCModalProps> = props => {
         value={lc.title || ''}
         onChange={e => handleChangeProject('title', e.target.value)}
       />
-      <TextInput
-        label={`${t("Setting.PSW")}`}
-        type='number'
-        value={lc.psw || ''}
-        inputClasses='w-full'
-        onChange={e => handleChangeProject('psw', e.target.value)}
-      />
-      <TextInput
-        label={`${t("Setting.Underload")}`}
-        type='number'
-        value={lc.underload || ''}
-        onChange={e => handleChangeProject('underload', e.target.value)}
-      />
-      <TextInput
-        label={`${t("Setting.Overload")}`}
-        type='number'
-        value={lc.overload || ''}
-        inputClasses='w-full'
-        onChange={e => handleChangeProject('overload', e.target.value)}
-      />
+      <div>
+        <div className='mb-1 flex items-center gap-1.5'>
+          <Text label={t("Setting.PSW")} />
+          <button
+            type='button'
+            className='inline-flex items-center justify-center bg-transparent border-none p-0 m-0 cursor-pointer'
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => showFieldInfo(e, 'Explanation of P.S.W pending to be added')}
+          >
+            <IonIcon icon={informationCircleOutline} className='text-primary text-lg' />
+          </button>
+        </div>
+        <TextInput
+          enableLabel={false}
+          type='number'
+          value={lc.psw || ''}
+          inputClasses='w-full'
+          onChange={e => handleChangeProject('psw', e.target.value)}
+        />
+      </div>
+      <div>
+        <div className='mb-1 flex items-center gap-1.5'>
+          <Text label={t("Setting.Underload")} />
+          <button
+            type='button'
+            className='inline-flex items-center justify-center bg-transparent border-none p-0 m-0 cursor-pointer'
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => showFieldInfo(e, 'Explanation of Underload pending to be added')}
+          >
+            <IonIcon icon={informationCircleOutline} className='text-primary text-lg' />
+          </button>
+        </div>
+        <TextInput
+          enableLabel={false}
+          type='number'
+          value={lc.underload || ''}
+          onChange={e => handleChangeProject('underload', e.target.value)}
+        />
+      </div>
+      <div>
+        <div className='mb-1 flex items-center gap-1.5'>
+          <Text label={t("Setting.Overload")} />
+          <button
+            type='button'
+            className='inline-flex items-center justify-center bg-transparent border-none p-0 m-0 cursor-pointer'
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => showFieldInfo(e, 'Explanation of Overload pending to be added')}
+          >
+            <IonIcon icon={informationCircleOutline} className='text-primary text-lg' />
+          </button>
+        </div>
+        <TextInput
+          enableLabel={false}
+          type='number'
+          value={lc.overload || ''}
+          inputClasses='w-full'
+          onChange={e => handleChangeProject('overload', e.target.value)}
+        />
+      </div>
       <div className='col-span-1 sm:col-span-2 flex flex-row items-center gap-3 py-1'>
         <IonToggle
           enableOnOffLabels={true}
@@ -217,6 +290,14 @@ const NewLCModal: FC<NewLCModalProps> = props => {
           onIonChange={e => handleChangeProject('total_sum', e.detail.checked)}
         />
         <Text label={t('Setting.TotalSum')} />
+        <button
+          type='button'
+          className='inline-flex items-center justify-center bg-transparent border-none p-0 m-0 cursor-pointer'
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={(e) => showFieldInfo(e, 'Explanation of Total Sum pending to be added')}
+        >
+          <IonIcon icon={informationCircleOutline} className='text-primary text-lg' />
+        </button>
       </div>
 
       {SetvisibleCapacityRef.current === true && (
@@ -264,6 +345,16 @@ const NewLCModal: FC<NewLCModalProps> = props => {
           </div>
         ))}
       </div>
+      {infoPopover && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={infoPopoverRef}
+          className='fixed z-[99999] w-[230px] rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-2 text-xs leading-snug text-slate-700 dark:text-slate-100 shadow-lg'
+          style={{ left: `${infoPopover.x}px`, top: `${infoPopover.y}px` }}
+        >
+          {infoPopover.text}
+        </div>,
+        document.body
+      )}
     </Modal>
   )
 }

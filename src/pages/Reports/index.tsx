@@ -680,9 +680,9 @@ const Report: FC = () => {
                     : lc?.title;
                   const idCell = isPrrLink ? (sItem.unit != null && String(sItem.unit) !== '' ? String(sItem.unit) : '—') : lc?.id;
                   const isTrErr = !isPrrLink && ((sItem.log_type != null && String(sItem.log_type).toLowerCase() === 'err') || Number(sItem.value) === -99999999);
-                  const grossStr = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : `${sItem.value ?? ''} ${sItem.unit ?? ''}`.trim());
+                  const grossStr = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : formatDualWeight(sItem.value, sItem.unit));
                   const netVal = (sItem as any).tare_applied === true && (sItem as any).net_value != null ? (sItem as any).net_value : sItem.value;
-                  const netStr = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : `${netVal ?? ''} ${sItem.unit ?? ''}`.trim());
+                  const netStr = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : formatDualWeight(netVal, sItem.unit));
                   const statusMeta = getStatusMeta(getLogStatus(sItem, lc));
                   return (
                     <tr key={sKey} className="w-full">
@@ -693,8 +693,8 @@ const Report: FC = () => {
                           {statusMeta.label}
                         </span>
                       </td>
-                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{grossStr}</td>
-                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{netStr}</td>
+                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1 whitespace-pre-line leading-tight">{grossStr}</td>
+                      <td className="border border-slate-300 text-dark dark:text-white px-3 py-1 whitespace-pre-line leading-tight">{netStr}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{formatBattery(sItem.battery)}</td>
                       <td className="border border-slate-300 text-dark dark:text-white px-3 py-1">{format(sItem.log_date, "yyyy-MM-dd pp")}</td>
                     </tr>
@@ -860,12 +860,37 @@ const Report: FC = () => {
       .sort((a: any, b: any) => (b.log_date || 0) - (a.log_date || 0));
   };
 
+  const LBS_PER_KG = 2.20462;
+  const normalizeWeightUnit = (unitRaw: any): 'KG' | 'LBS' | 'M.TON' | null => {
+    const u = String(unitRaw ?? '').toUpperCase().replace(/\s+/g, '');
+    if (u === 'KG' || u === 'KGS') return 'KG';
+    if (u === 'LBS' || u === 'LB') return 'LBS';
+    if (u === 'M.TON' || u === 'MTON' || u === 'MTONS') return 'M.TON';
+    return null;
+  };
+  const toKg = (valueRaw: any, unitRaw: any): number | null => {
+    const n = Number(valueRaw);
+    if (!Number.isFinite(n)) return null;
+    const u = normalizeWeightUnit(unitRaw);
+    if (u === 'KG') return n;
+    if (u === 'LBS') return n / LBS_PER_KG;
+    if (u === 'M.TON') return n * 1000;
+    return null;
+  };
+  const formatDualWeight = (valueRaw: any, unitRaw: any) => {
+    const kg = toKg(valueRaw, unitRaw);
+    if (kg == null) return `${valueRaw ?? ''} ${unitRaw ?? ''}`.trim();
+    const lbs = kg * LBS_PER_KG;
+    return `${kg.toFixed(2)} KG\n${lbs.toFixed(2)} LBS`;
+  };
+  const inlineMultilineCell = (value: string) => String(value || '').replace(/\s*\n\s*/g, ' | ');
+
   const formatLogGross = (log: any) => {
     const plt = String(log.log_type || '').toLowerCase();
     if (plt === 'prr_connected') return 'PRR connected';
     if (plt === 'prr_disconnected') return 'PRR disconnected';
     const isErr = (log.log_type != null && String(log.log_type).toLowerCase() === 'err') || Number(log.value) === -99999999;
-    return isErr ? 'Tr.Err' : `${log.value ?? ''} ${log.unit ?? ''}`.trim();
+    return isErr ? 'Tr.Err' : formatDualWeight(log.value, log.unit);
   };
   const formatLogNet = (log: any) => {
     const plt = String(log.log_type || '').toLowerCase();
@@ -873,7 +898,7 @@ const Report: FC = () => {
     if (plt === 'prr_disconnected') return '—';
     const isErr = (log.log_type != null && String(log.log_type).toLowerCase() === 'err') || Number(log.value) === -99999999;
     const netVal = (log as any).tare_applied === true && (log as any).net_value != null ? (log as any).net_value : log.value;
-    return isErr ? 'Tr.Err' : `${netVal ?? ''} ${log.unit ?? ''}`.trim();
+    return isErr ? 'Tr.Err' : formatDualWeight(netVal, log.unit);
   };
 
   type ReportStatus = 'OK' | 'UNDERLOAD' | 'OVERLOAD' | 'DANGER' | 'TR.ERR' | 'PRR CONNECTED' | 'PRR DISCONNECTED';
@@ -960,7 +985,9 @@ const Report: FC = () => {
   const openMailtoFallback = (subject: string, logData: any[]) => {
     const project = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
     const reportRows = getReportRows(logData);
-    const lines = reportRows.slice(0, 50).map((r) => `${r.Name}\t${r.ID}\t${r.Status}\t${r.Gross}\t${r.Net}\t${r.Battery}\t${r.Time}`);
+    const lines = reportRows
+      .slice(0, 50)
+      .map((r) => `${r.Name}\t${r.ID}\t${r.Status}\t${inlineMultilineCell(r.Gross)}\t${inlineMultilineCell(r.Net)}\t${r.Battery}\t${r.Time}`);
     const rangeLine = isSingleDayRange
       ? `Range: ${format(filter.start, 'yyyy-MM-dd')} ${filter.hourStart}-${filter.hourEnd}`
       : `Range: ${format(filter.start, 'yyyy-MM-dd')} → ${format(filter.end, 'yyyy-MM-dd')}`;
@@ -1251,7 +1278,7 @@ const Report: FC = () => {
               const pageW = doc.internal.pageSize.getWidth();
               const margin = 10;
               const colWidths = [30, 16, 22, 22, 22, 16, 42];
-              const rowHeight = 7;
+              const rowHeight = 10;
               let y = margin;
               doc.setFontSize(14);
               doc.text(t('Report.Export') || 'Report', margin, y);
@@ -1295,16 +1322,24 @@ const Report: FC = () => {
                   y += rowHeight;
                 }
                 const r = rowsForPdf[i];
-                const row = [r.Name.slice(0, 14), r.ID.slice(0, 9), r.Status.slice(0, 12), r.Gross.slice(0, 12), r.Net.slice(0, 12), r.Battery.slice(0, 7), r.Time.slice(0, 19)];
-                row.forEach((cell, ii) => {
+                const row = [
+                  [r.Name.slice(0, 14)],
+                  [r.ID.slice(0, 9)],
+                  [r.Status.slice(0, 12)],
+                  String(r.Gross || '').split('\n').map((s) => s.slice(0, 18)),
+                  String(r.Net || '').split('\n').map((s) => s.slice(0, 18)),
+                  [r.Battery.slice(0, 7)],
+                  [r.Time.slice(0, 19)],
+                ];
+                row.forEach((cellLines, ii) => {
                   const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
                   if (ii === 2) {
                     const meta = getStatusMeta(r.Status as ReportStatus);
                     doc.setTextColor(meta.textColor);
-                    doc.text(cell, x, y + 5);
+                    doc.text(cellLines, x, y + 4);
                     doc.setTextColor(0, 0, 0);
                   } else {
-                    doc.text(cell, x, y + 5);
+                    doc.text(cellLines, x, y + 4);
                   }
                 });
                 colX = margin;
@@ -1348,7 +1383,7 @@ const Report: FC = () => {
           const pageW = doc.internal.pageSize.getWidth();
           const margin = 10;
           const colWidths = [30, 16, 22, 22, 22, 16, 42];
-          const rowHeight = 7;
+          const rowHeight = 10;
           let y = margin;
           doc.setFontSize(14);
           doc.text(t('Report.Export') || 'Report', margin, y);
@@ -1393,16 +1428,24 @@ const Report: FC = () => {
               y += rowHeight;
             }
             const r = reportRowsPdf[i];
-            const row = [r.Name.slice(0, 14), r.ID.slice(0, 9), r.Status.slice(0, 12), r.Gross.slice(0, 12), r.Net.slice(0, 12), r.Battery.slice(0, 7), r.Time.slice(0, 19)];
-            row.forEach((cell, ii) => {
+            const row = [
+              [r.Name.slice(0, 14)],
+              [r.ID.slice(0, 9)],
+              [r.Status.slice(0, 12)],
+              String(r.Gross || '').split('\n').map((s) => s.slice(0, 18)),
+              String(r.Net || '').split('\n').map((s) => s.slice(0, 18)),
+              [r.Battery.slice(0, 7)],
+              [r.Time.slice(0, 19)],
+            ];
+            row.forEach((cellLines, ii) => {
               const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
               if (ii === 2) {
                 const meta = getStatusMeta(r.Status as ReportStatus);
                 doc.setTextColor(meta.textColor);
-                doc.text(cell, x, y + 5);
+                doc.text(cellLines, x, y + 4);
                 doc.setTextColor(0, 0, 0);
               } else {
-                doc.text(cell, x, y + 5);
+                doc.text(cellLines, x, y + 4);
               }
             });
             colX = margin;
