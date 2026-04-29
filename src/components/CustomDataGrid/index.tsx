@@ -64,7 +64,7 @@ const CustomDataGrid: FC<CustomDataGridProps> = (props) => {
           columns={columns}
           disableRowSelectionOnClick
           paginationModel={paginationModel}
-          pageSizeOptions={[6, 10, 25, 50]}
+          pageSizeOptions={[6, 10, 25, 50, 100]}
           className={`w-full px-4 cursor-pointer bg-transparent ${classes}`}
           onPaginationModelChange={setPaginationModel}
           onRowClick={(e) => onRowAction(e.row)}

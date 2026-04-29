@@ -12,6 +12,23 @@
   display: none !important;
 }
 
+.MuiDataGrid-columnHeader .MuiDataGrid-iconButtonContainer {
+  display: inline-flex !important;
+  visibility: visible !important;
+}
+
+.MuiDataGrid-sortIcon,
+.MuiDataGrid-sortIcon path {
+  color: #6b7280 !important;
+  fill: #6b7280 !important;
+}
+
+.dark .MuiDataGrid-sortIcon,
+.dark .MuiDataGrid-sortIcon path {
+  color: #cbd5e1 !important;
+  fill: #cbd5e1 !important;
+}
+
 .MuiDataGrid-columnHeaderTitle {
   color: #222428;
 }

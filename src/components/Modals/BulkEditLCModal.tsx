@@ -1,7 +1,6 @@
 import React, { FC, useEffect, useMemo, useState } from 'react';
 import { IonToggle } from '@ionic/react';
 import Modal from './Modal';
-import Text from '../Text';
 import TextInput from '../TextInput';
 
 type OverrideFlags = {
@@ -124,6 +123,21 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
     onAction('save', { ids: parsed.ids, overrides, values });
   };
 
+  const overrideSwitchBlock = (checked: boolean, onChange: (value: boolean) => void) => (
+    <div className="flex flex-col items-center justify-center min-w-[112px]">
+      <div className="mb-1 h-[14px]" />
+      <IonToggle checked={checked} onIonChange={(e) => onChange(e.detail.checked)} />
+    </div>
+  );
+
+  const fieldVisualState = (enabled: boolean) => ({
+    labelClasses: enabled ? '!text-white' : '!text-gray-500 dark:!text-gray-500',
+    inputContainerClasses: enabled
+      ? 'bg-transparent border-medium'
+      : 'bg-gray-100/80 dark:bg-gray-700/40 border-gray-400 dark:border-gray-600',
+    inputClasses: enabled ? 'text-dark dark:text-light' : 'text-gray-500 dark:text-gray-400',
+  });
+
   return (
     <Modal
       header="Edit LC"
@@ -144,50 +158,115 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Example: 10-15,18,0,25-46</p>
       </div>
 
-      <div className="col-span-1 sm:col-span-2 flex items-center gap-2">
-        <IonToggle checked={overrides.title} onIonChange={(e) => setOverride('title', e.detail.checked)} />
-        <Text label="Override all: Name" />
-      </div>
-      <TextInput label="Name" value={values.title} readOnly={!overrides.title} onChange={(e) => setValues((v) => ({ ...v, title: e.target.value }))} />
-
-      <div className="col-span-1 sm:col-span-2 flex items-center gap-2">
-        <IonToggle checked={overrides.psw} onIonChange={(e) => setOverride('psw', e.detail.checked)} />
-        <Text label="Override all: PSW" />
-      </div>
-      <TextInput label="PSW" type="number" value={values.psw} readOnly={!overrides.psw} onChange={(e) => setValues((v) => ({ ...v, psw: e.target.value }))} />
-
-      <div className="col-span-1 sm:col-span-2 flex items-center gap-2">
-        <IonToggle checked={overrides.underload} onIonChange={(e) => setOverride('underload', e.detail.checked)} />
-        <Text label="Override all: Underload" />
-      </div>
-      <TextInput label="Underload" type="number" value={values.underload} readOnly={!overrides.underload} onChange={(e) => setValues((v) => ({ ...v, underload: e.target.value }))} />
-
-      <div className="col-span-1 sm:col-span-2 flex items-center gap-2">
-        <IonToggle checked={overrides.overload} onIonChange={(e) => setOverride('overload', e.detail.checked)} />
-        <Text label="Override all: Overload" />
-      </div>
-      <TextInput label="Overload" type="number" value={values.overload} readOnly={!overrides.overload} onChange={(e) => setValues((v) => ({ ...v, overload: e.target.value }))} />
-
-      <div className="col-span-1 sm:col-span-2 flex items-center gap-2">
-        <IonToggle checked={overrides.total_sum} onIonChange={(e) => setOverride('total_sum', e.detail.checked)} />
-        <Text label="Override all: Total Sum" />
-      </div>
-      <div className="col-span-1 sm:col-span-2 flex items-center gap-2">
-        <IonToggle checked={values.total_sum} disabled={!overrides.total_sum} onIonChange={(e) => setValues((v) => ({ ...v, total_sum: e.detail.checked }))} />
-        <Text label="Total Sum value" />
+      <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
+        {(() => {
+          const f = fieldVisualState(overrides.title);
+          return (
+        <TextInput
+          label="Name"
+          value={values.title}
+          readOnly={!overrides.title}
+          labelClasses={f.labelClasses}
+          inputContainerClasses={f.inputContainerClasses}
+          inputClasses={f.inputClasses}
+          onChange={(e) => setValues((v) => ({ ...v, title: e.target.value }))}
+        />
+          );
+        })()}
+        {overrideSwitchBlock(overrides.title, (checked) => setOverride('title', checked))}
       </div>
 
-      <div className="col-span-1 sm:col-span-2 flex items-center gap-2">
-        <IonToggle checked={overrides.groups} onIonChange={(e) => setOverride('groups', e.detail.checked)} />
-        <Text label="Override all: Groups" />
+      <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
+        {(() => {
+          const f = fieldVisualState(overrides.psw);
+          return (
+        <TextInput
+          label="PSW"
+          type="number"
+          value={values.psw}
+          readOnly={!overrides.psw}
+          labelClasses={f.labelClasses}
+          inputContainerClasses={f.inputContainerClasses}
+          inputClasses={f.inputClasses}
+          onChange={(e) => setValues((v) => ({ ...v, psw: e.target.value }))}
+        />
+          );
+        })()}
+        {overrideSwitchBlock(overrides.psw, (checked) => setOverride('psw', checked))}
       </div>
-      <div className="col-span-1 sm:col-span-2">
+
+      <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
+        {(() => {
+          const f = fieldVisualState(overrides.underload);
+          return (
+        <TextInput
+          label="Underload"
+          type="number"
+          value={values.underload}
+          readOnly={!overrides.underload}
+          labelClasses={f.labelClasses}
+          inputContainerClasses={f.inputContainerClasses}
+          inputClasses={f.inputClasses}
+          onChange={(e) => setValues((v) => ({ ...v, underload: e.target.value }))}
+        />
+          );
+        })()}
+        {overrideSwitchBlock(overrides.underload, (checked) => setOverride('underload', checked))}
+      </div>
+
+      <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
+        {(() => {
+          const f = fieldVisualState(overrides.overload);
+          return (
+        <TextInput
+          label="Overload"
+          type="number"
+          value={values.overload}
+          readOnly={!overrides.overload}
+          labelClasses={f.labelClasses}
+          inputContainerClasses={f.inputContainerClasses}
+          inputClasses={f.inputClasses}
+          onChange={(e) => setValues((v) => ({ ...v, overload: e.target.value }))}
+        />
+          );
+        })()}
+        {overrideSwitchBlock(overrides.overload, (checked) => setOverride('overload', checked))}
+      </div>
+
+      <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
+        <div
+          className={`flex items-center justify-between rounded border px-3 py-2 min-h-[42px] ${
+            overrides.total_sum
+              ? 'border-medium bg-light dark:bg-black/10'
+              : 'border-gray-400 dark:border-gray-600 bg-gray-100/80 dark:bg-gray-700/40'
+          }`}
+        >
+          <span className={`text-sm ${overrides.total_sum ? 'text-dark dark:text-light' : 'text-gray-500 dark:text-gray-400'}`}>Total Sum value</span>
+          <IonToggle
+            checked={values.total_sum}
+            disabled={!overrides.total_sum}
+            onIonChange={(e) => setValues((v) => ({ ...v, total_sum: e.detail.checked }))}
+          />
+        </div>
+        {overrideSwitchBlock(overrides.total_sum, (checked) => setOverride('total_sum', checked))}
+      </div>
+
+      <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
+        {(() => {
+          const f = fieldVisualState(overrides.groups);
+          return (
         <TextInput
           label="Groups (comma separated)"
           value={values.groups}
           readOnly={!overrides.groups}
+          labelClasses={f.labelClasses}
+          inputContainerClasses={f.inputContainerClasses}
+          inputClasses={f.inputClasses}
           onChange={(e) => setValues((v) => ({ ...v, groups: e.target.value }))}
         />
+          );
+        })()}
+        {overrideSwitchBlock(overrides.groups, (checked) => setOverride('groups', checked))}
       </div>
 
       {localError ? (
