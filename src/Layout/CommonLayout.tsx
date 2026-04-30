@@ -102,6 +102,11 @@ interface CommonLayoutProps {
   onMonitorPlanDelete?: (planId: string) => void;
 }
 
+type ConnectedPrrDevice = {
+  deviceId: string;
+  displayName: string | null;
+};
+
 // Display batching: flush interval (ms). Safety checks (overload/underload) run immediately per packet.
 // Keep UI work bounded on Android WebView to avoid renderer overload (onRenderProcessGone).
 const LC_DISPLAY_BATCH_MS_DEFAULT = 100;
@@ -304,6 +309,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const [blePickerType, setBlePickerType] = useState<'prr' | 'lc' | null>(null);
   const bleScanAbortRef = useRef(false);
   const bleScanInProgressRef = useRef(false);
+  const bleInitializedRef = useRef(false);
   const connectDeviceAutoRunRef = useRef(false);
   const isViewActiveRef = useRef(true);
   const [planDialogOpen, setPlanDialogOpen] = useState(false);
@@ -613,10 +619,12 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
 
   useEffect(() => {
     return () => {
-      if (prrReconnectTimerRef.current) {
-        clearTimeout(prrReconnectTimerRef.current);
-        prrReconnectTimerRef.current = null;
-      }
+      const timers = prrReconnectTimersRef.current;
+      Object.keys(timers).forEach((key) => {
+        const timer = timers[key];
+        if (timer) clearTimeout(timer);
+      });
+      prrReconnectTimersRef.current = {};
     };
   }, []);
 
@@ -1263,13 +1271,16 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   if (!isViewActiveRef.current) return;
   if (type === 'prr') {
     // Manual flow wins: cancel pending auto-reconnect retries and invalidate stale callbacks.
-    prrReconnectEpochRef.current += 1;
-    prrReconnectAttemptRef.current = 0;
-    prrReconnectInProgressRef.current = false;
-    if (prrReconnectTimerRef.current) {
-      clearTimeout(prrReconnectTimerRef.current);
-      prrReconnectTimerRef.current = null;
-    }
+    const timers = prrReconnectTimersRef.current;
+    Object.keys(timers).forEach((deviceId) => {
+      prrReconnectEpochRef.current[deviceId] = (prrReconnectEpochRef.current[deviceId] ?? 0) + 1;
+      prrReconnectAttemptsRef.current[deviceId] = 0;
+      prrReconnectInProgressRef.current[deviceId] = false;
+      if (timers[deviceId]) {
+        clearTimeout(timers[deviceId] as ReturnType<typeof setTimeout>);
+        timers[deviceId] = null;
+      }
+    });
   }
   if (bleScanInProgressRef.current) {
     await Swal.fire({
@@ -1286,7 +1297,10 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   }
   bleScanInProgressRef.current = true;
   try {
-    await BleClient.initialize();
+    if (!bleInitializedRef.current) {
+      await BleClient.initialize();
+      bleInitializedRef.current = true;
+    }
 
     if (Capacitor.getPlatform() === 'web') {
       console.warn("Status: Platform is web. Skipping native hardware checks.");
@@ -1313,28 +1327,41 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const bleConnectToDevice = async (deviceId: string, type: string, displayName?: string): Promise<boolean> => {
     const s = (type == "prr") ? numberToUUID(0xfff0) : '0bd51666-e7cb-469b-8e4d-2742f1ba77cc';
     const c = (type == "prr") ? numberToUUID(0xfff4) : 'e7add780-b042-4876-aae1-112855353cc1';
+    if (type === 'prr') {
+      const connectedNow = connectedPrrDevicesRef.current;
+      if (connectedNow.some((d) => String(d.deviceId) === String(deviceId))) {
+        return true;
+      }
+      if (connectedNow.length >= 2) {
+        await Swal.fire({
+          title: 'PRR limit reached',
+          text: 'You can connect up to 2 PRRs at the same time.',
+          icon: 'info',
+          confirmButtonText: 'OK',
+          heightAuto: false,
+        });
+        return false;
+      }
+    }
     try {
       await BleClient.connect(deviceId, (did) => bt_disconnect(did), {
         timeout: BLE_CONNECT_TIMEOUT_MS,
       });
       if (type === 'prr') {
-        prrBleDeviceIdRef.current = deviceId;
-        prrBleDisplayNameRef.current =
-          (displayName && displayName.trim()) || deviceId;
-        {
-          const trimmedName = (displayName && displayName.trim()) || '';
-          // Header: only the scan list title (e.g. numeric name), never the BLE address.
-          setPrrConnectedListName(
-            trimmedName && trimmedName !== deviceId ? trimmedName : null
-          );
+        const trimmedName = (displayName && displayName.trim()) || null;
+        const reportLabel = trimmedName || deviceId;
+        prrDisplayNameByDeviceRef.current[deviceId] = trimmedName;
+        if (!prrBleDeviceIdRef.current) {
+          prrBleDeviceIdRef.current = deviceId;
+          prrBleDisplayNameRef.current = reportLabel;
         }
-      } else {
-        setPrrConnectedListName(null);
+        setConnectedPrrDevices((prev) => {
+          if (prev.some((d) => String(d.deviceId) === String(deviceId))) return prev;
+          return [...prev, { deviceId, displayName: trimmedName }];
+        });
+        logPrrLinkEventSafely('connected', reportLabel);
       }
       updateBleConnected(true);
-      if (type === 'prr') {
-        logPrrLinkEventSafely('connected');
-      }
       await BleClient.getServices(deviceId);
       void logEvent("INFO", "BLE device connected", { deviceId, type }, "BLE");
       await BleClient.startNotifications(
@@ -1346,20 +1373,23 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         }
       );
       if (type === 'prr') {
-        prrReconnectAttemptRef.current = 0;
-        prrReconnectInProgressRef.current = false;
-        if (prrReconnectTimerRef.current) {
-          clearTimeout(prrReconnectTimerRef.current);
-          prrReconnectTimerRef.current = null;
+        prrReconnectAttemptsRef.current[deviceId] = 0;
+        prrReconnectInProgressRef.current[deviceId] = false;
+        const timer = prrReconnectTimersRef.current[deviceId];
+        if (timer) {
+          clearTimeout(timer);
         }
+        prrReconnectTimersRef.current[deviceId] = null;
       }
       return true;
     } catch (error) {
       console.error(error);
       void logEvent("ERROR", "BLE notification setup failed", { error }, "BLE");
-      updateBleConnected(false);
+      updateBleConnected(type === 'prr' ? connectedPrrDevicesRef.current.length > 0 : false);
       if (type === 'prr') {
-        setPrrConnectedListName(null);
+        if (connectedPrrDevicesRef.current.length === 0) {
+          setPrrConnectedListName(null);
+        }
       }
       return false;
     }
@@ -1628,18 +1658,28 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const prrBleDeviceIdRef = useRef<string | null>(null);
   /** Shown next to "PRR" on Monitor: first line of the scan list (name), not the BLE address. */
   const [prrConnectedListName, setPrrConnectedListName] = useState<string | null>(null);
+  const [connectedPrrDevices, setConnectedPrrDevices] = useState<ConnectedPrrDevice[]>([]);
+  const connectedPrrDevicesRef = useRef<ConnectedPrrDevice[]>([]);
   /** Friendly name for PRR report rows (ID column); falls back to deviceId if unnamed. */
   const prrBleDisplayNameRef = useRef<string | null>(null);
-  const lastPrrLinkEventRef = useRef<{ kind: 'connected' | 'disconnected'; ts: number } | null>(null);
+  const lastPrrLinkEventRef = useRef<Record<string, number>>({});
   const prevBlePrrStateRef = useRef<boolean | null>(null);
   const bleConnectedRef = useRef<boolean>(bleConnected);
-  const prrReconnectAttemptRef = useRef<number>(0);
-  const prrReconnectInProgressRef = useRef<boolean>(false);
-  const prrReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prrReconnectAttemptsRef = useRef<Record<string, number>>({});
+  const prrReconnectInProgressRef = useRef<Record<string, boolean>>({});
+  const prrReconnectTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
   /** Invalidate stale auto-reconnect callbacks when user starts a manual connect flow. */
-  const prrReconnectEpochRef = useRef<number>(0);
+  const prrReconnectEpochRef = useRef<Record<string, number>>({});
+  const prrDisplayNameByDeviceRef = useRef<Record<string, string | null>>({});
   // Keep ref in sync every render so flushLcDisplayBuffer always merges buffer into latest lcs (preserves status_tare/tare)
   currentLcs.current = lcs;
+  useEffect(() => {
+    connectedPrrDevicesRef.current = connectedPrrDevices;
+    const labels = connectedPrrDevices
+      .map((d) => (d.displayName && d.displayName.trim()) || d.deviceId)
+      .filter(Boolean);
+    setPrrConnectedListName(labels.length > 0 ? labels.join(' | ') : null);
+  }, [connectedPrrDevices]);
 
   const maybeLogLcValue = (lcId: any, projectId: any, value: any, realval: any, overload: any, underload: any, batteryParam?: number | string) => {
     const pid = normalizeProjectId(projectId);
@@ -1677,16 +1717,20 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     f_log_lc_value(lcId, projectId, value, realval, overload, underload, batteryParam);
   };
 
-  const logPrrLinkEventSafely = (kind: 'connected' | 'disconnected') => {
+  const logPrrLinkEventSafely = (kind: 'connected' | 'disconnected', reportLabelOverride?: string | null) => {
     const proj = activeProjectRef.current?.id ? activeProjectRef.current : active_project;
     if (!proj?.id || !proj?.cycle) return;
-    const reportLabel = (prrBleDisplayNameRef.current && prrBleDisplayNameRef.current.trim()) || prrBleDeviceIdRef.current;
+    const reportLabel =
+      (reportLabelOverride && reportLabelOverride.trim()) ||
+      (prrBleDisplayNameRef.current && prrBleDisplayNameRef.current.trim()) ||
+      prrBleDeviceIdRef.current;
     if (!reportLabel) return;
 
     const nowTs = Date.now();
-    const prev = lastPrrLinkEventRef.current;
-    if (prev && prev.kind === kind && nowTs - prev.ts < 2000) return;
-    lastPrrLinkEventRef.current = { kind, ts: nowTs };
+    const dedupeKey = `${kind}:${reportLabel}`;
+    const prevTs = lastPrrLinkEventRef.current[dedupeKey] ?? 0;
+    if (nowTs - prevTs < 2000) return;
+    lastPrrLinkEventRef.current[dedupeKey] = nowTs;
     f_log_prr_link_event(proj.id, kind, reportLabel);
   };
 
@@ -2609,30 +2653,30 @@ const lastSoundTimeRef = useRef<number>(0);
     void 0; // placeholder; chart drawing can be implemented here
   }
 
-  const schedulePrrAutoReconnect = (reason: string) => {
-    const targetDeviceId = prrBleDeviceIdRef.current;
+  const schedulePrrAutoReconnect = (targetDeviceId: string, reason: string) => {
     if (!targetDeviceId) return;
-    if (prrReconnectInProgressRef.current) return;
-    if (prrReconnectTimerRef.current) return;
-    const scheduleEpoch = prrReconnectEpochRef.current;
+    if (prrReconnectInProgressRef.current[targetDeviceId]) return;
+    if (prrReconnectTimersRef.current[targetDeviceId]) return;
+    const scheduleEpoch = (prrReconnectEpochRef.current[targetDeviceId] ?? 0);
 
-    const attempt = prrReconnectAttemptRef.current + 1;
+    const attempt = (prrReconnectAttemptsRef.current[targetDeviceId] ?? 0) + 1;
     const delay = Math.min(PRR_RECONNECT_MAX_MS, PRR_RECONNECT_BASE_MS * Math.pow(2, Math.max(0, attempt - 1)));
-    prrReconnectTimerRef.current = setTimeout(async () => {
-      prrReconnectTimerRef.current = null;
-      if (scheduleEpoch !== prrReconnectEpochRef.current) {
+    prrReconnectTimersRef.current[targetDeviceId] = setTimeout(async () => {
+      prrReconnectTimersRef.current[targetDeviceId] = null;
+      if (scheduleEpoch !== (prrReconnectEpochRef.current[targetDeviceId] ?? 0)) {
         return;
       }
-      if (bleConnectedRef.current) {
-        prrReconnectAttemptRef.current = 0;
+      const isAlreadyConnected = connectedPrrDevicesRef.current.some((d) => String(d.deviceId) === String(targetDeviceId));
+      if (isAlreadyConnected) {
+        prrReconnectAttemptsRef.current[targetDeviceId] = 0;
         return;
       }
-      const reconnectDeviceId = prrBleDeviceIdRef.current;
+      const reconnectDeviceId = targetDeviceId;
       if (!reconnectDeviceId) return;
-      if (scheduleEpoch !== prrReconnectEpochRef.current) return;
+      if (scheduleEpoch !== (prrReconnectEpochRef.current[targetDeviceId] ?? 0)) return;
 
-      prrReconnectInProgressRef.current = true;
-      prrReconnectAttemptRef.current = attempt;
+      prrReconnectInProgressRef.current[targetDeviceId] = true;
+      prrReconnectAttemptsRef.current[targetDeviceId] = attempt;
       void logEvent("WARN", "PRR auto-reconnect attempt", { attempt, delay, reason, reconnectDeviceId }, "BLE");
       let shouldRetry = false;
       try {
@@ -2641,30 +2685,45 @@ const lastSoundTimeRef = useRef<number>(0);
         const ok = await bleConnectToDevice(
           reconnectDeviceId,
           "prr",
-          (prrBleDisplayNameRef.current && prrBleDisplayNameRef.current.trim()) || undefined
+          (prrDisplayNameByDeviceRef.current[reconnectDeviceId] && prrDisplayNameByDeviceRef.current[reconnectDeviceId]?.trim()) || undefined
         );
         shouldRetry = !ok;
       } catch (error) {
         void logEvent("ERROR", "PRR auto-reconnect failed", { attempt, error: String((error as any)?.message || error) }, "BLE");
         shouldRetry = true;
       } finally {
-        prrReconnectInProgressRef.current = false;
-        if (scheduleEpoch !== prrReconnectEpochRef.current) {
+        prrReconnectInProgressRef.current[targetDeviceId] = false;
+        if (scheduleEpoch !== (prrReconnectEpochRef.current[targetDeviceId] ?? 0)) {
           return;
         }
-        if (shouldRetry && !bleConnectedRef.current) {
-          schedulePrrAutoReconnect("retry_after_failure");
+        if (shouldRetry) {
+          schedulePrrAutoReconnect(targetDeviceId, "retry_after_failure");
         }
       }
     }, delay);
   };
 
   function bt_disconnect(deviceId: string): void {
-    updateBleConnected(false);
-    if (prrBleDeviceIdRef.current && String(prrBleDeviceIdRef.current) === String(deviceId)) {
-      setPrrConnectedListName(null);
-      logPrrLinkEventSafely('disconnected');
-      schedulePrrAutoReconnect("disconnect_callback");
+    const disconnected = connectedPrrDevicesRef.current.find((d) => String(d.deviceId) === String(deviceId));
+    const reportLabel = disconnected ? ((disconnected.displayName && disconnected.displayName.trim()) || disconnected.deviceId) : null;
+    let shouldReconnectThisDevice = false;
+    setConnectedPrrDevices((prev) => {
+      const remaining = prev.filter((d) => String(d.deviceId) !== String(deviceId));
+      if (prrBleDeviceIdRef.current && String(prrBleDeviceIdRef.current) === String(deviceId)) {
+        const nextPrimary = remaining[0] || null;
+        prrBleDeviceIdRef.current = nextPrimary?.deviceId || null;
+        prrBleDisplayNameRef.current =
+          (nextPrimary?.displayName && nextPrimary.displayName.trim()) || nextPrimary?.deviceId || null;
+      }
+      shouldReconnectThisDevice = true;
+      updateBleConnected(remaining.length > 0);
+      return remaining;
+    });
+    if (reportLabel) {
+      logPrrLinkEventSafely('disconnected', reportLabel);
+    }
+    if (shouldReconnectThisDevice) {
+      schedulePrrAutoReconnect(deviceId, "disconnect_callback");
     }
   }
 
@@ -2687,7 +2746,9 @@ const lastSoundTimeRef = useRef<number>(0);
   }
 
   const bt_auto_reconnect = () => {
-    schedulePrrAutoReconnect("manual_call")
+    connectedPrrDevicesRef.current.forEach((d) => {
+      schedulePrrAutoReconnect(d.deviceId, "manual_call")
+    });
   }
 
   const bt_read = async (device_id: any, service_uuid: any, characteristic_uuid: any) => {
@@ -2945,7 +3006,7 @@ const lastSoundTimeRef = useRef<number>(0);
                     </div>
                     {connected && prrConnectedListName ? (
                       <span
-                        className='text-sm font-semibold text-black dark:text-white tabular-nums max-w-[5.5rem] sm:max-w-[6.5rem] truncate leading-tight text-center'
+                        className='text-sm font-semibold text-black dark:text-white tabular-nums max-w-[10rem] sm:max-w-[12rem] truncate leading-tight text-center'
                         title={prrConnectedListName}
                       >
                         {prrConnectedListName}
