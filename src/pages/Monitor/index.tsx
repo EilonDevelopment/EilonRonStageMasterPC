@@ -14,6 +14,7 @@ import Text from "../../components/Text";
 import { useTranslation } from "react-i18next";
 import GroupActionModal from "../../components/Modals/GroupActionModal";
 import SuccessModal from "../../components/Modals/SuccessModal";
+import MonitorPlanModal from "../../components/Modals/MonitorPlanModal";
 // import * as database from '../../database'
 import { db } from "../../db";
 import Swal from "sweetalert2";
@@ -36,6 +37,20 @@ const MonitorModals = {
 
 const SINGLE_TAP_DELAY_MS = 350
 const GROUP_LONG_PRESS_MS = 600
+
+type MonitorPlan = {
+  id: string;
+  project_id: string;
+  name: string;
+  included_groups_csv: string;
+  is_default?: boolean;
+  p_image?: string;
+  p_image_w?: number;
+  p_image_h?: number;
+  p_image_l?: number;
+  p_image_t?: number;
+};
+
 const Monitor: FC = () => {
   const history = useHistory();
   const heartbeatRef = useRef<number | null>(null);
@@ -89,6 +104,12 @@ const Monitor: FC = () => {
   }
 
   const [groupList, setGroupList] = useState<IGroup[]>([])
+  const [monitorPlans, setMonitorPlans] = useState<MonitorPlan[]>([]);
+  const [activePlanId, setActivePlanId] = useState<string>('');
+  const [visibleCreatePlan, setVisibleCreatePlan] = useState(false);
+  const [editPlanId, setEditPlanId] = useState<string | null>(null);
+  const isApplyingPlanRef = useRef(false);
+  const planApplySeqRef = useRef(0);
 
   const [dbHanlder, setDBHandler] = useState(null)
 
@@ -141,7 +162,7 @@ const Monitor: FC = () => {
   const [totalToZero, setTotalToZero] = useState(0);
 
   type GroupVisualState = { groupId: string; highlight: boolean; only: boolean };
-  const [groupVisual, setGroupVisual] = useState<GroupVisualState | null>(null);
+  const [groupVisualByPlan, setGroupVisualByPlan] = useState<Record<string, GroupVisualState | null>>({});
 
   const curProjectRef=useRef(curProject)
 
@@ -158,7 +179,7 @@ const Monitor: FC = () => {
   }, [])
 
   useEffect(() => {
-    setGroupVisual(null);
+    setGroupVisualByPlan({});
   }, [curProject?.id]);
 
   /** Only project switch — do NOT depend on `p_image` (curProject is often recreated; same image must not wipe undo). New image clears stack in MonitorView editor save / image flows. */
@@ -254,6 +275,227 @@ const Monitor: FC = () => {
     // last_settings_change / image persist — that must not re-fetch LCs and overwrite
     // view_x/view_y still settling after a home→image drop.
   }, [curProject?.id])
+
+  const parseIncludedGroups = (csv: string | undefined) =>
+    String(csv || '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+
+  const activePlan = monitorPlans.find((p) => String(p.id) === String(activePlanId)) || null;
+  const groupVisualKey = `${normalizeProjectId(curProject?.id)}::${String(activePlanId || 'general')}`;
+  const groupVisual = groupVisualByPlan[groupVisualKey] ?? null;
+  const setGroupVisual = (
+    updater: GroupVisualState | null | ((prev: GroupVisualState | null) => GroupVisualState | null)
+  ) => {
+    setGroupVisualByPlan((prevMap) => {
+      const prevVal = prevMap[groupVisualKey] ?? null;
+      const nextVal = typeof updater === 'function'
+        ? (updater as (prev: GroupVisualState | null) => GroupVisualState | null)(prevVal)
+        : updater;
+      return { ...prevMap, [groupVisualKey]: nextVal };
+    });
+  };
+  const includedGroupIds = parseIncludedGroups(activePlan?.included_groups_csv);
+  const projectGroups = groups.filter((g) => normalizeProjectId(g.project_id) === normalizeProjectId(curProject?.id));
+  const allProjectGroupIds = projectGroups.map((g) => String(g.id)).filter(Boolean);
+  const effectiveIncludedGroupIds = includedGroupIds.length > 0 ? includedGroupIds : allProjectGroupIds;
+  const visibleLcs = lcs.filter((item) => {
+    if (normalizeProjectId(item.project_id) !== normalizeProjectId(curProject?.id)) return false;
+    if (effectiveIncludedGroupIds.length === 0) return true;
+    const parts = String(item.groups || '')
+      .split(',')
+      .map((g) => g.trim())
+      .filter(Boolean);
+    return parts.some((g) => effectiveIncludedGroupIds.includes(g));
+  });
+  const visiblePlanLayoutRows = visibleLcs.map((item) => ({
+    lc_id: String(item.lc_id),
+    view_x: String(item.view_x ?? '0'),
+    view_y: String(item.view_y ?? '0'),
+  }));
+  const visiblePlanLayoutHash = visiblePlanLayoutRows.map((r) => `${r.lc_id}:${r.view_x}:${r.view_y}`).join('|');
+
+  const loadMonitorPlans = async (projectIdRaw?: string) => {
+    const projectId = normalizeProjectId(projectIdRaw || curProject?.id);
+    if (!projectId) return;
+    const plans = (await db.monitor_plans
+      .where('project_id')
+      .equals(projectId)
+      .toArray()) as MonitorPlan[];
+    plans.sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+    setMonitorPlans(plans);
+
+    let selected = await db.monitor_plan_state.get(projectId);
+    const selectedId = selected?.selected_plan_id ? String(selected.selected_plan_id) : '';
+    const resolved = plans.find((p) => String(p.id) === selectedId) || plans[0] || null;
+    if (resolved) {
+      setActivePlanId(String(resolved.id));
+    }
+  };
+
+  const ensureGeneralPlanSeeded = async () => {
+    const pid = normalizeProjectId(curProject?.id);
+    if (!pid) return;
+    const plans = await db.monitor_plans.where('project_id').equals(pid).toArray();
+    if (plans.length > 0) return;
+    const projectLcs = lcs.filter((item) => normalizeProjectId(item.project_id) === pid);
+    const projectGroupsForSeed = groups
+      .filter((g) => normalizeProjectId(g.project_id) === pid)
+      .map((g) => String(g.id))
+      .filter(Boolean)
+      .sort((a, b) => Number(a) - Number(b));
+    const planId = await db.monitor_plans.add({
+      project_id: pid,
+      name: 'General Plan',
+      included_groups_csv: projectGroupsForSeed.join(','),
+      is_default: true,
+      p_image: curProject?.p_image || '',
+      p_image_w: curProject?.p_image_w,
+      p_image_h: curProject?.p_image_h,
+      p_image_l: curProject?.p_image_l,
+      p_image_t: curProject?.p_image_t,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    });
+    if (projectLcs.length > 0) {
+      await db.monitor_plan_lc_layouts.bulkPut(
+        projectLcs.map((item) => ({
+          project_id: pid,
+          plan_id: String(planId),
+          lc_id: String(item.lc_id),
+          view_x: String(item.view_x ?? '0'),
+          view_y: String(item.view_y ?? '0'),
+          updated_at: Date.now(),
+        }))
+      );
+    }
+    await db.monitor_plan_state.put({ project_id: pid, selected_plan_id: String(planId), updated_at: Date.now() });
+  };
+
+  const applyPlanToRuntime = async (planIdRaw: string) => {
+    const pid = normalizeProjectId(curProject?.id);
+    const planId = String(planIdRaw || '');
+    if (!pid || !planId) return;
+    // CRITICAL: lock immediately to prevent the image-sync effect from writing the
+    // previous plan image into the newly selected plan during the same render tick.
+    isApplyingPlanRef.current = true;
+    const applySeq = ++planApplySeqRef.current;
+    try {
+      const plan = await db.monitor_plans.get(Number(planId));
+      if (!plan) return;
+      const layouts = await db.monitor_plan_lc_layouts
+        .where('[project_id+plan_id]')
+        .equals([pid, planId])
+        .toArray();
+      // If another plan switch started while awaiting DB, abort stale apply.
+      if (applySeq !== planApplySeqRef.current) return;
+      const byLc = new Map(layouts.map((row: any) => [String(row.lc_id), row]));
+      const included = new Set(parseIncludedGroups(plan.included_groups_csv));
+      const next = lcs.map((item) => {
+        if (normalizeProjectId(item.project_id) !== pid) return item;
+        const belongs = String(item.groups || '')
+          .split(',')
+          .map((g) => g.trim())
+          .some((g) => included.has(g));
+        if (!belongs) return item;
+        const hit = byLc.get(String(item.lc_id));
+        if (!hit) return { ...item, view_x: '0', view_y: '0' };
+        return { ...item, view_x: String(hit.view_x ?? '0'), view_y: String(hit.view_y ?? '0') };
+      });
+      updateLCs(next);
+      const nextProject = {
+        ...curProject,
+        p_image: plan.p_image || '',
+        p_image_w: plan.p_image_w,
+        p_image_h: plan.p_image_h,
+        p_image_l: plan.p_image_l,
+        p_image_t: plan.p_image_t,
+      };
+      updateCurProject(nextProject as any, true);
+      updateProjects(projects.map((p) => (normalizeProjectId(p.id) === pid ? ({ ...p, ...nextProject } as any) : p)));
+      await db.monitor_plan_state.put({ project_id: pid, selected_plan_id: planId, updated_at: Date.now() });
+      if (applySeq !== planApplySeqRef.current) return;
+      setActivePlanId(planId);
+    } finally {
+      if (applySeq === planApplySeqRef.current) {
+        isApplyingPlanRef.current = false;
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!curProject?.id) return;
+    void (async () => {
+      await ensureGeneralPlanSeeded();
+      await loadMonitorPlans(curProject.id);
+    })();
+  }, [curProject?.id, lcs.length]);
+
+  useEffect(() => {
+    if (!activePlanId) return;
+    void applyPlanToRuntime(activePlanId);
+  }, [activePlanId]);
+
+  useEffect(() => {
+    if (!activePlanId || !curProject?.id || isApplyingPlanRef.current) return;
+    const pid = normalizeProjectId(curProject.id);
+    void db.monitor_plans.update(Number(activePlanId), {
+      p_image: curProject.p_image || '',
+      p_image_w: curProject.p_image_w,
+      p_image_h: curProject.p_image_h,
+      p_image_l: curProject.p_image_l,
+      p_image_t: curProject.p_image_t,
+      updated_at: Date.now(),
+    });
+  }, [activePlanId, curProject?.id, curProject?.p_image, curProject?.p_image_w, curProject?.p_image_h, curProject?.p_image_l, curProject?.p_image_t]);
+
+  // Backward compatibility/self-heal: if a persisted plan has no included groups, default to all project groups.
+  useEffect(() => {
+    if (!activePlanId || !curProject?.id || !activePlan) return;
+    if (includedGroupIds.length > 0) return;
+    if (allProjectGroupIds.length === 0) return;
+    void db.monitor_plans.update(Number(activePlanId), {
+      included_groups_csv: allProjectGroupIds.join(','),
+      updated_at: Date.now(),
+    }).then(() => {
+      setMonitorPlans((prev) =>
+        prev.map((p) =>
+          String(p.id) === String(activePlanId)
+            ? { ...p, included_groups_csv: allProjectGroupIds.join(','), updated_at: Date.now() }
+            : p
+        )
+      );
+    });
+  }, [activePlanId, curProject?.id, activePlan, includedGroupIds.length, allProjectGroupIds.join(',')]);
+
+  useEffect(() => {
+    if (!activePlanId || !curProject?.id || isApplyingPlanRef.current) return;
+    const pid = normalizeProjectId(curProject.id);
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const existing = await db.monitor_plan_lc_layouts
+          .where('[project_id+plan_id]')
+          .equals([pid, String(activePlanId)])
+          .toArray();
+        const byLc = new Map(existing.map((row: any) => [String(row.lc_id), row]));
+        const payload = visiblePlanLayoutRows.map((item) => {
+          const hit = byLc.get(String(item.lc_id));
+          return {
+            ...(hit?.id != null ? { id: hit.id } : {}),
+            project_id: pid,
+            plan_id: String(activePlanId),
+            lc_id: String(item.lc_id),
+            view_x: String(item.view_x),
+            view_y: String(item.view_y),
+            updated_at: Date.now(),
+          };
+        });
+        if (payload.length > 0) await db.monitor_plan_lc_layouts.bulkPut(payload);
+      })();
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [activePlanId, curProject?.id, visiblePlanLayoutHash]);
 
   useEffect(() => {
     if (!curProject?.id) return;
@@ -993,11 +1235,32 @@ const Monitor: FC = () => {
   };
    */ 
   
+  const visibleGroups = projectGroups.filter((g) => effectiveIncludedGroupIds.includes(String(g.id)));
+
   const handleMoveLC = async (lcItem: ILC) => {
     flushSync(() => {
       updateLCs(lcItem);
     });
     await db.lcs.put(lcItem);
+    if (activePlanId && normalizeProjectId(lcItem.project_id) === normalizeProjectId(curProject?.id)) {
+      const existing = await db.monitor_plan_lc_layouts
+        .where('[project_id+plan_id+lc_id]')
+        .equals([normalizeProjectId(curProject?.id), String(activePlanId), String(lcItem.lc_id)])
+        .first();
+      const payload = {
+        project_id: normalizeProjectId(curProject?.id),
+        plan_id: String(activePlanId),
+        lc_id: String(lcItem.lc_id),
+        view_x: String(lcItem.view_x ?? '0'),
+        view_y: String(lcItem.view_y ?? '0'),
+        updated_at: Date.now(),
+      };
+      if (existing?.id != null) {
+        await db.monitor_plan_lc_layouts.update(existing.id, payload);
+      } else {
+        await db.monitor_plan_lc_layouts.add(payload);
+      }
+    }
   }
 
  /* const contentView = () => {
@@ -1005,7 +1268,7 @@ const Monitor: FC = () => {
       case 'view':
         return (
           <MonitorView
-            data={lcs}
+            data={visibleLcs}
             max={maxStatus}
             load={loadStatus}
             tare={tareStatus}
@@ -1045,7 +1308,7 @@ const Monitor: FC = () => {
       case 'view':
         return (
           <MonitorView
-            data={lcs}
+            data={visibleLcs}
             max={maxStatus}
             load={loadStatus}
             tare={tareStatus}
@@ -1060,13 +1323,13 @@ const Monitor: FC = () => {
       case 'list':
         return (<>
           {/* AÑADIDO: max={maxStatus} */}
-          <MonitorList data={lcs} max={maxStatus} />
+          <MonitorList data={visibleLcs} max={maxStatus} />
         </>)
       case 'prog':
         return (<>
           {/* AÑADIDO: max={maxStatus} */}
           <MonitorProg
-            data={lcs}
+            data={visibleLcs}
             unit={curProject.units || ''}
             tare={tareStatus}
             max={maxStatus}
@@ -1075,7 +1338,7 @@ const Monitor: FC = () => {
       case 'stop':
         return (<>
           <MonitorStop
-            data={lcs}
+            data={visibleLcs}
             unit={curProject.units || ''}
             max={maxStatus}
             tare={tareStatus}
@@ -1991,6 +2254,128 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
     await handleGroupAction(type)
   }
 
+  const nextPlanDefaultName = () => {
+    const taken = new Set(monitorPlans.map((p) => p.name));
+    let n = 1;
+    while (taken.has(`Plan ${n}`)) n += 1;
+    return `Plan ${n}`;
+  };
+
+  const createPlan = async (payload: { name: string; includedGroupIds: string[] }) => {
+    const pid = normalizeProjectId(curProject?.id);
+    if (!pid) return;
+    const name = String(payload.name || '').trim() || nextPlanDefaultName();
+    const id = await db.monitor_plans.add({
+      project_id: pid,
+      name,
+      included_groups_csv: payload.includedGroupIds.join(','),
+      is_default: false,
+      p_image: '',
+      p_image_w: undefined,
+      p_image_h: undefined,
+      p_image_l: undefined,
+      p_image_t: undefined,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    });
+    setVisibleCreatePlan(false);
+    await loadMonitorPlans(pid);
+    await applyPlanToRuntime(String(id));
+  };
+
+  const editPlan = async (planId: string, payload: { name: string; includedGroupIds: string[] }) => {
+    const plan = monitorPlans.find((p) => String(p.id) === String(planId));
+    if (!plan) return;
+    const before = new Set(parseIncludedGroups(plan.included_groups_csv));
+    const after = new Set(payload.includedGroupIds);
+    const removed = Array.from(before).filter((g) => !after.has(g));
+    if (removed.length > 0) {
+      const conf = await Swal.fire({
+        title: 'Warning',
+        text: 'Removing groups from this plan will reset their saved LC positions. Continue?',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: 'Apply',
+        cancelButtonText: 'Cancel',
+        heightAuto: false,
+      });
+      if (!conf.isConfirmed) return;
+      const removedLcIds = lcs
+        .filter((item) => normalizeProjectId(item.project_id) === normalizeProjectId(curProject?.id))
+        .filter((item) =>
+          String(item.groups || '')
+            .split(',')
+            .map((x) => x.trim())
+            .some((gid) => removed.includes(gid))
+        )
+        .map((item) => String(item.lc_id));
+      if (removedLcIds.length > 0) {
+        const rows = await db.monitor_plan_lc_layouts
+          .where('[project_id+plan_id]')
+          .equals([normalizeProjectId(curProject?.id), String(planId)])
+          .toArray();
+        const toDelete = rows.filter((r: any) => removedLcIds.includes(String(r.lc_id))).map((r: any) => r.id);
+        if (toDelete.length > 0) await db.monitor_plan_lc_layouts.bulkDelete(toDelete);
+      }
+    }
+    await db.monitor_plans.update(Number(planId), {
+      name: String(payload.name || '').trim() || plan.name,
+      included_groups_csv: payload.includedGroupIds.join(','),
+      updated_at: Date.now(),
+    });
+    setEditPlanId(null);
+    await loadMonitorPlans(curProject?.id);
+    await applyPlanToRuntime(String(planId));
+  };
+
+  const renamePlan = async (planId: string) => {
+    const plan = monitorPlans.find((p) => String(p.id) === String(planId));
+    if (!plan) return;
+    const res = await Swal.fire({
+      title: 'Rename plan',
+      input: 'text',
+      inputValue: plan.name,
+      showCancelButton: true,
+      confirmButtonText: 'Save',
+      heightAuto: false,
+    });
+    if (!res.isConfirmed) return;
+    const name = String(res.value || '').trim();
+    if (!name) return;
+    await db.monitor_plans.update(Number(planId), { name, updated_at: Date.now() });
+    await loadMonitorPlans(curProject?.id);
+  };
+
+  const deletePlan = async (planId: string) => {
+    if (monitorPlans.length <= 1) {
+      updateErrStr('Cannot delete the last plan.');
+      return;
+    }
+    const plan = monitorPlans.find((p) => String(p.id) === String(planId));
+    if (!plan) return;
+    const res = await Swal.fire({
+      title: 'Delete plan',
+      text: `Delete "${plan.name}"?`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Delete',
+      cancelButtonText: 'Cancel',
+      heightAuto: false,
+    });
+    if (!res.isConfirmed) return;
+    const rows = await db.monitor_plan_lc_layouts
+      .where('[project_id+plan_id]')
+      .equals([normalizeProjectId(curProject?.id), String(planId)])
+      .toArray();
+    if (rows.length > 0) await db.monitor_plan_lc_layouts.bulkDelete(rows.map((r: any) => r.id));
+    await db.monitor_plans.delete(Number(planId));
+    await loadMonitorPlans(curProject?.id);
+    const fallback = monitorPlans.find((p) => String(p.id) !== String(planId));
+    if (fallback) await applyPlanToRuntime(String(fallback.id));
+  };
+
+  const editingPlan = editPlanId ? monitorPlans.find((p) => String(p.id) === String(editPlanId)) || null : null;
+
   return (
     <CommonLayout
       contentScrollDisabled={monitorStatus === 'view'}
@@ -2006,10 +2391,17 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
       onWarning={setWarning}
       onDBHandler={setDBHandler}
       onTareAction={handleTareAction}
+      monitorPlanName={activePlan?.name || 'General Plan'}
+      monitorPlans={monitorPlans.map((p) => ({ id: String(p.id), name: p.name }))}
+      onMonitorPlanCreate={() => setVisibleCreatePlan(true)}
+      onMonitorPlanSelect={(planId) => setActivePlanId(String(planId))}
+      onMonitorPlanEdit={(planId) => setEditPlanId(String(planId))}
+      onMonitorPlanRename={(planId) => { void renamePlan(String(planId)); }}
+      onMonitorPlanDelete={(planId) => { void deletePlan(String(planId)); }}
     >
       <div className='flex flex-col flex-1 min-h-0 gap-1 overflow-hidden'>
       <div className='grid grid-cols-16 h-11 pt-1 w-full shrink-0 overflow-visible'>
-        {groups.map((item: IGroup, index: number) => {
+        {visibleGroups.map((item: IGroup, index: number) => {
           // console.log(item);
             let v = parseFloat(item.sum ?? '')
             let o = parseFloat(item.overload);
@@ -2078,7 +2470,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
 
               <div
                 key={index}
-                className={`flex flex-col border-l border-dark cursor-pointer ${index === groups.length - 1 && 'border-r'} ${
+                className={`flex flex-col border-l border-dark cursor-pointer ${index === visibleGroups.length - 1 && 'border-r'} ${
                   isGroupVisualFocus ? 'relative z-[20] rounded-sm ring-4 ring-primary ring-offset-1' : ''
                 }`}
                 onPointerDown={onGroupPointerDown(item)}
@@ -2184,6 +2576,30 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
         onlyGroupChecked={false}
         onHighlightChange={() => {}}
         onOnlyGroupChange={() => {}}
+      />
+      <MonitorPlanModal
+        visible={visibleCreatePlan}
+        mode="create"
+        title="New plan"
+        defaultName={nextPlanDefaultName()}
+        groups={groups
+          .filter((g) => normalizeProjectId(g.project_id) === normalizeProjectId(curProject?.id))
+          .map((g) => ({ id: String(g.id), title: g.title || `Grp ${g.id}` }))}
+        selectedGroupIds={[]}
+        onClose={() => setVisibleCreatePlan(false)}
+        onSave={(payload) => { void createPlan(payload); }}
+      />
+      <MonitorPlanModal
+        visible={!!editingPlan}
+        mode="edit"
+        title="Edit plan"
+        defaultName={editingPlan?.name || ''}
+        groups={groups
+          .filter((g) => normalizeProjectId(g.project_id) === normalizeProjectId(curProject?.id))
+          .map((g) => ({ id: String(g.id), title: g.title || `Grp ${g.id}` }))}
+        selectedGroupIds={parseIncludedGroups(editingPlan?.included_groups_csv)}
+        onClose={() => setEditPlanId(null)}
+        onSave={(payload) => { if (editingPlan) void editPlan(String(editingPlan.id), payload); }}
       />
       <SuccessModal
         visible={success ? true : false}

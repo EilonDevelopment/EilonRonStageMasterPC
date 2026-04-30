@@ -77,6 +77,7 @@ npm run build && npx cap sync ios
 | 2026-04-23 | ios-development-ai | Mac | Release version alignment for next store rollout: menu label bumped to `1.4.7`, Android Play version updated to `versionName 1.4.7` + `versionCode 24`, and iOS/TestFlight updated to `MARKETING_VERSION 1.4.7` + `CURRENT_PROJECT_VERSION 25`. | pending push |
 | 2026-04-26 | ios-development-ai | Mac | Hotfix block: iOS upload fix for landscape-only build (`UIRequiresFullScreen=true`), Reports delete button reworked to partial deletion by active filters (project + date/hour + status) across `daily_logs` and legacy stores, alarm audio no longer auto-suspends on native iOS (fixes mute-until-touch), and Android Home lane touch-scroll now works from empty background areas (not only when dragging from an LC tile). | pending push |
 | 2026-04-26 | ios-development-ai | Mac | Monitor Home-column compaction tweak: when user single-taps an LC in Home to move it to canvas, all LCs below shift up one slot immediately (no gaps left in Home lane). This avoids persistent empty slots and keeps Android touch-scroll behavior consistent. | pending push |
+| 2026-04-30 | ios-development-ai | Mac | Monitor Plans feature added end-to-end: per-project multi-plan data model (`monitor_plans`, `monitor_plan_lc_layouts`, `monitor_plan_state`), Monitor header plan selector dialog (create/select/edit/rename/delete with General Plan protected), per-plan group visibility + per-plan image/layout persistence, per-plan group-visual local state (show-only/highlight no longer global), race-condition hardening for plan/image switching, and project export/import now includes plans + plan layouts + selected plan state (with ID remap and layout dedupe). | pending push |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -89,6 +90,26 @@ npm run build && npx cap sync ios
   4) Left storage bar segmentation + low-space warning + no regressions while ingesting
 
 Primary touched files in this block: `src/pages/Reports/index.tsx`, `src/pages/Reports/index.css`, `src/hooks/useFunctions.tsx`, `src/Layout/CommonLayout.tsx`, `src/pages/Monitor/index.tsx`, `src/components/Monitor/MonitorView.tsx`, `src/components/Menu.tsx`, `src/helper/reportGrouping.ts`, `src/db.ts`.
+
+---
+
+**Android (`development-ai`) import checklist (Monitor Plans + project export/import parity, 2026-04-30):**
+- `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
+- Validate Monitor Plans UX:
+  1) Under `Monitoring Screen`, current plan name is shown; tapping opens a large Plans dialog (not clipped dropdown)
+  2) `+ New plan` opens create dialog with editable `Plan Name` + group switches (no value reset while typing/toggling)
+  3) `General Plan` is selectable only (no edit/rename/delete actions)
+  4) Non-general plans support edit/rename/delete; removing groups in edit shows destructive warning
+- Validate plan behavior/persistence:
+  1) Each plan keeps its own background image + LC positions independently
+  2) Switching quickly between plans does not swap/mix background images
+  3) Group show-only/highlight selection is local per plan (tare/zero remain global)
+  4) If a legacy/empty plan has no included groups, app self-heals to include all project groups
+- Validate project backup/restore:
+  1) Export project CSV includes `[MonitorPlans]`, `[MonitorPlanLayouts]`, `[MonitorPlanState]`
+  2) Import into a new project restores plans, per-plan images, per-plan LC positions, and selected active plan
+  3) General Plan restores correct LC positions (no cross-plan mixing)
+- Primary files in this block: `src/db.ts`, `src/pages/Monitor/index.tsx`, `src/Layout/CommonLayout.tsx`, `src/components/Modals/MonitorPlanModal.tsx`, `src/hooks/useFunctions.tsx`.
 
 ---
 

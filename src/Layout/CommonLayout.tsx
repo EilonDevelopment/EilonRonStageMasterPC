@@ -93,6 +93,13 @@ interface CommonLayoutProps {
   onWarning?: (value: boolean) => void;
   onDBHandler?: (handler: any) => void;
   onTareAction?: (type: string, group_id: string) => void;
+  monitorPlanName?: string;
+  monitorPlans?: Array<{ id: string; name: string }>;
+  onMonitorPlanCreate?: () => void;
+  onMonitorPlanSelect?: (planId: string) => void;
+  onMonitorPlanEdit?: (planId: string) => void;
+  onMonitorPlanRename?: (planId: string) => void;
+  onMonitorPlanDelete?: (planId: string) => void;
 }
 
 // Display batching: flush interval (ms). Safety checks (overload/underload) run immediately per packet.
@@ -156,6 +163,13 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     onDBHandler = () => { },
     // eslint-disable-next-line
     onTareAction = () => { },
+    monitorPlanName = '',
+    monitorPlans = [],
+    onMonitorPlanCreate,
+    onMonitorPlanSelect,
+    onMonitorPlanEdit,
+    onMonitorPlanRename,
+    onMonitorPlanDelete,
   } = props;
 
   const { t } = useTranslation();
@@ -292,6 +306,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const bleScanInProgressRef = useRef(false);
   const connectDeviceAutoRunRef = useRef(false);
   const isViewActiveRef = useRef(true);
+  const [planDialogOpen, setPlanDialogOpen] = useState(false);
 
   useIonViewDidEnter(() => {
     isViewActiveRef.current = true;
@@ -2941,7 +2956,22 @@ const lastSoundTimeRef = useRef<number>(0);
               </div>
               {active_project.id && (
                 <div className='flex items-center gap-1'>
-                  <Text label={`${active_project.title} - ${t('Monitor.Header.Title')} |`} />
+                  <Text label={`${active_project.title} - ${t('Monitor.Header.Title')}`} />
+                  {location.pathname === ROUTES.Monitor ? (
+                    <>
+                      <Text label="|" />
+                      <div className="relative">
+                        <button
+                          type='button'
+                          className='bg-transparent p-0 m-0 border-none cursor-pointer text-inherit'
+                          onClick={() => setPlanDialogOpen(true)}
+                        >
+                          <Text label={monitorPlanName || 'General Plan'} />
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+                  <Text label="|" />
                   <button
                     type='button'
                     className='bg-transparent p-0 m-0 border-none cursor-pointer text-inherit'
@@ -3051,6 +3081,52 @@ const lastSoundTimeRef = useRef<number>(0);
         className="hidden"
         onChange={handleImportFileChange}
       />
+      {planDialogOpen && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[99999] bg-black/50 flex items-center justify-center p-4" onClick={() => setPlanDialogOpen(false)}>
+          <div
+            className="w-full max-w-[560px] max-h-[70vh] overflow-auto rounded-lg border border-gray-400 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-xl p-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-base font-semibold text-dark dark:text-light">Plans</h3>
+              <button className="text-sm px-2 py-1 rounded border border-gray-400 dark:border-gray-600" onClick={() => setPlanDialogOpen(false)}>Close</button>
+            </div>
+            <button
+              className="w-full text-left px-3 py-2 text-sm rounded bg-primary text-white"
+              onClick={() => {
+                setPlanDialogOpen(false);
+                onMonitorPlanCreate?.();
+              }}
+            >
+              + New plan
+            </button>
+            <div className="my-2 border-t border-gray-300 dark:border-gray-700" />
+            <div className="flex flex-col gap-1">
+              {monitorPlans.map((p) => (
+                <div key={p.id} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
+                  <button
+                    className="flex-1 text-left text-sm"
+                    onClick={() => {
+                      setPlanDialogOpen(false);
+                      onMonitorPlanSelect?.(p.id);
+                    }}
+                  >
+                    {p.name}
+                  </button>
+                  {String(p.name).trim().toLowerCase() === 'general plan' ? null : (
+                    <>
+                      <button className="text-xs px-2 py-1 border rounded" title="Edit groups" onClick={() => { setPlanDialogOpen(false); onMonitorPlanEdit?.(p.id); }}>Edit</button>
+                      <button className="text-xs px-2 py-1 border rounded" title="Rename" onClick={() => { setPlanDialogOpen(false); onMonitorPlanRename?.(p.id); }}>Rename</button>
+                      <button className="text-xs px-2 py-1 border rounded text-red-500 border-red-400" title="Delete" onClick={() => { setPlanDialogOpen(false); onMonitorPlanDelete?.(p.id); }}>Delete</button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
       {importChooseName && typeof document !== 'undefined' && createPortal(
         <div
           className="fixed inset-0 flex items-center justify-center p-4 bg-black/70"
