@@ -47,7 +47,7 @@ import { db } from '../db';
 import Swal from 'sweetalert2';
 import { useTheme } from '@emotion/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faBatteryEmpty, faBatteryQuarter, faBatteryHalf, faBatteryThreeQuarters, faBatteryFull, faBoltLightning, IconDefinition } from '@fortawesome/free-solid-svg-icons';
+import { faBatteryEmpty, faBatteryQuarter, faBatteryHalf, faBatteryThreeQuarters, faBatteryFull, IconDefinition } from '@fortawesome/free-solid-svg-icons';
 import { format, getTime, getUnixTime } from 'date-fns';
 import { jsPDF } from 'jspdf';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
@@ -110,6 +110,14 @@ type ConnectedPrrDevice = {
 // Display batching: flush interval (ms). Safety checks (overload/underload) run immediately per packet.
 // Keep UI work bounded on Android WebView to avoid renderer overload (onRenderProcessGone).
 const LC_DISPLAY_BATCH_MS_DEFAULT = 100;
+const getBatteryIconForPercent = (percentRaw: number): IconDefinition => {
+  const percent = Math.max(0, Math.min(100, Number(percentRaw) || 0));
+  if (percent < 11) return faBatteryEmpty;
+  if (percent < 25) return faBatteryQuarter;
+  if (percent < 50) return faBatteryHalf;
+  if (percent < 90) return faBatteryThreeQuarters;
+  return faBatteryFull;
+};
 
 const getLcDisplayBatchMs = (platformType: string | undefined, lcCount: number): number => {
   const p = String(platformType).toLowerCase();
@@ -286,13 +294,11 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   // const [danger_state, setDangerState] = useState(false)
 
   const [btry, setBtry] = useState(0)
-  const [batteryIcon, setBatteryIcon] = useState<IconDefinition>(faBatteryEmpty)
   const [cycleStatus, setCycleStatus] = useState<boolean>(false)
   const [dataTimeById, setDataTimeById] = useState<any[]>([])
   const [lastUpdated, setLastUpdated] = useState(Date.now());
   const [noChange, setNoChange] = useState(false);
   const [TrrLcs, setTrrLcs] = useState<any[]>(lcs)
-  const batteryIconRef = useRef(batteryIcon)
   const currentUnitsRef = useRef(curProject.units)
   const curProjectRef=useRef(curProject)
   const tareStatusRef = useRef<boolean>(!!tareStatus)
@@ -368,9 +374,6 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const filteredWarnList = warnList.filter(item => normalizeProjectId(item.project_id) === normalizeProjectId(curProject.id));
     setWarnLogs(filteredWarnList)    
   }, [warnList,curProject,curProject.id])
-  useEffect(() => {
-    batteryIconRef.current = batteryIcon
-  }, [batteryIcon])
   useEffect(() => {
     tareStatusRef.current = !!tareStatus
   }, [tareStatus])
@@ -1359,6 +1362,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
           if (prev.some((d) => String(d.deviceId) === String(deviceId))) return prev;
           return [...prev, { deviceId, displayName: trimmedName }];
         });
+        setPrrBatteryByDevice((prev) => ({ ...prev, [deviceId]: prev[deviceId] ?? 0 }));
         logPrrLinkEventSafely('connected', reportLabel);
       }
       updateBleConnected(true);
@@ -1369,7 +1373,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         s,
         c,
         (value) => {
-          bt_parse(new Uint8Array(value.buffer));
+          bt_parse(new Uint8Array(value.buffer), deviceId);
         }
       );
       if (type === 'prr') {
@@ -1660,6 +1664,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const [prrConnectedListName, setPrrConnectedListName] = useState<string | null>(null);
   const [connectedPrrDevices, setConnectedPrrDevices] = useState<ConnectedPrrDevice[]>([]);
   const connectedPrrDevicesRef = useRef<ConnectedPrrDevice[]>([]);
+  const [prrBatteryByDevice, setPrrBatteryByDevice] = useState<Record<string, number>>({});
+  const prrBatteryByDeviceRef = useRef<Record<string, number>>({});
   /** Friendly name for PRR report rows (ID column); falls back to deviceId if unnamed. */
   const prrBleDisplayNameRef = useRef<string | null>(null);
   const lastPrrLinkEventRef = useRef<Record<string, number>>({});
@@ -1680,6 +1686,9 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       .filter(Boolean);
     setPrrConnectedListName(labels.length > 0 ? labels.join(' | ') : null);
   }, [connectedPrrDevices]);
+  useEffect(() => {
+    prrBatteryByDeviceRef.current = prrBatteryByDevice;
+  }, [prrBatteryByDevice]);
 
   const maybeLogLcValue = (lcId: any, projectId: any, value: any, realval: any, overload: any, underload: any, batteryParam?: number | string) => {
     const pid = normalizeProjectId(projectId);
@@ -1953,7 +1962,7 @@ const lastSoundTimeRef = useRef<number>(0);
   let warnId = 0
   // Safety (overload/underload → updateWarnList, maxStatusToggle, loadStatusToggle) runs immediately per packet.
   // Display updates (updateLCs, dataTimeById) are batched every LC_DISPLAY_BATCH_MS to reduce UI load.
-  const bt_parse = async (a: Uint8Array) => {
+  const bt_parse = async (a: Uint8Array, sourceDeviceId?: string) => {
     const typ = toHexString([a[2]]);
     if (typ === 'bb' || typ === 'bc') {
       const btry = parseInt('0x' + toHexString([a[10]]), 16);
@@ -1965,23 +1974,12 @@ const lastSoundTimeRef = useRef<number>(0);
       updateBatteryStatus(btry); // <--- CAMBIO AQUÍ
 
       setBtry(btry);
-
-      // prr voltage - not charging
-      if (typ === 'bb') {
-
-        if (btry < 11) {
-          setBatteryIcon(faBatteryEmpty)
-        } else if (btry >= 11 && btry < 25) {
-          setBatteryIcon(faBatteryQuarter)
-        } else if (btry >= 25 && btry < 50) {
-          setBatteryIcon(faBatteryHalf)
-        } else if (btry >= 50 && btry < 90) {
-          setBatteryIcon(faBatteryThreeQuarters)
-        } else if (btry >= 90) {
-          setBatteryIcon(faBatteryFull)
-        }
-      } else {
-        setBatteryIcon(faBoltLightning)
+      if (sourceDeviceId) {
+        setPrrBatteryByDevice((prev) => {
+          const clamped = Math.max(0, Math.min(100, Number(btry) || 0));
+          if (prev[sourceDeviceId] === clamped) return prev;
+          return { ...prev, [sourceDeviceId]: clamped };
+        });
       }
     } else if (a[2] <= 10) {
       const lc = parseInt('0x' + toHexString([a[3], a[4], a[5]]), 16);
@@ -2719,6 +2717,12 @@ const lastSoundTimeRef = useRef<number>(0);
       updateBleConnected(remaining.length > 0);
       return remaining;
     });
+    setPrrBatteryByDevice((prev) => {
+      if (!(deviceId in prev)) return prev;
+      const next = { ...prev };
+      delete next[deviceId];
+      return next;
+    });
     if (reportLabel) {
       logPrrLinkEventSafely('disconnected', reportLabel);
     }
@@ -2993,26 +2997,35 @@ const lastSoundTimeRef = useRef<number>(0);
                     <span className="text-xs font-bold bg-danger text-white px-1.5 py-0.5 rounded w-max">{t("Common.TrErr")}</span>
                   }
                 </div>
-                <div className='flex flex-row items-center gap-2 shrink-0'>
-                  <div className='flex flex-col items-end'>
-                    <IonLabel className='text-right -mb-1 m-0 !text-black dark:!text-white'>
-                      {`PRR${connected ? (batteryStatus ? ` ${batteryStatus}` : '') : ''}`}
-                    </IonLabel>
-                    <FontAwesomeIcon icon={batteryIconRef.current} size='2x' color={`${isDark ? 'grey' : 'black'}`} />
+                <div className='flex flex-row items-center gap-1.5 shrink-0'>
+                  <div className='relative flex items-center justify-center'>
+                    <IonImg src={connected ? bleConnectIcon : bleDisConnectIcon} alt='ble' className='w-10' />
                   </div>
-                  <div className='flex flex-row items-center gap-1.5 shrink-0'>
-                    <div className='relative flex items-center justify-center'>
-                      <IonImg src={connected ? bleConnectIcon : bleDisConnectIcon} alt='ble' className='w-10' />
+                  {connected && connectedPrrDevices.length > 0 ? (
+                    <div className='flex flex-row items-start gap-2'>
+                      {connectedPrrDevices.map((d) => {
+                        const label = (d.displayName && d.displayName.trim()) || d.deviceId;
+                        const batteryPct = Math.max(0, Math.min(100, Number(prrBatteryByDevice[d.deviceId] ?? 0)));
+                        const batteryIcon = getBatteryIconForPercent(batteryPct);
+                        return (
+                          <div key={d.deviceId} className='flex flex-col items-center min-w-[4.5rem] max-w-[6.5rem]'>
+                            <span
+                              className='text-sm font-semibold text-black dark:text-white tabular-nums truncate leading-tight text-center w-full'
+                              title={label}
+                            >
+                              {label}
+                            </span>
+                            <div className='relative mt-0.5 flex items-center justify-center'>
+                              <FontAwesomeIcon icon={batteryIcon} size='lg' color={`${isDark ? 'grey' : 'black'}`} style={{ transform: 'scale(1.73)' }} />
+                              <span className='absolute text-[9px] font-semibold leading-none text-black dark:text-white'>
+                                {`${batteryPct}%`}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                    {connected && prrConnectedListName ? (
-                      <span
-                        className='text-sm font-semibold text-black dark:text-white tabular-nums max-w-[10rem] sm:max-w-[12rem] truncate leading-tight text-center'
-                        title={prrConnectedListName}
-                      >
-                        {prrConnectedListName}
-                      </span>
-                    ) : null}
-                  </div>
+                  ) : null}
                 </div>
               </div>
               {active_project.id && (
