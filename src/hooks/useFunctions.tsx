@@ -1054,6 +1054,21 @@ export default function useFunctions() {
       const pid = normalizeProjectId(projectId);
       const projectLcs = await db.lcs.filter((lc: any) => normalizeProjectId(lc.project_id) === pid).toArray();
       const projectGroups = await db.groups.filter((g: any) => normalizeProjectId(g.project_id) === pid).toArray();
+      const projectPlans = await db.monitor_plans.filter((p: any) => normalizeProjectId(p.project_id) === pid).toArray();
+      const projectPlanIds = new Set(projectPlans.map((p: any) => String(p.id)));
+      const projectPlanLayoutsRaw = await db.monitor_plan_lc_layouts
+        .filter((r: any) => normalizeProjectId(r.project_id) === pid && projectPlanIds.has(String(r.plan_id)))
+        .toArray();
+      const projectPlanLayoutsByKey = new Map<string, any>();
+      projectPlanLayoutsRaw.forEach((r: any) => {
+        const key = `${String(r.plan_id)}::${String(r.lc_id)}`;
+        const prev = projectPlanLayoutsByKey.get(key);
+        const prevTs = Number(prev?.updated_at ?? 0);
+        const currTs = Number(r?.updated_at ?? 0);
+        if (!prev || currTs >= prevTs) projectPlanLayoutsByKey.set(key, r);
+      });
+      const projectPlanLayouts = Array.from(projectPlanLayoutsByKey.values());
+      const projectPlanState = await db.monitor_plan_state.get(pid);
       const rows: string[] = [];
       rows.push('[Project]');
       const projectHeaders = ['id', 'title', 'units', 'pre_overload', 'total_overload', 'cycle', 'report_interval_seconds', 'windmeter_units', 'stage_x', 'stage_y', 'show_graphs', 'p_image', 'p_image_w', 'p_image_h', 'p_image_l', 'p_image_t'];
@@ -1073,7 +1088,7 @@ export default function useFunctions() {
       });
       rows.push('');
       rows.push('[LoadCells]');
-      const lcHeaders = ['id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum', 'capacity'];
+      const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum', 'capacity'];
       rows.push(lcHeaders.map(escapeCsv).join(','));
       projectLcs.forEach((lc: any) => {
         const lcRow = lcHeaders.map((h) => {
@@ -1082,6 +1097,36 @@ export default function useFunctions() {
         });
         rows.push(lcRow.join(','));
       });
+      rows.push('');
+      rows.push('[MonitorPlans]');
+      const planHeaders = [
+        'id', 'project_id', 'name', 'included_groups_csv', 'is_default',
+        'p_image', 'p_image_w', 'p_image_h', 'p_image_l', 'p_image_t',
+        'created_at', 'updated_at'
+      ];
+      rows.push(planHeaders.map(escapeCsv).join(','));
+      projectPlans.forEach((p: any) => {
+        const planRow = planHeaders.map((h) => {
+          const v = p[h];
+          if (h === 'p_image' && typeof v === 'string') return escapeCsv(v.replace(/\r?\n/g, ''));
+          return escapeCsv(v);
+        });
+        rows.push(planRow.join(','));
+      });
+      rows.push('');
+      rows.push('[MonitorPlanLayouts]');
+      const planLayoutHeaders = ['id', 'project_id', 'plan_id', 'lc_id', 'view_x', 'view_y', 'updated_at'];
+      rows.push(planLayoutHeaders.map(escapeCsv).join(','));
+      projectPlanLayouts.forEach((r: any) => {
+        rows.push(planLayoutHeaders.map((h) => escapeCsv(r[h])).join(','));
+      });
+      rows.push('');
+      rows.push('[MonitorPlanState]');
+      const planStateHeaders = ['project_id', 'selected_plan_id', 'updated_at'];
+      rows.push(planStateHeaders.map(escapeCsv).join(','));
+      if (projectPlanState) {
+        rows.push(planStateHeaders.map((h) => escapeCsv((projectPlanState as any)[h])).join(','));
+      }
       const csvStr = rows.join('\r\n');
       const safeTitle = (project.title || 'project').replace(/[^\w\s-]/g, '').replace(/\s+/g, '_').slice(0, 40);
       const fileName = `project_backup_${safeTitle}_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
@@ -1181,7 +1226,9 @@ export default function useFunctions() {
       };
       const projectHeaders = ['id', 'title', 'units', 'pre_overload', 'total_overload', 'cycle', 'report_interval_seconds', 'windmeter_units', 'stage_x', 'stage_y', 'show_graphs'];
       const groupHeaders = ['id', 'project_id', 'title', 'overload', 'tare'];
-      const lcHeaders = ['id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum'];
+      const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum'];
+      const planIdMap = new Map<string, string>();
+      const lcIdMap = new Map<string, string>();
 
       if (findSection('[Project]') < 0) return null;
       const projectHeaderRow = lines[i++];
@@ -1238,8 +1285,78 @@ export default function useFunctions() {
               row.capacity = {};
             }
           }
+          const oldLcId = row.lc_id != null ? String(row.lc_id) : '';
           delete row.lc_id;
-          await db.lcs.add(row);
+          const newLcPk = await db.lcs.add(row);
+          if (oldLcId) lcIdMap.set(oldLcId, String(newLcPk));
+        }
+      }
+
+      if (findSection('[MonitorPlans]') >= 0) {
+        const planHeaderRow = lines[i++];
+        const planCols = parseCsvLine(planHeaderRow);
+        while (i < lines.length && lines[i] && !lines[i].startsWith('[')) {
+          const line = lines[i++].trim();
+          if (!line) continue;
+          const vals = parseCsvLine(line);
+          const row: any = {};
+          planCols.forEach((col, idx) => { row[col] = vals[idx] ?? ''; });
+          const oldPlanId = row.id != null ? String(row.id) : '';
+          row.project_id = newIdStr;
+          if (row.is_default !== undefined) row.is_default = row.is_default === 'true' || row.is_default === '1';
+          ['p_image_w', 'p_image_h', 'p_image_l', 'p_image_t', 'created_at', 'updated_at'].forEach((k) => {
+            if (row[k] !== undefined && row[k] !== '') row[k] = Number(row[k]);
+            else if (row[k] === '') row[k] = undefined;
+          });
+          delete row.id;
+          const newPlanPk = await db.monitor_plans.add(row);
+          if (oldPlanId) planIdMap.set(oldPlanId, String(newPlanPk));
+        }
+      }
+
+      if (findSection('[MonitorPlanLayouts]') >= 0) {
+        const layoutHeaderRow = lines[i++];
+        const layoutCols = parseCsvLine(layoutHeaderRow);
+        const dedup = new Map<string, any>();
+        while (i < lines.length && lines[i] && !lines[i].startsWith('[')) {
+          const line = lines[i++].trim();
+          if (!line) continue;
+          const vals = parseCsvLine(line);
+          const row: any = {};
+          layoutCols.forEach((col, idx) => { row[col] = vals[idx] ?? ''; });
+          const mappedPlanId = planIdMap.get(String(row.plan_id)) || '';
+          const mappedLcId = lcIdMap.get(String(row.lc_id)) || '';
+          if (!mappedPlanId || !mappedLcId) continue;
+          row.project_id = newIdStr;
+          row.plan_id = mappedPlanId;
+          row.lc_id = mappedLcId;
+          if (row.updated_at !== undefined && row.updated_at !== '') row.updated_at = Number(row.updated_at);
+          delete row.id;
+          const key = `${String(row.plan_id)}::${String(row.lc_id)}`;
+          const prev = dedup.get(key);
+          const prevTs = Number(prev?.updated_at ?? 0);
+          const currTs = Number(row?.updated_at ?? 0);
+          if (!prev || currTs >= prevTs) dedup.set(key, row);
+        }
+        const rows = Array.from(dedup.values());
+        if (rows.length > 0) await db.monitor_plan_lc_layouts.bulkAdd(rows);
+      }
+
+      if (findSection('[MonitorPlanState]') >= 0) {
+        const stateHeaderRow = lines[i++];
+        const stateCols = parseCsvLine(stateHeaderRow);
+        if (i < lines.length && lines[i] && !lines[i].startsWith('[')) {
+          const vals = parseCsvLine(lines[i++].trim());
+          const row: any = {};
+          stateCols.forEach((col, idx) => { row[col] = vals[idx] ?? ''; });
+          const mappedPlanId = planIdMap.get(String(row.selected_plan_id)) || '';
+          if (mappedPlanId) {
+            await db.monitor_plan_state.put({
+              project_id: newIdStr,
+              selected_plan_id: mappedPlanId,
+              updated_at: row.updated_at !== '' ? Number(row.updated_at) : Date.now(),
+            });
+          }
         }
       }
 
