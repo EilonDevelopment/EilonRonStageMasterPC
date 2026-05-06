@@ -41,9 +41,11 @@ interface IAppContext {
   activeToastCount: number;
   isCreatingLCs: boolean;
   tareStatus: boolean;
+  isImportingProject: boolean;
 
   updateMode: (status: 'dark' | 'light') => void;
   updateTareStatus: (status: boolean) => void;
+  updateIsImportingProject: (status: boolean) => void;
   updateErrStr: (str: string) => void;
   updateSuccessStr: (str: string) => void;
 
@@ -77,6 +79,8 @@ interface IAppContext {
   timeoutHandledRef: React.MutableRefObject<boolean>;
   layoutRefreshRef: React.MutableRefObject<(() => void) | null>;
   lcsRef: React.MutableRefObject<ILC[]>;
+  /** Last Monitor list grid row order (sorted row ids); used so PDF/CSV snapshot # matches list order. */
+  monitorListSortedLcIdsRef: React.MutableRefObject<string[]>;
 }
 
 
@@ -108,11 +112,14 @@ const initialState = {
   activeToastCount: 0,
   isCreatingLCs: false,
   tareStatus: false,
+  isImportingProject: false,
 
   // eslint-disable-next-line
   updateErrStr: () => { },
   // eslint-disable-next-line
   updateTareStatus: () => { },
+  // eslint-disable-next-line
+  updateIsImportingProject: () => { },
   // eslint-disable-next-line
   updateMode: () => { },
   // eslint-disable-next-line
@@ -175,6 +182,7 @@ export const AppDataProvider = (props: any) => {
   const timeoutHandledRef = useRef<boolean>(false);
   const layoutRefreshRef = useRef<(() => void) | null>(null);
   const lcsRef = useRef<ILC[]>([]);
+  const monitorListSortedLcIdsRef = useRef<string[]>([]);
 
   const [mode, setMode] = useState<'dark' | 'light'>(props.mode || initialState.mode);
   const [errStr, setErrStr] = useState<string>(props.errStr || initialState.errStr);
@@ -199,6 +207,7 @@ export const AppDataProvider = (props: any) => {
   const [activeToastCount, setActiveToastCount] = useState(0);
   const [isCreatingLCs, setIsCreatingLCs] = useState(false);
   const [tareStatus, setTareStatus] = useState<boolean>(initialState.tareStatus);
+  const [isImportingProject, setIsImportingProject] = useState<boolean>(initialState.isImportingProject);
 
   useEffect(() => {
     try {
@@ -518,6 +527,10 @@ export const AppDataProvider = (props: any) => {
     } catch (_) { /* ignore */ }
   }
 
+  const handleIsImportingProject = (status: boolean) => {
+    setIsImportingProject(Boolean(status));
+  }
+
   return (
     <AppContext.Provider
       value={{
@@ -574,11 +587,14 @@ export const AppDataProvider = (props: any) => {
         timeoutHandledRef,
         layoutRefreshRef,
         lcsRef,
+        monitorListSortedLcIdsRef,
         activeToastCount,
         isCreatingLCs,
         updateCreatingLCs: handleCreatingLCs,
         tareStatus,
+        isImportingProject,
         updateTareStatus: handleTareStatus,
+        updateIsImportingProject: handleIsImportingProject,
       }}
     >
       {children}

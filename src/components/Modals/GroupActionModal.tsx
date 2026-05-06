@@ -20,6 +20,8 @@ interface GroupActionModalProps {
   onOnlyGroupChange: (checked: boolean) => void;
   /** full = double-tap dialog; visualOnly = highlight/show-only; zeroOnly = long-press zero confirm */
   mode?: GroupActionModalMode;
+  zeroTitle?: string;
+  zeroSubtitle?: string;
 }
 
 const StepItem = (props: { value: number; active: boolean; }) => (
@@ -44,6 +46,8 @@ const GroupActionModal: FC<GroupActionModalProps> = props => {
     onHighlightChange,
     onOnlyGroupChange,
     mode = 'full',
+    zeroTitle,
+    zeroSubtitle,
   } = props;
   const { t } = useTranslation();
 
@@ -134,8 +138,8 @@ const GroupActionModal: FC<GroupActionModalProps> = props => {
           <hr className={`${confirmed > 1 ? 'bg-primary' : 'bg-gray-300'} w-12 h-1.5`} />
           <StepItem value={2} active={confirmed > 1} />
         </div>
-        <Text classes='!text-3xl font-bold' label={t('Monitor.Modal.ZeroGroup')} />
-        <Text classes='px-5 text-center' label={t('Monitor.Modal.ZeroSubtitle')} />
+        <Text classes='!text-3xl font-bold' label={zeroTitle || t('Monitor.Modal.ZeroGroup')} />
+        <Text classes='px-5 text-center' label={zeroSubtitle || t('Monitor.Modal.ZeroSubtitle')} />
         <div className='flex flex-row items-center justify-center gap-4'>
           <Button
             classes='px-4 py-2 bg-primary flex-row-reverse text-white rounded'

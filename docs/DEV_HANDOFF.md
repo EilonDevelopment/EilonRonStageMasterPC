@@ -78,6 +78,7 @@ npm run build && npx cap sync ios
 | 2026-04-26 | ios-development-ai | Mac | Hotfix block: iOS upload fix for landscape-only build (`UIRequiresFullScreen=true`), Reports delete button reworked to partial deletion by active filters (project + date/hour + status) across `daily_logs` and legacy stores, alarm audio no longer auto-suspends on native iOS (fixes mute-until-touch), and Android Home lane touch-scroll now works from empty background areas (not only when dragging from an LC tile). | pending push |
 | 2026-04-26 | ios-development-ai | Mac | Monitor Home-column compaction tweak: when user single-taps an LC in Home to move it to canvas, all LCs below shift up one slot immediately (no gaps left in Home lane). This avoids persistent empty slots and keeps Android touch-scroll behavior consistent. | pending push |
 | 2026-04-30 | ios-development-ai | Mac | Monitor Plans feature added end-to-end: per-project multi-plan data model (`monitor_plans`, `monitor_plan_lc_layouts`, `monitor_plan_state`), Monitor header plan selector dialog (create/select/edit/rename/delete with General Plan protected), per-plan group visibility + per-plan image/layout persistence, per-plan group-visual local state (show-only/highlight no longer global), race-condition hardening for plan/image switching, and project export/import now includes plans + plan layouts + selected plan state (with ID remap and layout dedupe). | pending push |
+| 2026-05-06 | ios-development-ai | Mac | Shared Monitor + Reports parity block: fixed plan/image persistence race during import/project switch, removed implicit plan image sync writes, moved per-cell zero to long-press (preserving double-tap to home), added per-cell zero flow with 2-step confirm, blocked per-cell zero when LC is `Tr.Err`/invalid live reading, added capacity-based weight resolution normalization at BLE ingest (kg/lbs/mton) and aligned report formatting; non-map Monitor views scroll again; menu version bumped to `1.5.0`. | pending push |
 
 **Android (`development-ai`) import checklist (2026-04-17 block):**
 - `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
@@ -223,6 +224,24 @@ Primary files in this block: `src/Layout/CommonLayout.tsx`, `src/components/Moni
   1) In Settings, if any group overload is `0`, tapping Monitor shows `Can't be 0` and dialog stays visible (no auto-close)
   2) After app restart with that invalid condition, app lands on `Settings` (not `Monitor`)
 - Primary files: `src/components/Menu.tsx`, `src/pages/Monitor/index.tsx`
+
+---
+
+**Android (`development-ai`) import checklist (Monitor plans + per-cell zero + resolution normalization, 2026-05-06):**
+- `git fetch origin && git checkout development-ai && git merge origin/ios-development-ai`
+- Validate Monitor plans/import stability:
+  1) Import/export with `[MonitorPlans]`, `[MonitorPlanLayouts]`, `[MonitorPlanState]` keeps each plan background image and LC layout isolated
+  2) Switching projects/plans quickly does not cross-write General Plan background images
+  3) In non-map Monitor modes (`list`, `prog`, `stop`) vertical scroll works; map view remains fixed/no page scroll
+- Validate per-cell zero interactions:
+  1) On-canvas LC: long-press opens per-cell ZERO modal with 2-step Next confirmation
+  2) Double-tap on LC still returns LC to Home (no regression from zero trigger)
+  3) If LC is `Tr.Err` (or has no valid live reading), zero is blocked with warning
+  4) If live load is above 30% capacity, zero is blocked with warning
+- Validate resolution behavior (shared BLE/log/report path):
+  1) Weight display/log normalization follows LC capacity table per unit (kg/lbs/mton)
+  2) Reports formatting for KG/LBS remains consistent with per-LC resolution
+- Primary files in this block: `src/pages/Monitor/index.tsx`, `src/components/Monitor/MonitorView.tsx`, `src/Layout/CommonLayout.tsx`, `src/helper/weightResolution.ts`, `src/pages/Reports/index.tsx`, `src/components/Modals/GroupActionModal.tsx`, `src/components/Menu.tsx`, `src/context/AppContext.tsx`, `src/helper/types.ts`.
 
 ---
 

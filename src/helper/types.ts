@@ -21,7 +21,8 @@ export type IProject = {
   total_overload?: string;
   reports?: string;
   cycle?: boolean;
-  report_interval_seconds?: number;
+  /** Empty string allowed while editing (web/native draft). */
+  report_interval_seconds?: number | '';
   last_settings_change?: string;
   stage_x?: string;
   stage_y?: string;

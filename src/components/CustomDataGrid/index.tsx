@@ -1,5 +1,5 @@
-import { DataGrid } from "@mui/x-data-grid";
-import React, { FC, useEffect, useRef, useState } from "react";
+import { DataGrid, useGridApiRef } from "@mui/x-data-grid";
+import React, { FC, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import "./index.css";
 
@@ -9,6 +9,8 @@ interface CustomDataGridProps {
   columns: any[];
   data: any[];
   onRowAction?: (row: any) => void;
+  /** Called with sorted visible row ids whenever sort/data/pagination updates (e.g. Monitor snapshot #). */
+  onSortedRowIdsChange?: (ids: string[]) => void;
 }
 
 const CustomDataGrid: FC<CustomDataGridProps> = (props) => {
@@ -18,12 +20,31 @@ const CustomDataGrid: FC<CustomDataGridProps> = (props) => {
     columns,
     data,
     onRowAction = () => {},
+    onSortedRowIdsChange,
   } = props;
 
   const [paginationModel, setPaginationModel] = useState({
     page: 0,
     pageSize: 10,
   });
+
+  const apiRef = useGridApiRef();
+
+  const publishSortedIds = useCallback(() => {
+    if (!onSortedRowIdsChange) return;
+    try {
+      const ids = apiRef.current?.getSortedRowIds?.() ?? [];
+      onSortedRowIdsChange(ids.map(String));
+    } catch {
+      onSortedRowIdsChange([]);
+    }
+  }, [apiRef, onSortedRowIdsChange]);
+
+  useLayoutEffect(() => {
+    if (!onSortedRowIdsChange) return;
+    const id = requestAnimationFrame(() => publishSortedIds());
+    return () => cancelAnimationFrame(id);
+  }, [data, paginationModel, onSortedRowIdsChange, publishSortedIds]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
@@ -57,6 +78,7 @@ const CustomDataGrid: FC<CustomDataGridProps> = (props) => {
     <div ref={containerRef} className="w-full min-w-0">
       {containerWidth > 0 ? (
         <DataGrid
+          apiRef={apiRef}
           autoHeight
           loading={loading}
           rowHeight={54}
@@ -67,6 +89,7 @@ const CustomDataGrid: FC<CustomDataGridProps> = (props) => {
           pageSizeOptions={[6, 10, 25, 50, 100]}
           className={`w-full px-4 cursor-pointer bg-transparent ${classes}`}
           onPaginationModelChange={setPaginationModel}
+          onSortModelChange={() => publishSortedIds()}
           onRowClick={(e) => onRowAction(e.row)}
           classes={{
             columnHeader: "text-gray3",

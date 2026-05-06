@@ -43,6 +43,7 @@ import WarningListModal from '../components/Modals/WarningListModal';
 import BeforeAlertModal from '../components/Modals/BeforeAlertModal';
 import { BleClient, numberToUUID } from '@capacitor-community/bluetooth-le';
 import { fire_error, fire_success, getImageDimensions, hexToInt, normalizeProjectId, strToFloat, strToInt, toHexString } from '../helper/functions';
+import { lcRankKey, stableRowIndexMap } from '../helper/lcStableRowIndex';
 import { db } from '../db';
 import Swal from 'sweetalert2';
 import { useTheme } from '@emotion/react';
@@ -60,6 +61,7 @@ import { checkNativeBleScanPrerequisites } from '../helper/nativeBleScan';
 import { pickProjectCsvText, shouldUseNativeCsvPickerForImport } from '../helper/nativeProjectCsvImport';
 import { BLE_CONNECT_TIMEOUT_MS } from '../helper/bleConstants';
 import { collectBleDevicesForService, type BleDiscoveredDevice } from '../helper/bleLeScanCollection';
+import { formatWeightByLcResolution, getResolutionForLcId, quantizeByResolution } from '../helper/weightResolution';
 import { toast } from 'react-toastify';
 import useFunctions from '../hooks/useFunctions';
 
@@ -155,6 +157,36 @@ type PendingLCDisplay = {
   underload?: any;
 };
 
+/** Merge `preferredIdOrder` (Monitor list grid order) with remaining LCs sorted by id for snapshot export. */
+function mergeLcOrderForSnapshot<T extends { id?: string | number }>(all: T[], preferredIdOrder: string[]): T[] {
+  const byId = new Map(all.map((lc) => [String(lc.id), lc]));
+  const out: T[] = [];
+  const seen = new Set<string>();
+  for (const id of preferredIdOrder) {
+    const lc = byId.get(String(id));
+    if (lc) {
+      out.push(lc);
+      seen.add(String(lc.id));
+    }
+  }
+  const rest = all.filter((lc) => !seen.has(String(lc.id)));
+  rest.sort((a, b) => {
+    const na = Number(a.id);
+    const nb = Number(b.id);
+    if (
+      Number.isFinite(na) &&
+      Number.isFinite(nb) &&
+      String(a.id) === String(Math.trunc(na)) &&
+      String(b.id) === String(Math.trunc(nb))
+    ) {
+      return na - nb;
+    }
+    return String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
+  });
+  out.push(...rest);
+  return out;
+}
+
 const CommonLayout: FC<CommonLayoutProps> = props => {
   const {
     title = '',
@@ -226,11 +258,13 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     updateLCWindAlerts,
     tareStatus,
     updateTareStatus,
+    updateIsImportingProject,
     lastUpdatedRef,
     dataTimeByIdRef,
     timeoutHandledRef,
     layoutRefreshRef,
     lcsRef,
+    monitorListSortedLcIdsRef,
   } = useAppData()
 
   const navigate = useLocation()
@@ -894,7 +928,11 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       return `${kg.toFixed(2)} KG\n${lbs.toFixed(2)} LBS`;
     };
 
-    const rows = projectLcs.map((item: any) => {
+    const stableRank = stableRowIndexMap(projectLcs);
+    const preferredOrder = monitorListSortedLcIdsRef?.current ?? [];
+    const orderedLcs = mergeLcOrderForSnapshot(projectLcs, preferredOrder);
+
+    const rows = orderedLcs.map((item: any) => {
       const rawVal = String(item?.value ?? '').trim();
       const isErr = rawVal === 'Tr.Err' || rawVal === 'Tr. Err' || Number(rawVal) === -99999999;
       const grossNum = Number(item?.value);
@@ -903,6 +941,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       const displayNum = useNetDisplay ? netCandidate : grossNum;
       const unit = Number(item?.id) <= 10 ? (active_project?.windmeter_units || '') : (active_project?.units || '');
       return {
+        rowNum: stableRank.get(lcRankKey(item)) ?? '',
         Name: String(item?.title || ''),
         ID: String(item?.id || ''),
         Status: getLcStatus(item),
@@ -971,13 +1010,17 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         lines.push(`Snapshot,${esc(active_project?.title || '')},${esc(format(now, 'yyyy-MM-dd HH:mm:ss'))}`);
         lines.push(`PRR,${esc(prrId)},${esc(prrStatus)},Battery,${esc(batteryStr)}`);
         lines.push('');
-        lines.push('Name,ID,Status,Gross,Net,Battery,Time');
-        rows.forEach((r: any) => lines.push([r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(esc).join(',')));
+        lines.push('#,Name,ID,Status,Gross,Net,Battery,Time');
+        rows.forEach((r: any) =>
+          lines.push([r.rowNum, r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(esc).join(','))
+        );
         groupRows.forEach((g: any) => {
           lines.push('');
           lines.push(`Group ${esc(g.id)} - ${esc(g.title)},Total Weight,${esc(g.total)},Alerts,${esc(JSON.stringify(g.alerts))}`);
-          lines.push('Name,ID,Status,Gross,Net,Battery,Time');
-          g.rows.forEach((r: any) => lines.push([r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(esc).join(',')));
+          lines.push('#,Name,ID,Status,Gross,Net,Battery,Time');
+          g.rows.forEach((r: any) =>
+            lines.push([r.rowNum, r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(esc).join(','))
+          );
         });
         const csv = lines.join('\r\n');
         const fileName = `${fileBase}.csv`;
@@ -1005,8 +1048,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       const doc = new jsPDF('p', 'mm', 'a4');
       const margin = 10;
       const pageW = doc.internal.pageSize.getWidth();
-      const headers = ['Name', 'ID', 'Status', 'Gross', 'Net', 'Battery', 'Time'];
-      const colWidths = [30, 16, 22, 28, 28, 16, 38];
+      const headers = ['#', 'Name', 'ID', 'Status', 'Gross', 'Net', 'Battery', 'Time'];
+      const colWidths = [9, 26, 14, 19, 26, 26, 14, 36];
       const rowHeight = 10;
       let y = margin;
       const maxY = doc.internal.pageSize.getHeight() - margin;
@@ -1037,6 +1080,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       rows.forEach((r) => {
         ensureSpace(rowHeight);
         const row = [
+          [String(r.rowNum).slice(0, 6)],
           [String(r.Name).slice(0, 22)],
           [String(r.ID).slice(0, 22)],
           [String(r.Status).slice(0, 22)],
@@ -1064,6 +1108,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         g.rows.forEach((r: any) => {
           ensureSpace(rowHeight);
           const row = [
+            [String(r.rowNum).slice(0, 6)],
             [String(r.Name).slice(0, 22)],
             [String(r.ID).slice(0, 22)],
             [String(r.Status).slice(0, 22)],
@@ -1108,6 +1153,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   };
 
   const doActualImport = async (csvToImport: string) => {
+    updateIsImportingProject(true);
 
     Swal.fire({
       title: t("Project.Import") || "Import",
@@ -1146,6 +1192,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         heightAuto: false,
       });
       console.error("Import error:", error);
+    } finally {
+      updateIsImportingProject(false);
     }
   };
 
@@ -1666,6 +1714,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const connectedPrrDevicesRef = useRef<ConnectedPrrDevice[]>([]);
   const [prrBatteryByDevice, setPrrBatteryByDevice] = useState<Record<string, number>>({});
   const prrBatteryByDeviceRef = useRef<Record<string, number>>({});
+  /** Manual disconnects should not auto-reconnect. */
+  const prrManualDisconnectRef = useRef<Record<string, boolean>>({});
   /** Friendly name for PRR report rows (ID column); falls back to deviceId if unnamed. */
   const prrBleDisplayNameRef = useRef<string | null>(null);
   const lastPrrLinkEventRef = useRef<Record<string, number>>({});
@@ -2043,6 +2093,7 @@ const lastSoundTimeRef = useRef<number>(0);
       const unitsRaw = (currentUnitsRef.current ?? liveProject?.units) ?? 'M.TON';
       const u = String(unitsRaw).toLowerCase().replace(/\./g, '').trim().split(/\s+/)[0] ?? 'mton';
       const fx = (u === 'mton') ? 3 : 0;
+      const lcResolution = getResolutionForLcId(lc, u);
       const rawWeightMton = lc > 10 ? Number(weight) : null;
 
       if (lc > 10) {
@@ -2145,12 +2196,21 @@ const lastSoundTimeRef = useRef<number>(0);
           weightnotare = (parseFloat(weightnotare) + parseFloat(l?.psw)).toFixed(fx);
         }
         const bid = lc.toString();
-        //const w = weight ? parseFloat(weight).toFixed(fx) : weight;
-        // PROTECCIÓN: Si por alguna razón el peso no es válido, enviamos 'Tr.Err'
-        const w = (weight === 'Tr.Err' || isNaN(parseFloat(weight))) 
-                  ? 'Tr.Err' 
-                  : parseFloat(weight).toFixed(fx);
-        const wn = weightnotare ? parseFloat(weightnotare).toFixed(fx) : weightnotare;
+        // Apply per-LC resolution (capacity table) before publishing to UI/logs.
+        const grossNumeric = Number(weight);
+        const netNumericRaw = Number(weightnotare);
+        const quantizedGross = Number.isFinite(grossNumeric)
+          ? (lcResolution != null ? quantizeByResolution(grossNumeric, lcResolution) : grossNumeric)
+          : NaN;
+        const quantizedNet = Number.isFinite(netNumericRaw)
+          ? (lcResolution != null ? quantizeByResolution(netNumericRaw, lcResolution) : netNumericRaw)
+          : NaN;
+        const w = (weight === 'Tr.Err' || !Number.isFinite(quantizedGross))
+          ? 'Tr.Err'
+          : formatWeightByLcResolution(quantizedGross, lc, u, fx);
+        const wn = Number.isFinite(quantizedNet)
+          ? formatWeightByLcResolution(quantizedNet, lc, u, fx)
+          : weightnotare;
         //const maxVal = l?.max && parseFloat(l?.max) >= 0 ? (realval >= 0 ? (realval > parseFloat(l?.max) ? realval : l?.max) : 0) : (realval >= 0 ? realval : 0);
         
         // Cambia realval por weightnotare para que el máximo use las unidades del proyecto (KG/LB)
@@ -2177,8 +2237,8 @@ const lastSoundTimeRef = useRef<number>(0);
         }
         weight = parseFloat(w);
         weightnotare = parseFloat(wn);
-        weight = (u === 'mton') ? weight.toFixed(3) : weight.toFixed(0);
-        const weighttolog = (u === 'mton') ? weightnotare.toFixed(3) : weightnotare.toFixed(0);
+        weight = formatWeightByLcResolution(weight, lc, u, fx);
+        const weighttolog = formatWeightByLcResolution(weightnotare, lc, u, fx);
         //update_max_value_by_lc_id(lc, weightnotare, u)
         let preoverload_precent = 0;
         const pre_overload = parseInt(active_project.pre_overload ?? '0')
@@ -2193,7 +2253,7 @@ const lastSoundTimeRef = useRef<number>(0);
         const displayValueNumeric = useNetForDisplay ? netValueNumeric : grossValueNumeric;
         // Safety alarms MUST always use gross (physical load), never net/tare-adjusted.
         const safetyValueNumeric = grossValueNumeric;
-        const valueToSaveForWarning = (u === 'mton') ? safetyValueNumeric.toFixed(3) : safetyValueNumeric.toFixed(0);
+        const valueToSaveForWarning = formatWeightByLcResolution(safetyValueNumeric, lc, u, fx);
 
         let lcAlertKey = `lc-${lc}`; // Clave única para esta celda
         
@@ -2653,6 +2713,7 @@ const lastSoundTimeRef = useRef<number>(0);
 
   const schedulePrrAutoReconnect = (targetDeviceId: string, reason: string) => {
     if (!targetDeviceId) return;
+    if (prrManualDisconnectRef.current[targetDeviceId]) return;
     if (prrReconnectInProgressRef.current[targetDeviceId]) return;
     if (prrReconnectTimersRef.current[targetDeviceId]) return;
     const scheduleEpoch = (prrReconnectEpochRef.current[targetDeviceId] ?? 0);
@@ -2705,6 +2766,7 @@ const lastSoundTimeRef = useRef<number>(0);
     const disconnected = connectedPrrDevicesRef.current.find((d) => String(d.deviceId) === String(deviceId));
     const reportLabel = disconnected ? ((disconnected.displayName && disconnected.displayName.trim()) || disconnected.deviceId) : null;
     let shouldReconnectThisDevice = false;
+    const wasManual = !!prrManualDisconnectRef.current[deviceId];
     setConnectedPrrDevices((prev) => {
       const remaining = prev.filter((d) => String(d.deviceId) !== String(deviceId));
       if (prrBleDeviceIdRef.current && String(prrBleDeviceIdRef.current) === String(deviceId)) {
@@ -2713,7 +2775,7 @@ const lastSoundTimeRef = useRef<number>(0);
         prrBleDisplayNameRef.current =
           (nextPrimary?.displayName && nextPrimary.displayName.trim()) || nextPrimary?.deviceId || null;
       }
-      shouldReconnectThisDevice = true;
+      shouldReconnectThisDevice = !wasManual;
       updateBleConnected(remaining.length > 0);
       return remaining;
     });
@@ -2730,6 +2792,40 @@ const lastSoundTimeRef = useRef<number>(0);
       schedulePrrAutoReconnect(deviceId, "disconnect_callback");
     }
   }
+
+  const disconnectPrrWithConfirm = async (deviceId: string, label: string) => {
+    if (!deviceId) return;
+    const res = await Swal.fire({
+      title: 'Disconnect PRR',
+      text: `Are you sure you want to disconnect from PRR ${label}?`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Disconnect',
+      cancelButtonText: 'Cancel',
+      heightAuto: false,
+    });
+    if (!res.isConfirmed) return;
+
+    prrManualDisconnectRef.current[deviceId] = true;
+    // Cancel pending reconnect work for this device.
+    prrReconnectEpochRef.current[deviceId] = (prrReconnectEpochRef.current[deviceId] ?? 0) + 1;
+    prrReconnectAttemptsRef.current[deviceId] = 0;
+    prrReconnectInProgressRef.current[deviceId] = false;
+    if (prrReconnectTimersRef.current[deviceId]) {
+      clearTimeout(prrReconnectTimersRef.current[deviceId] as ReturnType<typeof setTimeout>);
+      prrReconnectTimersRef.current[deviceId] = null;
+    }
+
+    try {
+      await BleClient.disconnect(deviceId);
+    } catch (_) {
+      // Some platforms may already be disconnected.
+    } finally {
+      // Ensure UI state clears even if native callback doesn't fire.
+      bt_disconnect(deviceId);
+      delete prrManualDisconnectRef.current[deviceId];
+    }
+  };
 
   // Fallback path: if a platform misses native disconnect callback ordering,
   // still emit PRR link events based on BLE state transitions (dedupe-protected).
@@ -3010,12 +3106,33 @@ const lastSoundTimeRef = useRef<number>(0);
                         return (
                           <div key={d.deviceId} className='flex flex-col items-center min-w-[4.5rem] max-w-[6.5rem]'>
                             <span
-                              className='text-sm font-semibold text-black dark:text-white tabular-nums truncate leading-tight text-center w-full'
+                              className='text-sm font-semibold text-black dark:text-white tabular-nums truncate leading-tight text-center w-full cursor-pointer'
                               title={label}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => { void disconnectPrrWithConfirm(d.deviceId, label); }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  void disconnectPrrWithConfirm(d.deviceId, label);
+                                }
+                              }}
                             >
                               {label}
                             </span>
-                            <div className='relative mt-0.5 flex items-center justify-center'>
+                            <div
+                              className='relative mt-0.5 flex items-center justify-center cursor-pointer'
+                              role="button"
+                              tabIndex={0}
+                              title={`Disconnect PRR ${label}`}
+                              onClick={() => { void disconnectPrrWithConfirm(d.deviceId, label); }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  void disconnectPrrWithConfirm(d.deviceId, label);
+                                }
+                              }}
+                            >
                               <FontAwesomeIcon icon={batteryIcon} size='lg' color={`${isDark ? 'grey' : 'black'}`} style={{ transform: 'scale(1.73)' }} />
                               <span className='absolute text-[9px] font-semibold leading-none text-black dark:text-white'>
                                 {`${batteryPct}%`}

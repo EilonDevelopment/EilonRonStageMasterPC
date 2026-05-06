@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>App.ipa</key>
+	<array>
+		<dict>
+			<key>architectures</key>
+			<array>
+				<string>arm64</string>
+			</array>
+			<key>buildNumber</key>
+			<string>25</string>
+			<key>certificate</key>
+			<dict>
+				<key>SHA1</key>
+				<string>8CA05758B6B823942338B24381D69F84F993561A</string>
+				<key>dateExpires</key>
+				<string>25/09/2026</string>
+				<key>type</key>
+				<string>Cloud Managed Apple Distribution</string>
+			</dict>
+			<key>embeddedBinaries</key>
+			<array>
+				<dict>
+					<key>architectures</key>
+					<array>
+						<string>arm64</string>
+					</array>
+					<key>buildNumber</key>
+					<string>1</string>
+					<key>certificate</key>
+					<dict>
+						<key>SHA1</key>
+						<string>8CA05758B6B823942338B24381D69F84F993561A</string>
+						<key>dateExpires</key>
+						<string>25/09/2026</string>
+						<key>type</key>
+						<string>Cloud Managed Apple Distribution</string>
+					</dict>
+					<key>name</key>
+					<string>Capacitor.framework</string>
+					<key>team</key>
+					<dict>
+						<key>id</key>
+						<string>AZ9FP98S2P</string>
+						<key>name</key>
+						<string>EILON ENGINEERING INDUSTRIAL WEGHING SYSTEMS LTD</string>
+					</dict>
+					<key>versionNumber</key>
+					<string>1.0</string>
+				</dict>
+				<dict>
+					<key>architectures</key>
+					<array>
+						<string>arm64</string>
+					</array>
+					<key>buildNumber</key>
+					<string>1</string>
+					<key>certificate</key>
+					<dict>
+						<key>SHA1</key>
+						<string>8CA05758B6B823942338B24381D69F84F993561A</string>
+						<key>dateExpires</key>
+						<string>25/09/2026</string>
+						<key>type</key>
+						<string>Cloud Managed Apple Distribution</string>
+					</dict>
+					<key>name</key>
+					<string>Cordova.framework</string>
+					<key>team</key>
+					<dict>
+						<key>id</key>
+						<string>AZ9FP98S2P</string>
+						<key>name</key>
+						<string>EILON ENGINEERING INDUSTRIAL WEGHING SYSTEMS LTD</string>
+					</dict>
+					<key>versionNumber</key>
+					<string>1.0</string>
+				</dict>
+			</array>
+			<key>entitlements</key>
+			<dict>
+				<key>application-identifier</key>
+				<string>AZ9FP98S2P.com.eilon.stagemaster</string>
+				<key>com.apple.developer.team-identifier</key>
+				<string>AZ9FP98S2P</string>
+				<key>get-task-allow</key>
+				<false/>
+			</dict>
+			<key>name</key>
+			<string>App.app</string>
+			<key>profile</key>
+			<dict>
+				<key>UUID</key>
+				<string>c4dc1d25-55c4-4b03-b8a7-e481a2abb672</string>
+				<key>dateExpires</key>
+				<string>25/09/2026</string>
+				<key>name</key>
+				<string>iOS Team Ad Hoc Provisioning Profile: com.eilon.stagemaster</string>
+			</dict>
+			<key>team</key>
+			<dict>
+				<key>id</key>
+				<string>AZ9FP98S2P</string>
+				<key>name</key>
+				<string>EILON ENGINEERING INDUSTRIAL WEGHING SYSTEMS LTD</string>
+			</dict>
+			<key>versionNumber</key>
+			<string>1.4.7</string>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -1115,10 +1115,15 @@ export default function useFunctions() {
       });
       rows.push('');
       rows.push('[MonitorPlanLayouts]');
-      const planLayoutHeaders = ['id', 'project_id', 'plan_id', 'lc_id', 'view_x', 'view_y', 'updated_at'];
+      const planNameById = new Map(projectPlans.map((p: any) => [String(p.id), String(p.name || '')]));
+      const planLayoutHeaders = ['id', 'project_id', 'plan_id', 'plan_name', 'lc_id', 'view_x', 'view_y', 'updated_at'];
       rows.push(planLayoutHeaders.map(escapeCsv).join(','));
       projectPlanLayouts.forEach((r: any) => {
-        rows.push(planLayoutHeaders.map((h) => escapeCsv(r[h])).join(','));
+        const out = planLayoutHeaders.map((h) => {
+          if (h === 'plan_name') return escapeCsv(planNameById.get(String(r.plan_id)) || '');
+          return escapeCsv(r[h]);
+        });
+        rows.push(out.join(','));
       });
       rows.push('');
       rows.push('[MonitorPlanState]');
@@ -1228,7 +1233,11 @@ export default function useFunctions() {
       const groupHeaders = ['id', 'project_id', 'title', 'overload', 'tare'];
       const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum'];
       const planIdMap = new Map<string, string>();
+      const planNameMap = new Map<string, string>();
       const lcIdMap = new Map<string, string>();
+      let defaultPlanId = '';
+      /** Old Dexie PK of the General Plan row (is_default or name), for layout rows that only reference that id. */
+      let oldGeneralPlanId = '';
 
       if (findSection('[Project]') < 0) return null;
       const projectHeaderRow = lines[i++];
@@ -1302,15 +1311,24 @@ export default function useFunctions() {
           const row: any = {};
           planCols.forEach((col, idx) => { row[col] = vals[idx] ?? ''; });
           const oldPlanId = row.id != null ? String(row.id) : '';
-          row.project_id = newIdStr;
           if (row.is_default !== undefined) row.is_default = row.is_default === 'true' || row.is_default === '1';
+          const planNameKeyPre = String(row.name ?? '').trim().toLowerCase();
+          if (oldPlanId && (row.is_default === true || planNameKeyPre === 'general plan')) {
+            oldGeneralPlanId = oldPlanId;
+          }
+          row.project_id = newIdStr;
           ['p_image_w', 'p_image_h', 'p_image_l', 'p_image_t', 'created_at', 'updated_at'].forEach((k) => {
             if (row[k] !== undefined && row[k] !== '') row[k] = Number(row[k]);
             else if (row[k] === '') row[k] = undefined;
           });
           delete row.id;
           const newPlanPk = await db.monitor_plans.add(row);
-          if (oldPlanId) planIdMap.set(oldPlanId, String(newPlanPk));
+          const newPlanIdStr = String(newPlanPk);
+          if (oldPlanId) planIdMap.set(oldPlanId, newPlanIdStr);
+          const planNameKey = String(row.name ?? '').trim().toLowerCase();
+          if (planNameKey) planNameMap.set(planNameKey, newPlanIdStr);
+          if (row.is_default === true) defaultPlanId = newPlanIdStr;
+          else if (!defaultPlanId && planNameKey === 'general plan') defaultPlanId = newPlanIdStr;
         }
       }
 
@@ -1324,7 +1342,19 @@ export default function useFunctions() {
           const vals = parseCsvLine(line);
           const row: any = {};
           layoutCols.forEach((col, idx) => { row[col] = vals[idx] ?? ''; });
-          const mappedPlanId = planIdMap.get(String(row.plan_id)) || '';
+          const rawPlanId = String(row.plan_id ?? '').trim();
+          const rawPlanName = String(row.plan_name ?? '').trim().toLowerCase();
+          const mappedById = planIdMap.get(rawPlanId) || '';
+          const mappedByName = rawPlanName ? (planNameMap.get(rawPlanName) || '') : '';
+          const mappedLegacyGeneral =
+            !mappedById && !mappedByName && (rawPlanId === 'general' || rawPlanId === 'default' || rawPlanId === 'main')
+              ? defaultPlanId
+              : '';
+          const mappedFromOldGeneralPk =
+            !mappedById && !mappedByName && !mappedLegacyGeneral && defaultPlanId && oldGeneralPlanId && rawPlanId === oldGeneralPlanId
+              ? defaultPlanId
+              : '';
+          const mappedPlanId = mappedById || mappedByName || mappedLegacyGeneral || mappedFromOldGeneralPk || '';
           const mappedLcId = lcIdMap.get(String(row.lc_id)) || '';
           if (!mappedPlanId || !mappedLcId) continue;
           row.project_id = newIdStr;
@@ -1349,7 +1379,13 @@ export default function useFunctions() {
           const vals = parseCsvLine(lines[i++].trim());
           const row: any = {};
           stateCols.forEach((col, idx) => { row[col] = vals[idx] ?? ''; });
-          const mappedPlanId = planIdMap.get(String(row.selected_plan_id)) || '';
+          const rawSelectedPlanId = String(row.selected_plan_id ?? '').trim();
+          const mappedPlanId =
+            planIdMap.get(rawSelectedPlanId) ||
+            ((rawSelectedPlanId === 'general' || rawSelectedPlanId === 'default' || rawSelectedPlanId === 'main')
+              ? defaultPlanId
+              : '') ||
+            '';
           if (mappedPlanId) {
             await db.monitor_plan_state.put({
               project_id: newIdStr,
