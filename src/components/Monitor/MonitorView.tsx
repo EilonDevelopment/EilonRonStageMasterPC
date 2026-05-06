@@ -49,6 +49,8 @@ interface MonitorViewProps {
   groupVisualGroupId?: string | null;
   groupVisualHighlight?: boolean;
   groupVisualOnly?: boolean;
+  onCellClick?: (item: ILC) => void;
+  onCellLongPress?: (item: ILC) => void;
 }
 
 function lcBelongsToGroup(item: ILC, groupId: string): boolean {
@@ -542,6 +544,7 @@ type MonitorLcBoxProps = {
     y: number,
     dragGestureSeen: boolean
   ) => void;
+  onCellLongPress?: (item: ILC, index: number) => void;
 };
 
 const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
@@ -566,6 +569,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     onDragLiftChange,
     onCellClick,
     onCellDoubleTap,
+    onCellLongPress,
     onStop,
   } = props;
 
@@ -575,6 +579,8 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
   const dragMovedRef = useRef(false);
   const lastTapAtRef = useRef(0);
   const suppressClickUntilRef = useRef(0);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTriggeredRef = useRef(false);
 
   const {
     id,
@@ -639,6 +645,10 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
           onDragLiftChange?.(true, index);
         }}
         onDrag={(dragEvt, d) => {
+          if (longPressTimerRef.current) {
+            clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = null;
+          }
           if (!dragMovedRef.current) {
             dragMovedRef.current = true;
           }
@@ -647,6 +657,10 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
           if (p) lastDragClientRef.current = p;
         }}
         onStop={(e, data) => {
+          if (longPressTimerRef.current) {
+            clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = null;
+          }
           if (!dragMovedRef.current) {
             const p = getClientPoint(e);
             const enriched = p ? { ...data, __clientX: p.x, __clientY: p.y } : data;
@@ -678,9 +692,32 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
         <div
           className={`handle monitor-lc-handle border w-20 h-10.5 flex flex-col text-xs rounded cursor-pointer shrink-0${groupHighlight ? ' ring-4 ring-primary ring-offset-1 z-[20] relative' : ''}`}
           style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none' }}
-          onPointerDownCapture={() => onDragLiftChange?.(true, index)}
+          onPointerDownCapture={() => {
+            onDragLiftChange?.(true, index);
+            longPressTriggeredRef.current = false;
+            if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = setTimeout(() => {
+              longPressTimerRef.current = null;
+              longPressTriggeredRef.current = true;
+              suppressClickUntilRef.current = Date.now() + 400;
+              onCellLongPress?.(item, index);
+            }, 600);
+          }}
           onPointerUp={(ev) => {
+            if (longPressTimerRef.current) {
+              clearTimeout(longPressTimerRef.current);
+              longPressTimerRef.current = null;
+            }
+            if (longPressTriggeredRef.current) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              return;
+            }
             if (dragMovedRef.current) return;
+            // Trigger on pointer-up because Draggable may suppress `onClick` after tiny moves.
+            onCellClick?.(item, index);
+            suppressClickUntilRef.current = Date.now() + 250;
+            // Keep desktop double-click behavior for "send back to home" via onDoubleClick below.
             if (!onCellDoubleTap || ev.pointerType !== 'touch') return;
             const now = Date.now();
             if (now - lastTapAtRef.current <= 350) {
@@ -695,6 +732,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
           onDoubleClick={() => onCellDoubleTap?.(item, index)}
           onClick={() => {
             if (Date.now() < suppressClickUntilRef.current) return;
+            if (longPressTriggeredRef.current) return;
             onCellClick?.(item, index);
           }}
         >
@@ -740,7 +778,8 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     prev.groupHighlight === next.groupHighlight &&
     prev.onDragLiftChange === next.onDragLiftChange &&
     prev.onCellClick === next.onCellClick &&
-    prev.onCellDoubleTap === next.onCellDoubleTap
+    prev.onCellDoubleTap === next.onCellDoubleTap &&
+    prev.onCellLongPress === next.onCellLongPress
   );
 });
 
@@ -759,6 +798,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     groupVisualGroupId = null,
     groupVisualHighlight = false,
     groupVisualOnly = false,
+    onCellClick,
+    onCellLongPress,
   } = props;
 
   const { bleConnected, curProject, liveLC, updateCurProject, updateProjects, updateLCs, groups, lcs, LCMax, platformType, tareStatus } = useAppData();
@@ -958,6 +999,24 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     return () => ro.disconnect()
   }, [])
 
+  const syncSelectedPlanImageFields = useCallback(async (
+    projectIdRaw: string | number | undefined,
+    fields: { p_image?: string; p_image_w?: number; p_image_h?: number; p_image_l?: number; p_image_t?: number }
+  ) => {
+    const pid = normalizeProjectId(projectIdRaw);
+    if (!pid) return;
+    const stateRow = await db.monitor_plan_state.get(pid);
+    const selectedPlanId = String(stateRow?.selected_plan_id || '').trim();
+    if (!selectedPlanId) return;
+    const plan = await db.monitor_plans.get(Number(selectedPlanId));
+    if (!plan) return;
+    if (normalizeProjectId(plan.project_id) !== pid) return;
+    await db.monitor_plans.update(Number(plan.id), {
+      ...fields,
+      updated_at: Date.now(),
+    });
+  }, []);
+
   const applyStageFitToContentArea = useCallback(() => {
     const el = contentSideRef.current
     const proj = currProjectRef.current
@@ -1026,7 +1085,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       const el2 = contentSideRef.current
       void f_reposition_stage(id, el2?.clientWidth ?? availW, el2?.clientHeight ?? availH)
     }, 400)
-  }, [f_update_project_image_size, f_update_project_image_position, f_reposition_stage, onMoveLC])
+  }, [f_update_project_image_size, f_update_project_image_position, f_reposition_stage, onMoveLC, syncSelectedPlanImageFields])
 
   applyStageFitToContentAreaRef.current = applyStageFitToContentArea
 
@@ -2261,6 +2320,13 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       p_image_l: currentPos.x,
       p_image_t: currentPos.y,
     })
+    await syncSelectedPlanImageFields(curProject.id, {
+      p_image: dataUrl,
+      p_image_w: newSize.width,
+      p_image_h: newSize.height,
+      p_image_l: currentPos.x,
+      p_image_t: currentPos.y,
+    });
     setLayoutUndoStack([])
     setTempHomePositions({})
     f_update_project_last_change()
@@ -2315,6 +2381,13 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
         p_image_l: undefined,
         p_image_t: undefined,
       })
+      await syncSelectedPlanImageFields(curProject.id, {
+        p_image: '',
+        p_image_w: undefined,
+        p_image_h: undefined,
+        p_image_l: undefined,
+        p_image_t: undefined,
+      });
       setStageViewZoom(1)
       stageViewZoomRef.current = 1
       setStageViewPan({ x: 0, y: 0 })
@@ -2547,6 +2620,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                             groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
                             onDragLiftChange={onStageLcDragLift}
                             onCellDoubleTap={handleStageCellDoubleTapToHome}
+                            onCellClick={onCellClick}
+                            onCellLongPress={onCellLongPress}
                             onStop={(_e, data, idx, baseX, baseY, dragGestureSeen = false) =>
                               reposition_lc(
                                 _e,
@@ -2612,6 +2687,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                           groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
                           onDragLiftChange={onStageLcDragLift}
                           onCellDoubleTap={handleStageCellDoubleTapToHome}
+                          onCellClick={onCellClick}
+                          onCellLongPress={onCellLongPress}
                           onStop={(_e, data, idx, baseX, baseY, dragGestureSeen = false) =>
                             reposition_lc(
                               _e,

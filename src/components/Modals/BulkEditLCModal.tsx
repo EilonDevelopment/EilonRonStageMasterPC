@@ -1,7 +1,19 @@
 import React, { FC, useEffect, useMemo, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { Keyboard } from '@capacitor/keyboard';
 import { IonToggle } from '@ionic/react';
 import Modal from './Modal';
+import Text from '../Text';
 import TextInput from '../TextInput';
+import NumericKeypadOverlay from '../NumericKeypadOverlay';
+import {
+  sanitizeCommaDigits,
+  sanitizeDigitsOnly,
+  sanitizeLcIds,
+  sanitizeSignedDecimal,
+  sanitizeUnsignedDecimal,
+  type NumericKeypadVariant,
+} from '../../helper/numericFieldInput';
 
 type OverrideFlags = {
   title: boolean;
@@ -61,6 +73,65 @@ const parseIdsInput = (input: string): { ok: boolean; ids: string[]; error?: str
   return { ok: deduped.length > 0, ids: deduped, error: deduped.length > 0 ? undefined : 'No valid IDs found.' };
 };
 
+const NATIVE_NUMERIC_PAD = Capacitor.isNativePlatform();
+
+const NATIVE_NUMERIC_FIELD_SHELL =
+  'flex w-full flex-row justify-between border border-medium border-gray2 px-3 py-1.5 min-h-[44px] items-center bg-white dark:bg-slate-950';
+const NATIVE_NUMERIC_FIELD_TEXT =
+  'flex-1 w-full min-w-0 text-left tabular-nums outline-none bg-transparent text-dark dark:text-light text-base font-normal';
+const NATIVE_NUMERIC_FIELD_BTN =
+  'm-0 w-full cursor-pointer appearance-none border-0 bg-transparent p-0 text-left rounded-none';
+
+const TEXT_FIELD_ROW_CHROME = 'min-h-[44px] items-center bg-white dark:bg-slate-950';
+
+type BulkNumericPadField = 'idsInput' | 'psw' | 'underload' | 'overload' | 'groups';
+
+type NumericPadState = {
+  field: BulkNumericPadField;
+  variant: NumericKeypadVariant;
+  title: string;
+  draft: string;
+};
+
+const beforeInputDigitsOnly: React.FormEventHandler<HTMLInputElement> = (e) => {
+  const ev = e.nativeEvent as InputEvent;
+  if (!ev.data || ev.inputType === 'insertFromPaste') return;
+  if (!/^\d$/.test(ev.data)) e.preventDefault();
+};
+
+const beforeInputSignedDecimal: React.FormEventHandler<HTMLInputElement> = (e) => {
+  const ev = e.nativeEvent as InputEvent;
+  if (!ev.data || ev.inputType === 'insertFromPaste') return;
+  if (/^\d$/.test(ev.data)) return;
+  if (ev.data === '.' || ev.data === ',') return;
+  if (ev.data === '-' || ev.data === '−') return;
+  e.preventDefault();
+};
+
+const beforeInputUnsignedDecimal: React.FormEventHandler<HTMLInputElement> = (e) => {
+  const ev = e.nativeEvent as InputEvent;
+  if (!ev.data || ev.inputType === 'insertFromPaste') return;
+  if (/^\d$/.test(ev.data)) return;
+  if (ev.data === '.' || ev.data === ',') return;
+  e.preventDefault();
+};
+
+const beforeInputLcIds: React.FormEventHandler<HTMLInputElement> = (e) => {
+  const ev = e.nativeEvent as InputEvent;
+  if (!ev.data || ev.inputType === 'insertFromPaste') return;
+  if (/^\d$/.test(ev.data)) return;
+  if (ev.data === ',' || ev.data === '-') return;
+  e.preventDefault();
+};
+
+const beforeInputCommaDigits: React.FormEventHandler<HTMLInputElement> = (e) => {
+  const ev = e.nativeEvent as InputEvent;
+  if (!ev.data || ev.inputType === 'insertFromPaste') return;
+  if (/^\d$/.test(ev.data)) return;
+  if (ev.data === ',') return;
+  e.preventDefault();
+};
+
 const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], onAction, onClose }) => {
   const [overrides, setOverrides] = useState<OverrideFlags>({
     title: false,
@@ -80,6 +151,13 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
     groups: '',
   });
   const [localError, setLocalError] = useState('');
+  const [numericPad, setNumericPad] = useState<NumericPadState | null>(null);
+
+  useEffect(() => {
+    if (!visible) {
+      setNumericPad(null);
+    }
+  }, [visible]);
 
   useEffect(() => {
     if (!visible) return;
@@ -109,6 +187,27 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
     setOverrides((prev) => ({ ...prev, [key]: checked }));
   };
 
+  const openNumericPad = async (field: BulkNumericPadField, variant: NumericKeypadVariant, title: string) => {
+    try {
+      await Keyboard.hide();
+    } catch {
+      /* noop */
+    }
+    const raw = values[field];
+    setNumericPad({
+      field,
+      variant,
+      title,
+      draft: raw != null ? String(raw) : '',
+    });
+  };
+
+  const commitNumericPad = () => {
+    if (!numericPad) return;
+    setValues((v) => ({ ...v, [numericPad.field]: numericPad.draft }));
+    setNumericPad(null);
+  };
+
   const save = () => {
     const parsed = parseIdsInput(values.idsInput);
     if (!parsed.ok) {
@@ -133,10 +232,18 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
   const fieldVisualState = (enabled: boolean) => ({
     labelClasses: enabled ? '!text-white' : '!text-gray-500 dark:!text-gray-500',
     inputContainerClasses: enabled
-      ? 'bg-transparent border-medium'
-      : 'bg-gray-100/80 dark:bg-gray-700/40 border-gray-400 dark:border-gray-600',
+      ? TEXT_FIELD_ROW_CHROME
+      : 'min-h-[44px] items-center bg-gray-100/80 dark:bg-gray-700/40 border-gray-400 dark:border-gray-600',
     inputClasses: enabled ? 'text-dark dark:text-light' : 'text-gray-500 dark:text-gray-400',
   });
+
+  const renderNativeNumericShell = (display: React.ReactNode, onOpen: () => void) => (
+    <button type="button" className={NATIVE_NUMERIC_FIELD_BTN} onClick={onOpen}>
+      <div className={NATIVE_NUMERIC_FIELD_SHELL}>
+        <span className={NATIVE_NUMERIC_FIELD_TEXT}>{display}</span>
+      </div>
+    </button>
+  );
 
   return (
     <Modal
@@ -150,11 +257,23 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
       onClose={onClose}
     >
       <div className="col-span-1 sm:col-span-2">
-        <TextInput
-          label="LC IDs / ranges"
-          value={values.idsInput}
-          onChange={(e) => setValues((v) => ({ ...v, idsInput: e.target.value }))}
-        />
+        {NATIVE_NUMERIC_PAD ? (
+          <div className="gap-3 flex flex-col w-full">
+            <Text type="dark" label="LC IDs / ranges" />
+            {renderNativeNumericShell(
+              (values.idsInput || '').trim() !== '' ? values.idsInput : <span className="text-slate-400 dark:text-slate-500">—</span>,
+              () => openNumericPad('idsInput', 'lc-ids', 'LC IDs / ranges')
+            )}
+          </div>
+        ) : (
+          <TextInput
+            label="LC IDs / ranges"
+            value={values.idsInput}
+            inputContainerClasses={TEXT_FIELD_ROW_CHROME}
+            onBeforeInput={beforeInputLcIds}
+            onChange={(e) => setValues((v) => ({ ...v, idsInput: sanitizeLcIds(e.target.value) }))}
+          />
+        )}
         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Example: 10-15,18,0,25-46</p>
       </div>
 
@@ -162,15 +281,15 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
         {(() => {
           const f = fieldVisualState(overrides.title);
           return (
-        <TextInput
-          label="Name"
-          value={values.title}
-          readOnly={!overrides.title}
-          labelClasses={f.labelClasses}
-          inputContainerClasses={f.inputContainerClasses}
-          inputClasses={f.inputClasses}
-          onChange={(e) => setValues((v) => ({ ...v, title: e.target.value }))}
-        />
+            <TextInput
+              label="Name"
+              value={values.title}
+              readOnly={!overrides.title}
+              labelClasses={f.labelClasses}
+              inputContainerClasses={f.inputContainerClasses}
+              inputClasses={f.inputClasses}
+              onChange={(e) => setValues((v) => ({ ...v, title: e.target.value }))}
+            />
           );
         })()}
         {overrideSwitchBlock(overrides.title, (checked) => setOverride('title', checked))}
@@ -179,17 +298,34 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
       <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
         {(() => {
           const f = fieldVisualState(overrides.psw);
-          return (
-        <TextInput
-          label="PSW"
-          type="number"
-          value={values.psw}
-          readOnly={!overrides.psw}
-          labelClasses={f.labelClasses}
-          inputContainerClasses={f.inputContainerClasses}
-          inputClasses={f.inputClasses}
-          onChange={(e) => setValues((v) => ({ ...v, psw: e.target.value }))}
-        />
+          return NATIVE_NUMERIC_PAD && overrides.psw ? (
+            <div className="gap-3 flex flex-col w-full min-w-0">
+              <Text type="dark" label="PSW" />
+              {renderNativeNumericShell(
+                values.psw != null && String(values.psw).trim() !== '' ? String(values.psw) : <span className="text-slate-400 dark:text-slate-500">—</span>,
+                () => openNumericPad('psw', 'unsigned-decimal', 'PSW')
+              )}
+            </div>
+          ) : (
+            <TextInput
+              label="PSW"
+              type="tel"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              value={values.psw}
+              readOnly={!overrides.psw}
+              labelClasses={f.labelClasses}
+              inputContainerClasses={f.inputContainerClasses}
+              inputClasses={f.inputClasses}
+              onBeforeInput={overrides.psw ? beforeInputDigitsOnly : undefined}
+              onChange={(e) =>
+                setValues((v) => ({ ...v, psw: overrides.psw ? sanitizeDigitsOnly(e.target.value) : v.psw }))
+              }
+            />
           );
         })()}
         {overrideSwitchBlock(overrides.psw, (checked) => setOverride('psw', checked))}
@@ -198,17 +334,32 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
       <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
         {(() => {
           const f = fieldVisualState(overrides.underload);
-          return (
-        <TextInput
-          label="Underload"
-          type="number"
-          value={values.underload}
-          readOnly={!overrides.underload}
-          labelClasses={f.labelClasses}
-          inputContainerClasses={f.inputContainerClasses}
-          inputClasses={f.inputClasses}
-          onChange={(e) => setValues((v) => ({ ...v, underload: e.target.value }))}
-        />
+          return NATIVE_NUMERIC_PAD && overrides.underload ? (
+            <div className="gap-3 flex flex-col w-full min-w-0">
+              <Text type="dark" label="Underload" />
+              {renderNativeNumericShell(
+                values.underload != null && String(values.underload).trim() !== '' ? String(values.underload) : <span className="text-slate-400 dark:text-slate-500">—</span>,
+                () => openNumericPad('underload', 'signed-decimal', 'Underload')
+              )}
+            </div>
+          ) : (
+            <TextInput
+              label="Underload"
+              type="text"
+              inputMode="decimal"
+              value={values.underload}
+              readOnly={!overrides.underload}
+              labelClasses={f.labelClasses}
+              inputContainerClasses={f.inputContainerClasses}
+              inputClasses={f.inputClasses}
+              onBeforeInput={overrides.underload ? beforeInputSignedDecimal : undefined}
+              onChange={(e) =>
+                setValues((v) => ({
+                  ...v,
+                  underload: overrides.underload ? sanitizeSignedDecimal(e.target.value) : v.underload,
+                }))
+              }
+            />
           );
         })()}
         {overrideSwitchBlock(overrides.underload, (checked) => setOverride('underload', checked))}
@@ -217,17 +368,32 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
       <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
         {(() => {
           const f = fieldVisualState(overrides.overload);
-          return (
-        <TextInput
-          label="Overload"
-          type="number"
-          value={values.overload}
-          readOnly={!overrides.overload}
-          labelClasses={f.labelClasses}
-          inputContainerClasses={f.inputContainerClasses}
-          inputClasses={f.inputClasses}
-          onChange={(e) => setValues((v) => ({ ...v, overload: e.target.value }))}
-        />
+          return NATIVE_NUMERIC_PAD && overrides.overload ? (
+            <div className="gap-3 flex flex-col w-full min-w-0">
+              <Text type="dark" label="Overload" />
+              {renderNativeNumericShell(
+                values.overload != null && String(values.overload).trim() !== '' ? String(values.overload) : <span className="text-slate-400 dark:text-slate-500">—</span>,
+                () => openNumericPad('overload', 'unsigned-decimal', 'Overload')
+              )}
+            </div>
+          ) : (
+            <TextInput
+              label="Overload"
+              type="text"
+              inputMode="decimal"
+              value={values.overload}
+              readOnly={!overrides.overload}
+              labelClasses={f.labelClasses}
+              inputContainerClasses={f.inputContainerClasses}
+              inputClasses={f.inputClasses}
+              onBeforeInput={overrides.overload ? beforeInputUnsignedDecimal : undefined}
+              onChange={(e) =>
+                setValues((v) => ({
+                  ...v,
+                  overload: overrides.overload ? sanitizeUnsignedDecimal(e.target.value) : v.overload,
+                }))
+              }
+            />
           );
         })()}
         {overrideSwitchBlock(overrides.overload, (checked) => setOverride('overload', checked))}
@@ -254,20 +420,46 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
       <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
         {(() => {
           const f = fieldVisualState(overrides.groups);
-          return (
-        <TextInput
-          label="Groups (comma separated)"
-          value={values.groups}
-          readOnly={!overrides.groups}
-          labelClasses={f.labelClasses}
-          inputContainerClasses={f.inputContainerClasses}
-          inputClasses={f.inputClasses}
-          onChange={(e) => setValues((v) => ({ ...v, groups: e.target.value }))}
-        />
+          return NATIVE_NUMERIC_PAD && overrides.groups ? (
+            <div className="gap-3 flex flex-col w-full min-w-0">
+              <Text type="dark" label="Groups (comma separated)" />
+              {renderNativeNumericShell(
+                values.groups != null && String(values.groups).trim() !== '' ? String(values.groups) : <span className="text-slate-400 dark:text-slate-500">—</span>,
+                () => openNumericPad('groups', 'digits-comma', 'Groups')
+              )}
+            </div>
+          ) : (
+            <TextInput
+              label="Groups (comma separated)"
+              value={values.groups}
+              readOnly={!overrides.groups}
+              labelClasses={f.labelClasses}
+              inputContainerClasses={f.inputContainerClasses}
+              inputClasses={f.inputClasses}
+              onBeforeInput={overrides.groups ? beforeInputCommaDigits : undefined}
+              onChange={(e) =>
+                setValues((v) => ({
+                  ...v,
+                  groups: overrides.groups ? sanitizeCommaDigits(e.target.value) : v.groups,
+                }))
+              }
+            />
           );
         })()}
         {overrideSwitchBlock(overrides.groups, (checked) => setOverride('groups', checked))}
       </div>
+
+      {numericPad && (
+        <NumericKeypadOverlay
+          open
+          title={numericPad.title}
+          value={numericPad.draft}
+          variant={numericPad.variant}
+          onChange={(next) => setNumericPad((p) => (p ? { ...p, draft: next } : null))}
+          onDone={commitNumericPad}
+          onCancel={() => setNumericPad(null)}
+        />
+      )}
 
       {localError ? (
         <div className="col-span-1 sm:col-span-2">
@@ -279,4 +471,3 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
 };
 
 export default BulkEditLCModal;
-

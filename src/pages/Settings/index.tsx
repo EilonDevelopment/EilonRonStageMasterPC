@@ -1,4 +1,4 @@
-import React, { ChangeEvent, FC, useEffect, useRef, useState } from 'react';
+import React, { ChangeEvent, FC, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import CommonLayout from '../../Layout/CommonLayout';
 import { IGroup, ILC, IProject } from '../../helper/types';
@@ -20,6 +20,7 @@ import { db } from '../../db'
 import useFunctions from '../../hooks/useFunctions';
 import './index.css';
 import { logEvent } from '../../services/LogService';
+import { withStableRowIndex } from '../../helper/lcStableRowIndex';
 
 enum CalibrationModalMode {
   'None' = 0,
@@ -74,6 +75,8 @@ const Settings: FC = () => {
     }
   }, [lcs, curProject?.id])
 
+  const LCListForGrid = useMemo(() => withStableRowIndex(LCList), [LCList]);
+
   // useEffect(() => {
   //   // console.log('groups change: ', groups)
   //   setGroupList(groups)
@@ -116,7 +119,7 @@ const Settings: FC = () => {
 
   const columns = [
     {
-      field: '__uiRowIndex',
+      field: '__stableIndex',
       headerName: '#',
       flex: 0.055,
       minWidth: 44,
@@ -125,16 +128,9 @@ const Settings: FC = () => {
       disableReorder: true,
       // eslint-disable-next-line
       // @ts-ignore
-      renderCell: (params) => {
-        const sortedIds = params.api.getSortedRowIds();
-        const idx = sortedIds.indexOf(params.id);
-        const n = idx >= 0 ? idx + 1 : '';
-        return (
-          <span className="text-dark dark:text-light col-item text-center tabular-nums block w-full">
-            {n}
-          </span>
-        );
-      },
+      renderCell: ({ row }: { row: ILC & { __stableIndex: number } }) => (
+        <span className="text-dark dark:text-light col-item text-center tabular-nums block w-full">{row.__stableIndex}</span>
+      ),
     },
     {
       flex: 0.079,
@@ -668,7 +664,7 @@ const Settings: FC = () => {
         <CustomDataGrid
           loading={loading}
           columns={columns}
-          data={LCList}
+          data={LCListForGrid}
         />
       </div>
       <NewLCModal

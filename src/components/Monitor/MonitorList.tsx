@@ -1,9 +1,10 @@
-import React, { FC } from 'react';
+import React, { FC, useMemo } from 'react';
 import { ILC } from '../../helper/types';
 import CustomDataGrid from '../CustomDataGrid';
 import { useTranslation } from 'react-i18next';
-import { Typography } from '@mui/material';
 import useAppData from '../../hooks/useAppData';
+import { normalizeProjectId } from '../../helper/functions';
+import { lcRankKey, stableRowIndexMap } from '../../helper/lcStableRowIndex';
 
 interface MonitorListProps {
   data: ILC[];
@@ -13,7 +14,24 @@ interface MonitorListProps {
 const MonitorList: FC<MonitorListProps> = props => {
   const { data, max} = props;
   const { t } = useTranslation()
-  const { curProject, tareStatus } = useAppData();
+  const { curProject, tareStatus, monitorListSortedLcIdsRef, lcs } = useAppData();
+
+  const projectLcs = useMemo(() => {
+    if (!curProject?.id) return [];
+    const pid = normalizeProjectId(curProject.id);
+    return lcs.filter((lc) => normalizeProjectId(lc.project_id) === pid);
+  }, [lcs, curProject?.id]);
+
+  const stableRankMap = useMemo(() => stableRowIndexMap(projectLcs), [projectLcs]);
+
+  const gridRows = useMemo(
+    () =>
+      data.map((row) => ({
+        ...row,
+        __stableIndex: stableRankMap.get(lcRankKey(row)) ?? 0,
+      })),
+    [data, stableRankMap]
+  );
 
   const hasTransmissionError = (raw: any) => {
     const s = String(raw ?? '').trim();
@@ -31,6 +49,20 @@ const MonitorList: FC<MonitorListProps> = props => {
   };
 
   const columns = [
+    {
+      field: '__stableIndex',
+      headerName: '#',
+      flex: 0.055,
+      minWidth: 44,
+      sortable: false,
+      filterable: false,
+      disableReorder: true,
+      // eslint-disable-next-line
+      // @ts-ignore
+      renderCell: ({ row }: { row: ILC & { __stableIndex: number } }) => (
+        <span className="text-dark dark:text-light text-center tabular-nums block w-full">{row.__stableIndex}</span>
+      ),
+    },
     {
       flex: 0.079,
       minWidth: 60,
@@ -227,7 +259,10 @@ const MonitorList: FC<MonitorListProps> = props => {
     <div className="w-full min-w-0">
       <CustomDataGrid
         columns={columns}
-        data={data}
+        data={gridRows}
+        onSortedRowIdsChange={(ids) => {
+          if (monitorListSortedLcIdsRef) monitorListSortedLcIdsRef.current = ids;
+        }}
       />
     </div>
   )
