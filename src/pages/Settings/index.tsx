@@ -1,4 +1,4 @@
-import React, { ChangeEvent, FC, useEffect, useMemo, useRef, useState } from 'react';
+import React, { ChangeEvent, FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import CommonLayout from '../../Layout/CommonLayout';
 import { IGroup, ILC, IProject } from '../../helper/types';
@@ -21,6 +21,56 @@ import useFunctions from '../../hooks/useFunctions';
 import './index.css';
 import { logEvent } from '../../services/LogService';
 import { withStableRowIndex } from '../../helper/lcStableRowIndex';
+import type { GridColDef, GridValueGetterParams } from '@mui/x-data-grid';
+import { gridNumberComparator } from '@mui/x-data-grid';
+import { formatWeightByLcResolution } from '../../helper/weightResolution';
+
+type SettingsLcGridRow = ILC & { __stableIndex: number };
+
+function settingsProjectUnitKey(units: string | undefined): string {
+  const u = String(units ?? 'kg').replace(/\./g, '').toLowerCase().trim();
+  return u || 'kg';
+}
+
+/** Missing / invalid numerics sort last in ascending order. */
+function finiteOrInfinity(n: number): number {
+  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+function sortLcIdNumeric(row: ILC): number {
+  return finiteOrInfinity(Number(String(row.id ?? '').trim()));
+}
+
+function sortCapacityNumeric(row: ILC, projectUnits: string | undefined): number {
+  const key = settingsProjectUnitKey(projectUnits) as keyof NonNullable<ILC['capacity']>;
+  const cap = row.capacity?.[key];
+  const n = parseFloat(String(cap ?? ''));
+  return finiteOrInfinity(n);
+}
+
+function sortNumericStringField(raw: string | undefined): number {
+  return finiteOrInfinity(parseFloat(String(raw ?? '').trim()));
+}
+
+function compareGroupsByRow(a: ILC, b: ILC): number {
+  const pa = String(a.groups || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const pb = String(b.groups || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const na = pa.map((x) => Number(x)).filter((x) => Number.isFinite(x));
+  const nb = pb.map((x) => Number(x)).filter((x) => Number.isFinite(x));
+  const minA = na.length ? Math.min(...na) : Number.POSITIVE_INFINITY;
+  const minB = nb.length ? Math.min(...nb) : Number.POSITIVE_INFINITY;
+  if (minA !== minB) return minA - minB;
+  if (pa.length !== pb.length) return pa.length - pb.length;
+  const sa = [...pa].sort((x, y) => x.localeCompare(y, undefined, { numeric: true })).join(',');
+  const sb = [...pb].sort((x, y) => x.localeCompare(y, undefined, { numeric: true })).join(',');
+  return sa.localeCompare(sb, undefined, { numeric: true });
+}
 
 enum CalibrationModalMode {
   'None' = 0,
@@ -88,21 +138,210 @@ const Settings: FC = () => {
       return [...prev, id];
     });
   }
-  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSelectAll = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const isChecked = e.target.checked;
     setSelectAll(isChecked);
 
     if (isChecked) {
-      const allIds = LCList.map(row => row.id); // Assuming `rows` is your data array
+      const allIds = LCList.map(row => row.id);
       setDeleteList(allIds);
     } else {
       setDeleteList([]);
     }
-  };
+  }, [LCList]);
 
-  const handleDeleteCheck = (_e: any, id: string) => {
+  const handleDeleteCheck = useCallback((_e: any, id: string) => {
     handleDeleteList(id)
-  }
+  }, [])
+
+  const handleEditLC = useCallback((lc: ILC) => {
+    setLCItem(lc)
+    setVisibleAddModal(true)
+  }, [])
+
+  const columns = useMemo<GridColDef<SettingsLcGridRow>[]>(() => [
+    {
+      field: '__stableIndex',
+      headerName: '#',
+      flex: 0.055,
+      minWidth: 44,
+      type: 'number',
+      sortable: true,
+      filterable: false,
+      disableReorder: true,
+      valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) => params.row.__stableIndex,
+      sortComparator: gridNumberComparator,
+      renderCell: ({ row }) => (
+        <span className="text-dark dark:text-light col-item text-center tabular-nums block w-full">{row.__stableIndex}</span>
+      ),
+    },
+    {
+      flex: 0.079,
+      minWidth: 60,
+      field: 'id',
+      headerName: t('Setting.Id'),
+      type: 'number',
+      valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) => sortLcIdNumeric(params.row),
+      sortComparator: gridNumberComparator,
+      renderCell: ({ row }) => (
+        <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{row.id}</span>
+      ),
+    },
+    {
+      flex: 0.118,
+      minWidth: 90,
+      field: 'title',
+      headerName: t('Setting.Name'),
+      valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) =>
+        String(params.row.title ?? '').trim().toLowerCase(),
+      renderCell: ({ row }) => (
+        <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{row.title}</span>
+      ),
+    },
+    {
+      flex: 0.118,
+      minWidth: 90,
+      field: 'capacity',
+      headerName: t('Setting.Capacity'),
+      type: 'number',
+      valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) =>
+        sortCapacityNumeric(params.row, curProject?.units),
+      sortComparator: gridNumberComparator,
+      renderCell: ({ row }) => (
+        <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>
+          {row.capacity
+            ? parseFloat(
+                String(row.capacity[settingsProjectUnitKey(curProject?.units)] ?? '')
+              ).toFixed(fxRef.current)
+            : 'N/A'}{' '}
+          {Number(row.id) >= 10 ? curProject.units : curProject.windmeter_units}
+        </span>
+      ),
+    },
+    {
+      flex: 0.118,
+      minWidth: 90,
+      field: 'underload',
+      headerName: t('Setting.Underload'),
+      type: 'number',
+      valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) =>
+        sortNumericStringField(params.row.underload),
+      sortComparator: gridNumberComparator,
+      renderCell: ({ row }) => {
+        const n = parseFloat(String(row.underload ?? ''));
+        const disp =
+          Number.isFinite(n) && Number.isFinite(Number(row.id))
+            ? formatWeightByLcResolution(n, Number(row.id), curProject?.units, fxRef.current)
+            : '';
+        return (
+          <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>
+            {disp}
+          </span>
+        );
+      },
+    },
+    {
+      flex: 0.118,
+      minWidth: 90,
+      field: 'overload',
+      headerName: t('Setting.Overload'),
+      type: 'number',
+      valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) =>
+        sortNumericStringField(params.row.overload),
+      sortComparator: gridNumberComparator,
+      renderCell: ({ row }) => {
+        const n = parseFloat(String(row.overload ?? ''));
+        const disp =
+          Number.isFinite(n) && Number.isFinite(Number(row.id))
+            ? formatWeightByLcResolution(n, Number(row.id), curProject?.units, fxRef.current)
+            : '';
+        return (
+          <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>
+            {disp}
+          </span>
+        );
+      },
+    },
+    {
+      flex: 0.105,
+      minWidth: 80,
+      field: 'psw',
+      headerName: t('Setting.PSW'),
+      type: 'number',
+      valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) =>
+        sortNumericStringField(params.row.psw),
+      sortComparator: gridNumberComparator,
+      renderCell: ({ row }) => {
+        const raw = row.psw ?? '0';
+        const n = parseFloat(String(raw));
+        const disp =
+          Number.isFinite(n) && Number.isFinite(Number(row.id))
+            ? formatWeightByLcResolution(n, Number(row.id), curProject?.units, fxRef.current)
+            : String(raw || '');
+        return (
+          <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>
+            {disp}
+          </span>
+        );
+      },
+    },
+    {
+      flex: 0.118,
+      minWidth: 90,
+      field: 'total_sum',
+      headerName: t('Setting.Total'),
+      type: 'number',
+      valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) => (params.row.total_sum ? 1 : 0),
+      sortComparator: gridNumberComparator,
+      renderCell: ({ row }) => (
+        <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>
+          {row.total_sum ? 'Yes ' : 'No'}
+        </span>
+      ),
+    },
+    {
+      flex: 0.118,
+      minWidth: 90,
+      field: 'groups',
+      headerName: t('Setting.Groups'),
+      valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) => String(params.row.groups ?? ''),
+      sortComparator: (_v1, _v2, ap, bp) => {
+        const ra = ap.api.getRow(ap.id) as SettingsLcGridRow | null;
+        const rb = bp.api.getRow(bp.id) as SettingsLcGridRow | null;
+        if (!ra || !rb) return 0;
+        return compareGroupsByRow(ra, rb);
+      },
+      renderCell: ({ row }) => (
+        <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{row.groups || ''}</span>
+      ),
+    },
+    {
+      flex: 0.105,
+      minWidth: 80,
+      field: 'check',
+      headerName: t('Setting.Check'),
+      sortable: false,
+      renderHeader: () => (
+        <input
+          type='checkbox'
+          checked={selectAll}
+          onChange={handleSelectAll}
+        />
+      ),
+      renderCell: ({ row }) => (
+        <label
+          className="flex w-full h-full min-h-[32px] items-center justify-center cursor-pointer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type='checkbox'
+            checked={deleteList.includes(row.id)}
+            onChange={(e: any) => handleDeleteCheck(e, row.id)}
+          />
+        </label>
+      ),
+    },
+  ], [t, curProject?.units, curProject?.windmeter_units, selectAll, deleteList, handleSelectAll, handleDeleteCheck, handleEditLC])
 
   const handleDeleteAction = async () => {
     const deletedLcs = lcs.filter(item => deleteList.includes(item.id))
@@ -116,130 +355,6 @@ const Settings: FC = () => {
     setVisibleDeleteModal(false)
     setVisibleSuccessModal(true)
   }
-
-  const columns = [
-    {
-      field: '__stableIndex',
-      headerName: '#',
-      flex: 0.055,
-      minWidth: 44,
-      sortable: false,
-      filterable: false,
-      disableReorder: true,
-      // eslint-disable-next-line
-      // @ts-ignore
-      renderCell: ({ row }: { row: ILC & { __stableIndex: number } }) => (
-        <span className="text-dark dark:text-light col-item text-center tabular-nums block w-full">{row.__stableIndex}</span>
-      ),
-    },
-    {
-      flex: 0.079,
-      minWidth: 60,
-      field: 'id',
-      headerName: t('Setting.Id'),
-      // eslint-disable-next-line
-      // @ts-ignore
-      renderCell: ({ row }) => <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{row.id}</span>
-    },
-    {
-      flex: 0.118,
-      minWidth: 90,
-      field: 'title',
-      headerName: t('Setting.Name'),
-      // eslint-disable-next-line
-      // @ts-ignore
-      renderCell: ({ row }) => <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{row.title}</span>
-    },
-    {
-      flex: 0.118,
-      minWidth: 90,
-      field: 'Capacity',
-      headerName: t('Setting.Capacity'),
-      // eslint-disable-next-line
-      // @ts-ignore
-      renderCell: ({ row }) => (
-        <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>
-          {row.capacity ? parseFloat(row.capacity[(curProject && curProject.units ? curProject.units.replace('.', '').toLowerCase() : 'kg')]).toFixed(fxRef.current) : 'N/A'} {row.id >= 10 ? curProject.units : curProject.windmeter_units}
-        </span>
-      )
-
-      // renderCell: ({ row }) => <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{parseFloat(row.capacity?.kg).toFixed(2)}{row.id >= 10 ? curProject.units : curProject.windmeter_units}</span>
-    },
-    {
-      flex: 0.118,
-      minWidth: 90,
-      field: 'underload',
-      headerName: t('Setting.Underload'),
-      // eslint-disable-next-line
-      // @ts-ignore
-      renderCell: ({ row }) => <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{parseFloat(row.underload).toFixed(2)}</span>
-    },
-    {
-      flex: 0.118,
-      minWidth: 90,
-      field: 'overload',
-      headerName: t('Setting.Overload'),
-      // eslint-disable-next-line
-      // @ts-ignore
-      renderCell: ({ row }) => <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{parseFloat(row.overload).toFixed(2)}</span>
-    },
-    {
-      flex: 0.105,
-      minWidth: 80,
-      field: 'psw',
-      headerName: t('Setting.PSW'),
-      // eslint-disable-next-line
-      // @ts-ignore
-      renderCell: ({ row }) => <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{row.psw || 0}</span>
-    },
-    {
-      flex: 0.118,
-      minWidth: 90,
-      field: 'total_sum',
-      headerName: t('Setting.Total'),
-      // eslint-disable-next-line
-      // @ts-ignore
-      renderCell: ({ row }) => <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{row.total_sum ? 'Yes ' : 'No'}</span>
-    },
-    {
-      flex: 0.118,
-      minWidth: 90,
-      field: 'groups',
-      headerName: t('Setting.Groups'),
-      // eslint-disable-next-line
-      // @ts-ignore
-      renderCell: ({ row }) => <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>{row.groups || ''}</span>
-    },
-    {
-      flex: 0.105,
-      minWidth: 80,
-      field: 'check',
-      headerName: t('Setting.Check'),
-      // eslint-disable-next-line
-      // @ts-ignore
-      renderHeader: () => (
-        <input
-          type='checkbox'
-          checked={selectAll}
-          onChange={handleSelectAll}
-        />
-      ),
-      // eslint-disable-next-line
-      //@ts-ignore
-      renderCell: ({ row }) => (
-        <label
-          className="flex w-full h-full min-h-[32px] items-center justify-center cursor-pointer"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <input
-            type='checkbox'
-            checked={deleteList.includes(row.id)}
-            onChange={(e: any) => handleDeleteCheck(e, row.id)}
-          />
-        </label>
-      )
-    },
-  ];
 
   const handleNewLC = () => {
     if (activeToastCount > 0) {
@@ -597,10 +712,6 @@ const Settings: FC = () => {
     }
   }
 
-  const handleEditLC = (lc: ILC) => {
-    setLCItem(lc)
-    setVisibleAddModal(true)
-  }
   const gOverload = (overload: string) => {
     const f = curProject.units === Unit_List[2].value ? 3 : 0
     if (overload == null || String(overload).trim() === '') return '';
@@ -665,6 +776,7 @@ const Settings: FC = () => {
           loading={loading}
           columns={columns}
           data={LCListForGrid}
+          getRowId={(row) => String((row as SettingsLcGridRow).lc_id)}
         />
       </div>
       <NewLCModal

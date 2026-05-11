@@ -1,18 +1,81 @@
-import React, { FC, useMemo } from 'react';
+import React, { FC, useMemo, useRef } from 'react';
+import { GridRow, GridRowProps } from '@mui/x-data-grid';
 import { ILC } from '../../helper/types';
 import CustomDataGrid from '../CustomDataGrid';
 import { useTranslation } from 'react-i18next';
 import useAppData from '../../hooks/useAppData';
 import { normalizeProjectId } from '../../helper/functions';
 import { lcRankKey, stableRowIndexMap } from '../../helper/lcStableRowIndex';
+import { lcBelongsToGroup } from '../../helper/lcGroupMembership';
+
+const LC_LONG_PRESS_MS = 600;
+
+/** Filled each render by `MonitorList` when long-press zero is enabled (single list instance on screen). */
+const monitorListLongPressHandler = { current: null as null | ((lc: ILC) => void) };
+
+const MonitorListLongPressRow = React.memo(
+  React.forwardRef<HTMLDivElement, GridRowProps>(function MonitorListLongPressRow(props, ref) {
+    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const triggeredRef = useRef(false);
+
+    const emitLongPress = () => {
+      const fn = monitorListLongPressHandler.current;
+      if (!fn) return;
+      const raw = props.row as ILC & { __stableIndex?: number };
+      const { __stableIndex: _s, ...lc } = raw;
+      fn(lc as ILC);
+    };
+
+    return (
+      <GridRow
+        ref={ref}
+        {...props}
+        onPointerDownCapture={(e: React.PointerEvent) => {
+          props.onPointerDownCapture?.(e as any);
+          if (!monitorListLongPressHandler.current) return;
+          if (timerRef.current) clearTimeout(timerRef.current);
+          triggeredRef.current = false;
+          timerRef.current = setTimeout(() => {
+            timerRef.current = null;
+            triggeredRef.current = true;
+            emitLongPress();
+          }, LC_LONG_PRESS_MS);
+        }}
+        onPointerUpCapture={(e: React.PointerEvent) => {
+          props.onPointerUpCapture?.(e as any);
+          if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+          }
+          if (triggeredRef.current) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+          triggeredRef.current = false;
+        }}
+        onPointerCancelCapture={(e: React.PointerEvent) => {
+          props.onPointerCancelCapture?.(e as any);
+          if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+          }
+          triggeredRef.current = false;
+        }}
+      />
+    );
+  })
+);
 
 interface MonitorListProps {
   data: ILC[];
-  max: boolean; // AÑADIDO
+  max: boolean;
+  onCellLongPress?: (lc: ILC) => void;
+  groupVisualGroupId?: string | null;
+  groupVisualHighlight?: boolean;
 }
 
-const MonitorList: FC<MonitorListProps> = props => {
-  const { data, max} = props;
+const MonitorList: FC<MonitorListProps> = (props) => {
+  const { data, max, onCellLongPress, groupVisualGroupId = null, groupVisualHighlight = false } = props;
   const { t } = useTranslation()
   const { curProject, tareStatus, monitorListSortedLcIdsRef, lcs } = useAppData();
 
@@ -255,11 +318,22 @@ const MonitorList: FC<MonitorListProps> = props => {
     },
   ];
 
+  monitorListLongPressHandler.current = onCellLongPress ?? null;
+
+  const getRowClassName = (params: { row: ILC & { __stableIndex?: number } }) => {
+    const gid = String(groupVisualGroupId || '').trim();
+    if (!groupVisualHighlight || !gid) return '';
+    return lcBelongsToGroup(params.row, gid) ? 'monitor-list-row-group-hl' : '';
+  };
+
   return (
     <div className="w-full min-w-0">
       <CustomDataGrid
         columns={columns}
         data={gridRows}
+        getRowId={(row) => String((row as ILC).lc_id)}
+        getRowClassName={groupVisualHighlight && groupVisualGroupId ? getRowClassName : undefined}
+        components={onCellLongPress ? { Row: MonitorListLongPressRow } : undefined}
         onSortedRowIdsChange={(ids) => {
           if (monitorListSortedLcIdsRef) monitorListSortedLcIdsRef.current = ids;
         }}

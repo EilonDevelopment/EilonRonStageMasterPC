@@ -22,6 +22,7 @@ import { format, getTime } from "date-fns";
 import useGroupOperations from "../../helper/db/groups";
 import useFunctions from "../../hooks/useFunctions";
 import { fire_error, getLCsByGroup, normalizeProjectId, strToFloat } from "../../helper/functions";
+import { lcBelongsToGroup } from "../../helper/lcGroupMembership";
 import { ROUTES } from "../../helper/constants";
 import { toast } from "react-toastify";
 import { logEvent } from "../../services/LogService";
@@ -319,6 +320,13 @@ const Monitor: FC = () => {
       .filter(Boolean);
     return parts.some((g) => effectiveIncludedGroupIds.includes(g));
   });
+  const monitorDisplayLcs = useMemo(() => {
+    const gv = groupVisual;
+    if (!gv?.only || !gv.groupId) return visibleLcs;
+    const gid = String(gv.groupId);
+    return visibleLcs.filter((item) => lcBelongsToGroup(item, gid));
+  }, [visibleLcs, groupVisual?.only, groupVisual?.groupId]);
+
   const visiblePlanLayoutRows = visibleLcs.map((item) => ({
     lc_id: String(item.lc_id),
     view_x: String(item.view_x ?? '0'),
@@ -1373,26 +1381,36 @@ const Monitor: FC = () => {
         )
       case 'list':
         return (<>
-          {/* AÑADIDO: max={maxStatus} */}
-          <MonitorList data={visibleLcs} max={maxStatus} />
+          <MonitorList
+            data={monitorDisplayLcs}
+            max={maxStatus}
+            onCellLongPress={openCellZeroModal}
+            groupVisualGroupId={groupVisual?.groupId ?? null}
+            groupVisualHighlight={!!groupVisual?.highlight}
+          />
         </>)
       case 'prog':
         return (<>
-          {/* AÑADIDO: max={maxStatus} */}
           <MonitorProg
-            data={visibleLcs}
+            data={monitorDisplayLcs}
             unit={curProject.units || ''}
             tare={tareStatus}
             max={maxStatus}
+            onCellLongPress={openCellZeroModal}
+            groupVisualGroupId={groupVisual?.groupId ?? null}
+            groupVisualHighlight={!!groupVisual?.highlight}
           />
         </>)
       case 'stop':
         return (<>
           <MonitorStop
-            data={visibleLcs}
+            data={monitorDisplayLcs}
             unit={curProject.units || ''}
             max={maxStatus}
             tare={tareStatus}
+            onCellLongPress={openCellZeroModal}
+            groupVisualGroupId={groupVisual?.groupId ?? null}
+            groupVisualHighlight={!!groupVisual?.highlight}
           />
         </>)
       default:

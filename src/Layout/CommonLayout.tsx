@@ -61,7 +61,7 @@ import { checkNativeBleScanPrerequisites } from '../helper/nativeBleScan';
 import { pickProjectCsvText, shouldUseNativeCsvPickerForImport } from '../helper/nativeProjectCsvImport';
 import { BLE_CONNECT_TIMEOUT_MS } from '../helper/bleConstants';
 import { collectBleDevicesForService, type BleDiscoveredDevice } from '../helper/bleLeScanCollection';
-import { formatWeightByLcResolution, getResolutionForLcId, quantizeByResolution } from '../helper/weightResolution';
+import { formatDualWeightWithLcResolution, formatWeightByLcResolution, getResolutionForLcId, quantizeByResolution } from '../helper/weightResolution';
 import { toast } from 'react-toastify';
 import useFunctions from '../hooks/useFunctions';
 
@@ -521,7 +521,10 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
           return lcFromDb;
         });
       }
-      updateLCsFromDb(displayLcs);
+      const sanitizedForDisconnected = (!bleConnected)
+        ? displayLcs.map((item: any) => ({ ...item, value: 'Tr.Err' }))
+        : displayLcs;
+      updateLCsFromDb(sanitizedForDisconnected);
       if (active_project.show_graphs) {
         // draw_chart('lightChart', active_project.lcs);
       }
@@ -652,6 +655,19 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   useEffect(() => {
     setConnected(bleConnected)
     bleConnectedRef.current = bleConnected;
+    if (!bleConnected) {
+      // Disconnected monitor should never show stale numeric payload from previous sessions.
+      lcDisplayBufferRef.current = {};
+      dataTimeByIdRef.current = [];
+      setDataTimeById([]);
+      timeoutHandledRef.current = false;
+      lastUpdatedRef.current = Date.now();
+      const current = currentLcs.current || [];
+      if (current.length > 0) {
+        const trErrOnly = current.map((item: any) => ({ ...item, value: 'Tr.Err' }));
+        updateLCs(trErrOnly);
+      }
+    }
   }, [bleConnected])
 
   useEffect(() => {
@@ -915,18 +931,6 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       else if (Number.isFinite(underNum) && grossNum < underNum) status = 'UNDERLOAD';
       return status;
     };
-    const formatDualKgLbs = (valueRaw: any, unitRaw: any) => {
-      const value = Number(valueRaw);
-      if (!Number.isFinite(value)) return String(valueRaw ?? '');
-      const u = String(unitRaw ?? '').toUpperCase().replace(/\s+/g, '');
-      let kg: number | null = null;
-      if (u === 'KG' || u === 'KGS') kg = value;
-      else if (u === 'LBS' || u === 'LB') kg = value / 2.20462;
-      else if (u === 'M.TON' || u === 'MTON' || u === 'MTONS') kg = value * 1000;
-      if (kg == null) return `${value.toFixed(2)} ${unitRaw ?? ''}`.trim();
-      const lbs = kg * 2.20462;
-      return `${kg.toFixed(2)} KG\n${lbs.toFixed(2)} LBS`;
-    };
 
     const stableRank = stableRowIndexMap(projectLcs);
     const preferredOrder = monitorListSortedLcIdsRef?.current ?? [];
@@ -945,8 +949,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         Name: String(item?.title || ''),
         ID: String(item?.id || ''),
         Status: getLcStatus(item),
-        Gross: isErr ? 'Tr.Err' : formatDualKgLbs(grossNum, unit),
-        Net: isErr || !Number.isFinite(netCandidate) ? 'Tr.Err' : formatDualKgLbs(netCandidate, unit),
+        Gross: isErr ? 'Tr.Err' : formatDualWeightWithLcResolution(grossNum, unit, item?.id),
+        Net: isErr || !Number.isFinite(netCandidate) ? 'Tr.Err' : formatDualWeightWithLcResolution(netCandidate, unit, item?.id),
         Battery: item?.battery ? `${item.battery}%` : '',
         Time: format(now, 'yyyy-MM-dd HH:mm:ss'),
         groups: String(item?.groups || ''),
@@ -1412,6 +1416,17 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         });
         setPrrBatteryByDevice((prev) => ({ ...prev, [deviceId]: prev[deviceId] ?? 0 }));
         logPrrLinkEventSafely('connected', reportLabel);
+      }
+      // New PRR session: reset per-LC freshness memory and start all cells as Tr.Err
+      // until each LC reports a fresh sample.
+      lcDisplayBufferRef.current = {};
+      dataTimeByIdRef.current = [];
+      setDataTimeById([]);
+      timeoutHandledRef.current = false;
+      lastUpdatedRef.current = Date.now();
+      const current = currentLcs.current || [];
+      if (current.length > 0) {
+        updateLCs(current.map((item: any) => ({ ...item, value: 'Tr.Err' })));
       }
       updateBleConnected(true);
       await BleClient.getServices(deviceId);

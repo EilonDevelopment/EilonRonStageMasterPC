@@ -12,6 +12,7 @@ import { IonButton, IonToggle } from '@ionic/react';
 import useAppData from '../../hooks/useAppData';
 import NumericKeypadOverlay from '../NumericKeypadOverlay';
 import { sanitizeDigitsOnly, sanitizeUnsignedDecimal, type NumericKeypadVariant } from '../../helper/numericFieldInput';
+import { formatGroupOverloadStringForUnit } from '../../helper/weightResolution';
 
 interface ProjectSettingModalProps {
   visible: boolean;
@@ -109,17 +110,20 @@ const ProjectSettingModal: FC<ProjectSettingModalProps> = (props) => {
     }
     if (field === 'units') {
       const multiply = value !== project.units ? get_units_multiply(value) : 1;
-      let fixed = 0;
-      if (value == 'KG' || value == 'LBS') {
-        fixed = 1;
-      } else {
-        fixed = 3;
+      if (multiply !== 1) {
+        const currentTotalOverload =
+          project?.total_overload !== undefined && String(project.total_overload).trim() !== ''
+            ? String(project.total_overload)
+            : getDefaultTotalOverloadByUnits(project.units);
+        const converted = parseFloat(currentTotalOverload) * multiply;
+        const nextUnitStr = String(value);
+        if (Number.isFinite(converted)) {
+          setProject((v) => ({
+            ...v,
+            total_overload: formatGroupOverloadStringForUnit(converted, nextUnitStr),
+          }));
+        }
       }
-      const currentTotalOverload =
-        project?.total_overload !== undefined && String(project.total_overload).trim() !== ''
-          ? String(project.total_overload)
-          : getDefaultTotalOverloadByUnits(project.units);
-      setProject((v) => ({ ...v, total_overload: (parseFloat(currentTotalOverload) * multiply).toFixed(fixed) }));
     }
     setProject((v) => ({ ...v, [field]: value }));
   };

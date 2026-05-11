@@ -3,6 +3,7 @@ import { createPortal, flushSync } from 'react-dom';
 import Draggable, { DraggableCore, DraggableData, DraggableEvent } from 'react-draggable';
 import { Rnd } from 'react-rnd';
 
+import { lcBelongsToGroup } from "../../helper/lcGroupMembership";
 import { arrowUndoOutline, cameraOutline, closeCircleOutline, createOutline, homeOutline, imageOutline, locateOutline, lockClosedOutline, lockOpenOutline } from "ionicons/icons";
 
 /** Re-enable the crosshair control after auto-place / home-drag issues are fixed. */
@@ -51,12 +52,6 @@ interface MonitorViewProps {
   groupVisualOnly?: boolean;
   onCellClick?: (item: ILC) => void;
   onCellLongPress?: (item: ILC) => void;
-}
-
-function lcBelongsToGroup(item: ILC, groupId: string): boolean {
-  if (!groupId) return false;
-  const parts = item.groups?.split(',').map((g) => String(g).trim()).filter(Boolean) ?? [];
-  return parts.includes(String(groupId));
 }
 
 const MAX_LAYOUT_UNDO = 10;

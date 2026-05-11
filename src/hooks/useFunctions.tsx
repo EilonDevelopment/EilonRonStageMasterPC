@@ -5,6 +5,7 @@ import { db } from "../db";
 import { IGroup, ILC, ILog, IProject, IProjectDetail } from "../helper/types";
 import { LC_Serials, LC_SerialsType } from "../helper/constants";
 import { normalizeProjectId } from "../helper/functions";
+import { formatGroupOverloadStringForUnit, formatThresholdStringForLc } from "../helper/weightResolution";
 import { format, getTime, subDays } from "date-fns";
 import { useEffect, useRef } from "react";
 import { logEvent } from "../services/LogService";
@@ -245,7 +246,12 @@ export default function useFunctions() {
       console.log('project settings updated successfully');
       updateCurProject(data)
       updateProjects({ id, ...data })
-      f_update_units(multiply, weight)
+      const nextUnits = String(data.units ?? curProjectRef.current?.units ?? '')
+      const converted = multiply !== 1 || weight !== 1
+      await f_update_units(multiply, weight, {
+        nextProjectUnits: nextUnits,
+        applyLcThresholdQuantize: converted,
+      })
       return true;
     } catch (error) {
       console.error('Error updating row: ' + error);
@@ -499,29 +505,53 @@ export default function useFunctions() {
     return 'rgba(' + o(r() * s) + ',' + o(r() * s) + ',' + o(r() * s) + ',' + 1 + ')'
   }
 
-  const f_update_units = async (multiply: number, weight: any) => {
+  const f_update_units = async (
+    multiply: number,
+    weight: any,
+    opts?: {
+      nextProjectUnits?: string;
+      applyLcThresholdQuantize?: boolean;
+    }
+  ) => {
     console.log("I'm curProject", curProject)
     try {
+      const applyQ = opts?.applyLcThresholdQuantize === true
+      const projU = opts?.nextProjectUnits
 
-      const pid = normalizeProjectId(curProject.id);
+      const pid = normalizeProjectId((curProjectRef.current?.id ?? curProject?.id) as any);
       await Promise.all([
         db.groups.filter((g: any) => normalizeProjectId(g.project_id) === pid)
           .modify(group => {
             if (!group.overload) return
-            group.overload = (group.overload * multiply).toFixed(3)
+            const n = Number(group.overload) * multiply
+            if (!Number.isFinite(n)) return
+            group.overload = applyQ && projU
+              ? formatGroupOverloadStringForUnit(n, projU)
+              : n.toFixed(3)
             // group.tare = (group.tare * multiply).toFixed(3)
           }),
         db.lcs.filter((lc: any) => normalizeProjectId(lc.project_id) === pid).modify(lc => {
-          if (lc.id > 10) {
-            lc.overload = (lc.overload * multiply).toFixed(3)
-            lc.underload = (lc.underload * multiply).toFixed(3)
-            lc.psw = (lc.psw * multiply).toFixed(3)
-
+          const idNum = Number(lc.id)
+          if (idNum > 10) {
+            const ov = Number(lc.overload) * multiply
+            const un = Number(lc.underload) * multiply
+            const pw = Number(lc.psw) * multiply
+            if (applyQ && projU) {
+              lc.overload = formatThresholdStringForLc(ov, idNum, projU)
+              lc.underload = formatThresholdStringForLc(un, idNum, projU)
+              lc.psw = formatThresholdStringForLc(pw, idNum, projU)
+            } else {
+              lc.overload = ov.toFixed(3)
+              lc.underload = un.toFixed(3)
+              lc.psw = pw.toFixed(3)
+            }
           } else {
-            lc.overload = (lc.overload * weight)
-            lc.underload = (lc.underload * weight)
-            lc.psw = (lc.psw * weight)
-
+            const ov = Number(lc.overload) * weight
+            const un = Number(lc.underload) * weight
+            const pw = Number(lc.psw) * weight
+            lc.overload = Number.isFinite(ov) ? ov.toFixed(3) : String(lc.overload)
+            lc.underload = Number.isFinite(un) ? un.toFixed(3) : String(lc.underload)
+            lc.psw = Number.isFinite(pw) ? pw.toFixed(3) : String(lc.psw)
           }
         })
       ])

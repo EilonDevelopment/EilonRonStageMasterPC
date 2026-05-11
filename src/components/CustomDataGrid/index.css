@@ -38,3 +38,9 @@
 .dark .MuiDataGrid-overlay {
   color: white !important;
 }
+
+/* Monitor list mode: highlight LCs that belong to the focused group (matches map highlight intent). */
+.monitor-list-row-group-hl {
+  outline: 2px solid var(--ion-color-primary, #3b82f6);
+  outline-offset: -3px;
+}

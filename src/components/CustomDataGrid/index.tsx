@@ -8,6 +8,12 @@ interface CustomDataGridProps {
   loading?: boolean;
   columns: any[];
   data: any[];
+  /** Row id for MUI DataGrid (defaults to `row.id`). Use e.g. `lc_id` when `id` is a business field, not unique row key. */
+  getRowId?: (row: any) => string | number;
+  /** MUI DataGrid row class (e.g. group highlight). */
+  getRowClassName?: (params: any) => string;
+  /** Optional slot overrides (e.g. custom `Row`). */
+  components?: Record<string, any>;
   onRowAction?: (row: any) => void;
   /** Called with sorted visible row ids whenever sort/data/pagination updates (e.g. Monitor snapshot #). */
   onSortedRowIdsChange?: (ids: string[]) => void;
@@ -19,6 +25,9 @@ const CustomDataGrid: FC<CustomDataGridProps> = (props) => {
     loading = false,
     columns,
     data,
+    getRowId,
+    getRowClassName,
+    components,
     onRowAction = () => {},
     onSortedRowIdsChange,
   } = props;
@@ -84,6 +93,9 @@ const CustomDataGrid: FC<CustomDataGridProps> = (props) => {
           rowHeight={54}
           rows={data}
           columns={columns}
+          {...(getRowId ? { getRowId } : {})}
+          {...(getRowClassName ? { getRowClassName } : {})}
+          {...(components ? { components } : {})}
           disableRowSelectionOnClick
           paginationModel={paginationModel}
           pageSizeOptions={[6, 10, 25, 50, 100]}
