@@ -62,6 +62,7 @@ import { pickProjectCsvText, shouldUseNativeCsvPickerForImport } from '../helper
 import { BLE_CONNECT_TIMEOUT_MS } from '../helper/bleConstants';
 import { collectBleDevicesForService, type BleDiscoveredDevice } from '../helper/bleLeScanCollection';
 import { formatDualWeightWithLcResolution, formatWeightByLcResolution, getResolutionForLcId, quantizeByResolution } from '../helper/weightResolution';
+import { getPreOverloadThreshold } from '../helper/lcLoadStatus';
 import { toast } from 'react-toastify';
 import useFunctions from '../hooks/useFunctions';
 
@@ -71,6 +72,7 @@ import { NativeSettings, AndroidSettings } from 'capacitor-native-settings';
 // 1. Asegúrate de importar Capacitor arriba
 import { Capacitor } from '@capacitor/core';
 import { logEvent } from '../services/LogService';
+import { flushAlarmBeepsOnForeground, setAlarmAppInForeground, type SafetyAlarmDetail } from '../services/alarmFeedback';
 
 
 // import { log, time } from 'console'; // Removed - not available in browser/WebView
@@ -139,11 +141,20 @@ const getLcDisplayBatchMs = (platformType: string | undefined, lcCount: number):
  * PRR + many LCs: per-LC "no fresh sample" before Tr.Err in ifConnection (must exceed slowest expected inter-sample gap).
  * Global silence below must be greater than a full slow reporting round (e.g. 75× @ ~1 Hz + jitter).
  */
-const PRR_STALE_LC_MS = 8000;
+const PRR_STALE_LC_MS = 2000;
 /** If no BLE-driven updates hit dataTimeById for this long, declare full link loss and set all LCs to Tr.Err. */
-const PRR_SILENCE_ALL_TRERR_MS = 15000;
+const PRR_SILENCE_ALL_TRERR_MS = 4000;
 const PRR_RECONNECT_BASE_MS = 1500;
 const PRR_RECONNECT_MAX_MS = 30000;
+
+const isDocumentVisible = (): boolean =>
+  typeof document === 'undefined' || document.visibilityState === 'visible';
+
+type LcBackgroundSnapshot = {
+  id: string;
+  value: unknown;
+  weightnotare?: unknown;
+};
 
 type PendingLCDisplay = {
   value?: string;
@@ -936,6 +947,12 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const preferredOrder = monitorListSortedLcIdsRef?.current ?? [];
     const orderedLcs = mergeLcOrderForSnapshot(projectLcs, preferredOrder);
 
+    const projectWeightUnit = active_project?.units || '';
+    const formatSnapshotDualTotal = (valueRaw: number, unitRaw: string) =>
+      formatDualWeightWithLcResolution(valueRaw, unitRaw);
+
+    const isLcInTotalSum = (item: any) => !!item.total_sum || String(item.total_sum) === '1';
+
     const rows = orderedLcs.map((item: any) => {
       const rawVal = String(item?.value ?? '').trim();
       const isErr = rawVal === 'Tr.Err' || rawVal === 'Tr. Err' || Number(rawVal) === -99999999;
@@ -944,8 +961,11 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       const useNetDisplay = !!tareStatusRef.current && !!item?.status_tare;
       const displayNum = useNetDisplay ? netCandidate : grossNum;
       const unit = Number(item?.id) <= 10 ? (active_project?.windmeter_units || '') : (active_project?.units || '');
+      const baseRowNum = stableRank.get(lcRankKey(item)) ?? '';
+      const inTotalSum = isLcInTotalSum(item);
       return {
-        rowNum: stableRank.get(lcRankKey(item)) ?? '',
+        rowNum: inTotalSum && baseRowNum !== '' ? `*${baseRowNum}` : baseRowNum,
+        inTotalSum,
         Name: String(item?.title || ''),
         ID: String(item?.id || ''),
         Status: getLcStatus(item),
@@ -965,20 +985,38 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         const idStr = String(g.id);
         const rowsInGroup = rows.filter((r: any) => r.groups.split(',').map((x: string) => x.trim()).includes(idStr));
         const sum = rowsInGroup.reduce((acc: number, r: any) => acc + (Number.isFinite(r.displayNum) ? r.displayNum : 0), 0);
+        const hasGroupErr = rowsInGroup.some((r: any) => r.Status === 'TR.ERR');
         const alerts = rowsInGroup.reduce((acc: Record<string, number>, r: any) => {
           acc[r.Status] = (acc[r.Status] || 0) + 1;
           return acc;
         }, {});
-        const unit = rowsInGroup[0]?.displayUnit || active_project?.units || '';
+        const unit = projectWeightUnit || rowsInGroup[0]?.displayUnit || '';
         return {
           id: idStr,
           title: g.title || `Grp ${idStr}`,
           unit,
-          total: `${sum.toFixed(2)} ${unit}`.trim(),
+          total: hasGroupErr ? 'Tr.Err' : formatSnapshotDualTotal(sum, unit),
           alerts,
           rows: rowsInGroup,
         };
       });
+    const totalSumLcIds = new Set(
+      projectLcs
+        .filter((item: any) => !!item.total_sum || String(item.total_sum) === '1')
+        .map((item: any) => String(item.id))
+    );
+    const totalSumRows = rows.filter((r: any) => totalSumLcIds.has(String(r.ID)));
+    const hasTotalSumErr = totalSumRows.some((r: any) => r.Status === 'TR.ERR');
+    const totalSumValue = totalSumRows.reduce(
+      (acc: number, r: any) => acc + (Number.isFinite(r.displayNum) ? r.displayNum : 0),
+      0
+    );
+    const totalSumDual = hasTotalSumErr
+      ? 'Tr.Err'
+      : (totalSumRows.length > 0
+        ? formatSnapshotDualTotal(totalSumValue, projectWeightUnit)
+        : '—');
+    const totalSumLegend = totalSumRows.length > 0 ? '* = included in Total Sum' : '';
     const prrId = prrConnectedListName || 'N/A';
     const prrStatus = connected ? 'Connected' : 'Disconnected';
     const batteryStr = `${Math.max(0, Math.min(100, Number(btry) || 0))}%`;
@@ -1013,6 +1051,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         const lines: string[] = [];
         lines.push(`Snapshot,${esc(active_project?.title || '')},${esc(format(now, 'yyyy-MM-dd HH:mm:ss'))}`);
         lines.push(`PRR,${esc(prrId)},${esc(prrStatus)},Battery,${esc(batteryStr)}`);
+        lines.push(`Total Sum,${esc(totalSumDual)}`);
+        if (totalSumLegend) lines.push(esc(totalSumLegend));
         lines.push('');
         lines.push('#,Name,ID,Status,Gross,Net,Battery,Time');
         rows.forEach((r: any) =>
@@ -1068,6 +1108,29 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         headers.forEach((h, i) => doc.text(h, margin + (i === 0 ? 2 : colWidths.slice(0, i).reduce((a, b) => a + b, 0) + 2), y + 5));
         y += rowHeight;
       };
+      const drawSnapshotDataRow = (r: any) => {
+        ensureSpace(rowHeight);
+        if (r.inTotalSum) {
+          doc.setFillColor(245, 248, 252);
+          doc.rect(margin, y, pageW - margin * 2, rowHeight, 'F');
+        }
+        const row = [
+          [String(r.rowNum).slice(0, 6)],
+          [String(r.Name).slice(0, 22)],
+          [String(r.ID).slice(0, 22)],
+          [String(r.Status).slice(0, 22)],
+          String(r.Gross || '').split('\n').map((s: string) => s.slice(0, 22)),
+          String(r.Net || '').split('\n').map((s: string) => s.slice(0, 22)),
+          [String(r.Battery).slice(0, 22)],
+          [String(r.Time).slice(0, 22)],
+        ];
+        doc.setTextColor(0, 0, 0);
+        row.forEach((cellLines, ii) => {
+          const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
+          doc.text(cellLines, x, y + 4);
+        });
+        y += rowHeight;
+      };
       doc.setFontSize(14);
       doc.text('Monitor Snapshot', margin, y);
       y += 7;
@@ -1077,56 +1140,55 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       doc.text(`PRR: ${prrId} | Status: ${prrStatus} | Battery: ${batteryStr}`, margin, y);
       y += 5;
       doc.text(`Generated: ${format(now, 'yyyy-MM-dd HH:mm:ss')}`, margin, y);
-      y += 7;
+      y += 5;
+      doc.text('Total Sum:', margin, y);
+      y += 4;
+      if (totalSumDual === 'Tr.Err' || totalSumDual === '—') {
+        doc.text(String(totalSumDual), margin + 2, y);
+        y += 5;
+      } else {
+        String(totalSumDual).split('\n').forEach((line) => {
+          doc.text(line, margin + 2, y);
+          y += 4;
+        });
+        y += 2;
+      }
+      if (totalSumLegend) {
+        doc.setFontSize(7);
+        doc.setTextColor(110, 110, 110);
+        doc.text(totalSumLegend, margin, y);
+        y += 4;
+        doc.setTextColor(0, 0, 0);
+      }
       doc.setFontSize(8);
       ensureSpace(rowHeight);
       drawTableHeader();
-      rows.forEach((r) => {
-        ensureSpace(rowHeight);
-        const row = [
-          [String(r.rowNum).slice(0, 6)],
-          [String(r.Name).slice(0, 22)],
-          [String(r.ID).slice(0, 22)],
-          [String(r.Status).slice(0, 22)],
-          String(r.Gross || '').split('\n').map((s) => s.slice(0, 22)),
-          String(r.Net || '').split('\n').map((s) => s.slice(0, 22)),
-          [String(r.Battery).slice(0, 22)],
-          [String(r.Time).slice(0, 22)],
-        ];
-        row.forEach((cellLines, ii) => {
-          const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
-          doc.text(cellLines, x, y + 4);
-        });
-        y += rowHeight;
-      });
+      rows.forEach((r) => drawSnapshotDataRow(r));
       groupRows.forEach((g: any) => {
-        ensureSpace(16);
+        const totalLines = String(g.total).split('\n');
+        const headerBlockH = 10 + totalLines.length * 4;
+        ensureSpace(headerBlockH + rowHeight);
         y += 6;
         const alertLabel = `OK:${g.alerts.OK || 0} U:${g.alerts.UNDERLOAD || 0} O:${g.alerts.OVERLOAD || 0} D:${g.alerts.DANGER || 0} E:${g.alerts['TR.ERR'] || 0}`;
         doc.setFontSize(9);
-        doc.text(`Group ${g.id} - ${g.title} | Total: ${g.total} | ${alertLabel}`, margin, y);
+        doc.text(`Group ${g.id} - ${g.title}`, margin, y);
+        y += 4;
+        doc.text('Total Weight:', margin, y);
+        if (g.total === 'Tr.Err') {
+          doc.text('Tr.Err', margin + 26, y);
+          y += 4;
+        } else {
+          totalLines.forEach((line: string) => {
+            doc.text(line, margin + 26, y);
+            y += 4;
+          });
+        }
+        doc.text(alertLabel, margin, y);
         y += 5;
         doc.setFontSize(8);
         ensureSpace(rowHeight);
         drawTableHeader();
-        g.rows.forEach((r: any) => {
-          ensureSpace(rowHeight);
-          const row = [
-            [String(r.rowNum).slice(0, 6)],
-            [String(r.Name).slice(0, 22)],
-            [String(r.ID).slice(0, 22)],
-            [String(r.Status).slice(0, 22)],
-            String(r.Gross || '').split('\n').map((s: string) => s.slice(0, 22)),
-            String(r.Net || '').split('\n').map((s: string) => s.slice(0, 22)),
-            [String(r.Battery).slice(0, 22)],
-            [String(r.Time).slice(0, 22)],
-          ];
-          row.forEach((cellLines: any, ii: number) => {
-            const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
-            doc.text(cellLines, x, y + 4);
-          });
-          y += rowHeight;
-        });
+        g.rows.forEach((r: any) => drawSnapshotDataRow(r));
         y += 2;
       });
       const fileName = `${fileBase}.pdf`;
@@ -1548,31 +1610,8 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const bt_connect = () => {
     //console.log('===bt_connect===')
   }
-  const ifConnection = async () => {
-    const realTime = Date.now();
-    const idsWithStaleData = new Set<string>();
-    for (const item of dataTimeById) {
-      const timeDiff = Math.abs(realTime - item.realTime);
-      if (timeDiff > PRR_STALE_LC_MS) idsWithStaleData.add(String(item.id));
-    }
-    const updatedLcs = lcs.map((lcItem) => {
-      const isStale = dataTimeById.length > 0 && idsWithStaleData.has(String(lcItem.id));
-      // IMPORTANT:
-      // During PRR reconnect/recovery the stream can repopulate IDs gradually.
-      // Treating "not yet present in dataTimeById" as Tr.Err causes rapid flashes
-      // (valid value for ms, then Tr.Err again) across many LCs.
-      // Only force Tr.Err for IDs that were seen and are now stale.
-      if (isStale) {
-        if (active_project?.id) {
-          maybeLogLcValue(lcItem.id, active_project.id, 'Tr.Err', -99999999, lcItem.overload, lcItem.underload);
-        }
-        return { ...lcItem, value: `Tr.Err` };
-      }
-      return lcItem;
-    });
-    if (updatedLcs.some((lc, i) => lc.value !== lcs[i]?.value)) {
-      updateLCs(updatedLcs);
-    }
+  const ifConnection = () => {
+    evaluateTransmissionFreshnessRef.current();
   };
   const updateLiveLCData = async () => {
     const currentTime = Date.now();
@@ -1639,51 +1678,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       clearInterval(intervalRef.current);
     }    
     intervalRef.current = setInterval(() => {
-      const now = Date.now();  
-      const currentDataTimeById = dataTimeByIdRef.current;
-      let mostRecentDataTime = 0;
-      let hasRecentData = false;      
-      if (currentDataTimeById.length > 0) {
-        mostRecentDataTime = Math.max(...currentDataTimeById.map(item => item.realTime || 0));
-        const timeSinceMostRecent = Math.abs(now - mostRecentDataTime);
-        hasRecentData = timeSinceMostRecent <= PRR_SILENCE_ALL_TRERR_MS;
-        if (mostRecentDataTime > lastUpdatedRef.current) {
-          lastUpdatedRef.current = mostRecentDataTime;
-          timeoutHandledRef.current = false;
-        }
-      }     
-      if (hasRecentData) {
-        if (timeoutHandledRef.current) {
-          timeoutHandledRef.current = false;
-        }
-        return;
-      }
-      const referenceTime = mostRecentDataTime > 0 ? mostRecentDataTime : lastUpdatedRef.current;
-      const timeSinceLastUpdate = now - referenceTime; 
-      if (timeSinceLastUpdate < PRR_SILENCE_ALL_TRERR_MS) {
-        if (timeoutHandledRef.current) {
-          timeoutHandledRef.current = false;
-        }
-        return;
-      }
-      if (timeSinceLastUpdate >= PRR_SILENCE_ALL_TRERR_MS && !timeoutHandledRef.current) {
-        timeoutHandledRef.current = true;
-        setNoChange(true);
-        const lcsArray: any = []
-        const projId = curProjectRef.current?.id;
-        currentLcs.current.forEach((item) => {
-          lcsArray.push({ ...item, value: `Tr.Err` });
-          if (projId) {
-            maybeLogLcValue(item.id, projId, 'Tr.Err', -99999999, item.overload, item.underload);
-          }
-        });
-        setTrrLcs(lcsArray)
-        // Do NOT clear dataTimeById: empty list makes ifConnection treat every LC as "!exists" until the
-        // next full burst — flashes of Tr.Err while data is actually returning (e.g. after PRR resync).
-        setTimeout(() => {
-          timeoutHandledRef.current = false;
-        }, 2000);
-      }
+      evaluateTransmissionFreshnessRef.current();
     }, 1000);
 
     return () => {
@@ -1721,6 +1716,18 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const prevCurProjectIdRef = useRef<string | undefined>(curProject?.id);
   const lcDisplayBufferRef = useRef<Record<string, PendingLCDisplay>>({});
   const lastReportTimeRef = useRef<Record<string, number>>({});
+  /** Last BLE payload processed (any LC). Used to distinguish OS suspend vs real silence in background. */
+  const lastBleRxAtRef = useRef<number>(Date.now());
+  /** When app entered background; null while foreground. */
+  const backgroundSinceRef = useRef<number | null>(null);
+  /**
+   * Capacitor app active flag — reliable on iOS (WKWebView often keeps document.visibilityState === 'visible').
+   */
+  const appIsActiveRef = useRef(true);
+  const lcSnapshotOnBackgroundRef = useRef<LcBackgroundSnapshot[] | null>(null);
+  const backgroundBleSuspendedRef = useRef(false);
+  const markAppBackgroundedRef = useRef<() => void>(() => {});
+  const syncMonitorAfterForegroundRef = useRef<() => void>(() => {});
   /** Last PRR BLE peripheral id (iOS UUID). */
   const prrBleDeviceIdRef = useRef<string | null>(null);
   /** Shown next to "PRR" on Monitor: first line of the scan list (name), not the BLE address. */
@@ -1736,6 +1743,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const lastPrrLinkEventRef = useRef<Record<string, number>>({});
   const prevBlePrrStateRef = useRef<boolean | null>(null);
   const bleConnectedRef = useRef<boolean>(bleConnected);
+  const evaluateTransmissionFreshnessRef = useRef<() => void>(() => {});
   const prrReconnectAttemptsRef = useRef<Record<string, number>>({});
   const prrReconnectInProgressRef = useRef<Record<string, boolean>>({});
   const prrReconnectTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
@@ -1779,6 +1787,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       realval === -99999999;
     // PRR offline: still show Tr.Err in UI, but do not write 75× Tr.Err/sec to IndexedDB (was killing UI thread).
     if (isTrErrSample && !bleConnected) return;
+    if (isTrErrSample && !appIsActiveRef.current) return;
     const intervalSecRaw = Number(proj?.report_interval_seconds ?? 60);
     const intervalSec = Math.max(
       1,
@@ -1790,6 +1799,166 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     lastReportTimeRef.current[key] = now;
     f_log_lc_value(lcId, projectId, value, realval, overload, underload, batteryParam);
   };
+
+  const touchLcFreshnessInRef = (
+    lcId: string | number,
+    fields?: Partial<{
+      value: unknown;
+      realval: unknown;
+      max: unknown;
+      time: string;
+      overload: unknown;
+      underload: unknown;
+    }>
+  ) => {
+    const now = Date.now();
+    lastBleRxAtRef.current = now;
+    const id = String(lcId);
+    const prev = dataTimeByIdRef.current;
+    const idx = prev.findIndex((i) => String(i.id) === id);
+    const entry = {
+      ...(idx >= 0 ? prev[idx] : { id }),
+      ...fields,
+      id,
+      realTime: now,
+    };
+    dataTimeByIdRef.current =
+      idx >= 0 ? prev.map((item, i) => (i === idx ? { ...item, ...entry } : item)) : [...prev, entry];
+    if (now > lastUpdatedRef.current) lastUpdatedRef.current = now;
+    timeoutHandledRef.current = false;
+  };
+
+  const markAppBackgrounded = () => {
+    appIsActiveRef.current = false;
+    setAlarmAppInForeground(false);
+    if (backgroundSinceRef.current != null) return;
+    backgroundSinceRef.current = Date.now();
+    lcSnapshotOnBackgroundRef.current = (currentLcs.current || []).map((lc) => ({
+      id: String(lc.id),
+      value: lc.value,
+      weightnotare: lc.weightnotare,
+    }));
+  };
+
+  /** Shift freshness timestamps forward after OS suspended BLE/JS while backgrounded. */
+  const compensateFreshnessAfterBackground = () => {
+    const bgSince = backgroundSinceRef.current;
+    if (bgSince == null) return;
+    const pausedMs = Date.now() - bgSince;
+    backgroundSinceRef.current = null;
+    if (pausedMs <= 0) return;
+
+    const bleRxAfterBackground = lastBleRxAtRef.current > bgSince;
+    if (bleRxAfterBackground) return;
+
+    backgroundBleSuspendedRef.current = true;
+    const prev = dataTimeByIdRef.current;
+    if (prev.length === 0) return;
+    dataTimeByIdRef.current = prev.map((item) => ({
+      ...item,
+      realTime: (item.realTime || 0) + pausedMs,
+    }));
+    lastUpdatedRef.current += pausedMs;
+  };
+
+  const restoreLcsAfterSuspendedBackground = () => {
+    if (!backgroundBleSuspendedRef.current) {
+      lcSnapshotOnBackgroundRef.current = null;
+      return;
+    }
+    backgroundBleSuspendedRef.current = false;
+    const snap = lcSnapshotOnBackgroundRef.current;
+    lcSnapshotOnBackgroundRef.current = null;
+    if (!snap?.length) return;
+
+    const snapById = new Map(snap.map((s) => [s.id, s]));
+    const cur = currentLcs.current || [];
+    let changed = false;
+    const updated = cur.map((lc) => {
+      const prev = snapById.get(String(lc.id));
+      if (!prev || prev.value === 'Tr.Err' || lc.value !== 'Tr.Err') return lc;
+      changed = true;
+      return {
+        ...lc,
+        value: prev.value,
+        ...(prev.weightnotare !== undefined && { weightnotare: prev.weightnotare }),
+      };
+    });
+    if (changed) {
+      updateLCs(updated);
+      setTrrLcs(updated);
+    }
+  };
+  markAppBackgroundedRef.current = markAppBackgrounded;
+
+  const evaluateTransmissionFreshness = () => {
+    if (!bleConnectedRef.current || !appIsActiveRef.current) return;
+
+    const now = Date.now();
+    const currentDataTimeById = dataTimeByIdRef.current;
+    let mostRecentDataTime = 0;
+
+    if (currentDataTimeById.length > 0) {
+      mostRecentDataTime = Math.max(...currentDataTimeById.map((item) => item.realTime || 0));
+      if (mostRecentDataTime > lastUpdatedRef.current) {
+        lastUpdatedRef.current = mostRecentDataTime;
+        timeoutHandledRef.current = false;
+      }
+    }
+
+    const timeSinceMostRecent =
+      mostRecentDataTime > 0 ? now - mostRecentDataTime : Number.POSITIVE_INFINITY;
+    const hasRecentGlobalData = timeSinceMostRecent <= PRR_SILENCE_ALL_TRERR_MS;
+
+    if (!hasRecentGlobalData) {
+      const referenceTime = mostRecentDataTime > 0 ? mostRecentDataTime : lastUpdatedRef.current;
+      const timeSinceLastUpdate = now - referenceTime;
+      if (timeSinceLastUpdate < PRR_SILENCE_ALL_TRERR_MS) {
+        if (timeoutHandledRef.current) timeoutHandledRef.current = false;
+      } else if (!timeoutHandledRef.current) {
+        timeoutHandledRef.current = true;
+        setNoChange(true);
+        const lcsArray: any[] = [];
+        const projId = curProjectRef.current?.id;
+        currentLcs.current.forEach((item) => {
+          lcsArray.push({ ...item, value: 'Tr.Err' });
+          if (projId) {
+            maybeLogLcValue(item.id, projId, 'Tr.Err', -99999999, item.overload, item.underload);
+          }
+        });
+        setTrrLcs(lcsArray);
+        setTimeout(() => {
+          timeoutHandledRef.current = false;
+        }, 2000);
+        return;
+      }
+    } else if (timeoutHandledRef.current) {
+      timeoutHandledRef.current = false;
+    }
+
+    if (currentDataTimeById.length === 0) return;
+
+    const idsWithStaleData = new Set<string>();
+    for (const item of currentDataTimeById) {
+      if (now - item.realTime > PRR_STALE_LC_MS) idsWithStaleData.add(String(item.id));
+    }
+    if (idsWithStaleData.size === 0) return;
+
+    const curLcs = currentLcs.current || [];
+    const projId = curProjectRef.current?.id;
+    let changed = false;
+    const updatedLcs = curLcs.map((lcItem) => {
+      if (!idsWithStaleData.has(String(lcItem.id))) return lcItem;
+      if (lcItem.value === 'Tr.Err') return lcItem;
+      changed = true;
+      if (projId) {
+        maybeLogLcValue(lcItem.id, projId, 'Tr.Err', -99999999, lcItem.overload, lcItem.underload);
+      }
+      return { ...lcItem, value: 'Tr.Err' };
+    });
+    if (changed) updateLCs(updatedLcs);
+  };
+  evaluateTransmissionFreshnessRef.current = evaluateTransmissionFreshness;
 
   const logPrrLinkEventSafely = (kind: 'connected' | 'disconnected', reportLabelOverride?: string | null) => {
     const proj = activeProjectRef.current?.id ? activeProjectRef.current : active_project;
@@ -1893,6 +2062,75 @@ useEffect(() => {
 const pendingWarnListRef = useRef<any[]>([]);
 const lastSoundTimeRef = useRef<number>(0);
 
+  const playSafetyBeepIfDue = (detail?: SafetyAlarmDetail) => {
+    const now = Date.now();
+    if (now - lastSoundTimeRef.current <= 1000) return;
+    lastSoundTimeRef.current = now;
+    play_beep(4, 800, 200, detail);
+  };
+
+  const registerSafetyAlertKey = (key: string) => {
+    if (appIsActiveRef.current) {
+      activeAlertsRef.current.add(key);
+    }
+  };
+
+  const replaySafetyBeepIfConditionsActive = () => {
+    const proj = curProjectRef.current;
+    if (!proj?.id) return;
+    const pid = normalizeProjectId(proj.id);
+    const rows = (currentLcs.current || []).filter(
+      (lc: any) => normalizeProjectId(lc.project_id) === pid
+    );
+    let needsBeep = false;
+    for (const lc of rows) {
+      const raw = lc.value;
+      if (raw === 'Tr.Err' || raw === 'Tr. Err' || Number(raw) === -99999999) continue;
+      const gross = Number(raw);
+      const overload = Number(lc.overload);
+      const underload = Number(lc.underload);
+      if (!Number.isFinite(gross)) continue;
+      if (Number.isFinite(underload) && gross < underload) needsBeep = true;
+      if (Number.isFinite(overload) && overload > 0 && gross > overload) needsBeep = true;
+      const prePct = getPreOverloadThreshold(overload, proj.pre_overload);
+      if (prePct != null && Number.isFinite(overload) && gross > prePct && gross <= overload) needsBeep = true;
+    }
+    if (needsBeep) playSafetyBeepIfDue();
+  };
+
+  /** While backgrounded: refresh BLE freshness timestamps without React/LC UI updates. */
+  const refreshLcFreshnessFromBuffer = () => {
+    const buffer = lcDisplayBufferRef.current;
+    const keys = Object.keys(buffer);
+    if (keys.length === 0) return;
+
+    const now = Date.now();
+    lastUpdatedRef.current = now;
+    timeoutHandledRef.current = false;
+
+    const prev = dataTimeByIdRef.current;
+    const newData = [...prev];
+    for (const [id, p] of Object.entries(buffer)) {
+      if (p.weight === undefined && p.value === undefined && p.realval === undefined) continue;
+      const idx = newData.findIndex((i: any) => i.id === id);
+      const entry = {
+        id,
+        realTime: now,
+        value: p.weight ?? p.value,
+        realval: p.realval,
+        max: p.max,
+        time: p.time ?? format(new Date(), 'pp'),
+        overload: p.overload,
+        underload: p.underload,
+      };
+      if (idx >= 0) newData[idx] = { ...newData[idx], ...entry };
+      else newData.push(entry);
+    }
+    dataTimeByIdRef.current = newData;
+  };
+
+  const flushLcDisplayBufferRef = useRef<() => void>(() => {});
+
   const flushLcDisplayBuffer = () => {
     const buffer = lcDisplayBufferRef.current;
     const keys = Object.keys(buffer);
@@ -1984,14 +2222,78 @@ const lastSoundTimeRef = useRef<number>(0);
     // Limpiamos el buffer de celdas
     lcDisplayBufferRef.current = {};
   };
+  flushLcDisplayBufferRef.current = flushLcDisplayBuffer;
+
+  const syncMonitorAfterForeground = () => {
+    appIsActiveRef.current = true;
+    setAlarmAppInForeground(true);
+    compensateFreshnessAfterBackground();
+    restoreLcsAfterSuspendedBackground();
+    refreshLcFreshnessFromBuffer();
+    flushLcDisplayBufferRef.current();
+    flushAlarmBeepsOnForeground();
+    replaySafetyBeepIfConditionsActive();
+    const delayMs = Capacitor.getPlatform() === 'ios' ? 800 : 100;
+    window.setTimeout(() => evaluateTransmissionFreshnessRef.current(), delayMs);
+  };
+  syncMonitorAfterForegroundRef.current = syncMonitorAfterForeground;
+
+  useEffect(() => {
+    const onForeground = () => syncMonitorAfterForegroundRef.current();
+    const onBackground = () => markAppBackgroundedRef.current();
+
+    void CapApp.getState().then((state) => {
+      appIsActiveRef.current = state.isActive;
+      setAlarmAppInForeground(state.isActive);
+      if (!state.isActive) onBackground();
+    });
+
+    const onVisibilityChange = () => {
+      if (isDocumentVisible()) onForeground();
+      else onBackground();
+    };
+    const onPageShow = () => onForeground();
+    const onPageHide = () => onBackground();
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pageshow', onPageShow);
+    window.addEventListener('pagehide', onPageHide);
+
+    let resumeHandle: { remove: () => void } | undefined;
+    let pauseHandle: { remove: () => void } | undefined;
+    let appStateHandle: { remove: () => void } | undefined;
+
+    void CapApp.addListener('resume', onForeground).then((handle) => {
+      resumeHandle = handle;
+    });
+    void CapApp.addListener('pause', onBackground).then((handle) => {
+      pauseHandle = handle;
+    });
+    void CapApp.addListener('appStateChange', ({ isActive }) => {
+      if (isActive) onForeground();
+      else onBackground();
+    }).then((handle) => {
+      appStateHandle = handle;
+    });
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pageshow', onPageShow);
+      window.removeEventListener('pagehide', onPageHide);
+      resumeHandle?.remove();
+      pauseHandle?.remove();
+      appStateHandle?.remove();
+    };
+  }, []);
 
   useEffect(() => {
     const ms = getLcDisplayBatchMs(platformType, Array.isArray(lcs) ? lcs.length : 0);
 
     const t = window.setInterval(() => {
-      // When app is backgrounded, avoid heavy React updates; keep last values buffered.
-      // Safety logic (over/underload) still runs inside bt_parse.
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      if (!appIsActiveRef.current) {
+        refreshLcFreshnessFromBuffer();
+        return;
+      }
       flushLcDisplayBuffer();
     }, ms);
 
@@ -2030,6 +2332,7 @@ const lastSoundTimeRef = useRef<number>(0);
   const bt_parse = async (a: Uint8Array, sourceDeviceId?: string) => {
     const typ = toHexString([a[2]]);
     if (typ === 'bb' || typ === 'bc') {
+      lastBleRxAtRef.current = Date.now();
       const btry = parseInt('0x' + toHexString([a[10]]), 16);
      /* if (btry < 100) {
         //console.log('Battery level:', btry + '%');
@@ -2081,6 +2384,7 @@ const lastSoundTimeRef = useRef<number>(0);
       if (lcItem) {
         const bid = lc.toString();
         lcDisplayBufferRef.current[bid] = { ...lcDisplayBufferRef.current[bid], battery: lc_btry.toString() };
+        touchLcFreshnessInRef(bid);
       }
       //updateBatteryStatus(lc_btry)
       const capacity: any = f_lc_capacity_id(lc);
@@ -2163,6 +2467,7 @@ const lastSoundTimeRef = useRef<number>(0);
         if (windLcItem) {
           const bid = lc.toString();
           lcDisplayBufferRef.current[bid] = { ...lcDisplayBufferRef.current[bid], value: parseFloat(realval).toFixed(fx) };
+          touchLcFreshnessInRef(bid, { value: parseFloat(realval).toFixed(fx), realval });
         } else {
           console.warn('[BT_PARSE] Windmeter LC not found in project:', lc, 'Available LCs:', lcs.map(l => l.id));
         }
@@ -2246,6 +2551,14 @@ const lastSoundTimeRef = useRef<number>(0);
           overload,
           underload,
         };
+        touchLcFreshnessInRef(bid, {
+          value: w,
+          realval,
+          max: maxVal,
+          time: format(new Date(), 'pp'),
+          overload,
+          underload,
+        });
         const nowUnitsLog = Date.now();
         if (nowUnitsLog - (unitsDisplayLogLastRef.current[bid] ?? 0) > 4000) {
           unitsDisplayLogLastRef.current[bid] = nowUnitsLog;
@@ -2255,12 +2568,7 @@ const lastSoundTimeRef = useRef<number>(0);
         weight = formatWeightByLcResolution(weight, lc, u, fx);
         const weighttolog = formatWeightByLcResolution(weightnotare, lc, u, fx);
         //update_max_value_by_lc_id(lc, weightnotare, u)
-        let preoverload_precent = 0;
-        const pre_overload = parseInt(active_project.pre_overload ?? '0')
-        if (pre_overload > 0) {
-          const po = pre_overload / 100
-          preoverload_precent = overload * po;
-        }
+        const preoverload_precent = getPreOverloadThreshold(overload, active_project.pre_overload) ?? 0;
 
         const grossValueNumeric = parseFloat(w);
         const useNetForDisplay = tareStatusRef.current && statusTare;
@@ -2310,14 +2618,8 @@ const lastSoundTimeRef = useRef<number>(0);
             //updateWarnList(updatedList);
             // --- EN LUGAR DE LLAMAR A updateWarnList(updatedList) DIRECTAMENTE: ---
             pendingWarnListRef.current = updatedList; // Lo guardamos para el Batcher
-            // --- LIMITADOR DE SONIDO (Solo suena una vez cada 1000ms) ---
-            const currentTime = Date.now();
-            if (currentTime - lastSoundTimeRef.current > 1000) {
-              play_beep(4); 
-              lastSoundTimeRef.current = currentTime;
-            }
-            
-            activeAlertsRef.current.add(lcAlertKey); // Bloqueamos nuevas entradas para esta LC
+            playSafetyBeepIfDue({ title: typeMsg, body: `LC ${lc}: ${valueToSaveForWarning}` });
+            registerSafetyAlertKey(lcAlertKey);
            // fire_lc_overload(lc, valueToSaveForWarning, l.underload , 'total');
             }
           } else if (safetyValueNumeric > overload) {
@@ -2353,13 +2655,8 @@ const lastSoundTimeRef = useRef<number>(0);
             //updateWarnList(updatedList)
             // --- EN LUGAR DE LLAMAR A updateWarnList(updatedList) DIRECTAMENTE: ---
             pendingWarnListRef.current = updatedList; // Lo guardamos para el Batcher
-            // --- LIMITADOR DE SONIDO (Solo suena una vez cada 1000ms) ---
-            const currentTime = Date.now();
-            if (currentTime - lastSoundTimeRef.current > 1000) {
-              play_beep(4); 
-              lastSoundTimeRef.current = currentTime;
-            }
-            activeAlertsRef.current.add(lcAlertKey);
+            playSafetyBeepIfDue({ title: typeMsg, body: `LC ${lc}: ${valueToSaveForWarning}` });
+            registerSafetyAlertKey(lcAlertKey);
             }
           } else if (safetyValueNumeric > preoverload_precent) {
             // PRE-OVERLOAD alert
@@ -2376,7 +2673,7 @@ const lastSoundTimeRef = useRef<number>(0);
               project_id:curProjectRef.current.id
             })
             
-            activeAlertsRef.current.add(lcAlertKey);
+            registerSafetyAlertKey(lcAlertKey);
           }
 
           }
@@ -2484,14 +2781,8 @@ const lastSoundTimeRef = useRef<number>(0);
               //updateWarnList(updatedList);
               // --- EN LUGAR DE LLAMAR A updateWarnList(updatedList) DIRECTAMENTE: ---
               pendingWarnListRef.current = updatedList; // Lo guardamos para el Batcher
-              // --- LIMITADOR DE SONIDO (Solo suena una vez cada 1000ms) ---
-            const currentTime = Date.now();
-            if (currentTime - lastSoundTimeRef.current > 1000) {
-              play_beep(4); 
-              lastSoundTimeRef.current = currentTime;
-            }
-
-              activeAlertsRef.current.add(alertKey);
+              playSafetyBeepIfDue({ title: 'OVERLOAD', body: `Group ${group.id}: ${groupGrossSum}` });
+              registerSafetyAlertKey(alertKey);
             }
           } else {
             // Si el peso bajó del límite, quitamos la marca para permitir futuras alertas
@@ -2551,26 +2842,15 @@ const lastSoundTimeRef = useRef<number>(0);
             //updateWarnList(updatedList);
             // --- EN LUGAR DE LLAMAR A updateWarnList(updatedList) DIRECTAMENTE: ---
             pendingWarnListRef.current = updatedList; // Lo guardamos para el Batcher
-            
-            // --- LIMITADOR DE SONIDO (Solo suena una vez cada 1000ms) ---
-            const currentTime = Date.now();
-            if (currentTime - lastSoundTimeRef.current > 1000) {
-              play_beep(4); 
-              lastSoundTimeRef.current = currentTime;
-            }
-            activeAlertsRef.current.add(totalAlertKey);
-            //fire_lc_overload(warnId, totalSumValue, curProjectRef.current.total_overload, 'total');
+            playSafetyBeepIfDue({
+              title: 'TOTAL OVERLOAD',
+              body: `Total Sum: ${(u === 'mton') ? totalSumGrossValue.toFixed(3) : totalSumGrossValue.toFixed(0)}`,
+            });
+            registerSafetyAlertKey(totalAlertKey);
           }
         } else {
           activeAlertsRef.current.delete(totalAlertKey);
         }
-
-
-
-
-
-
-
 
         if (a[2] == 55 && parseInt(a[10] + '').toString(2).length == 7) {
           onTareAction('untare', '0');
@@ -3108,6 +3388,19 @@ const lastSoundTimeRef = useRef<number>(0);
                     <span className="text-xs font-bold bg-danger text-white px-1.5 py-0.5 rounded w-max">{t("Common.TrErr")}</span>
                   }
                 </div>
+                {active_project.id ? (
+                  <button
+                    type='button'
+                    className='monitor-units-chip shrink-0 px-3 py-1.5 rounded-lg border-2 border-primary bg-primary/15 dark:bg-primary/25 text-primary dark:text-[#7eb8ff] font-bold text-sm tracking-wide cursor-pointer shadow-sm hover:bg-primary/25 dark:hover:bg-primary/35 active:scale-[0.98] transition-all'
+                    title={t('Monitor.Header.Units')}
+                    onClick={() => {
+                      setSettingModalMode('units-only');
+                      setVisibleSetting(true);
+                    }}
+                  >
+                    {t('Monitor.Header.Units')}: {active_project.units} | {active_project.windmeter_units}
+                  </button>
+                ) : null}
                 <div className='flex flex-row items-center gap-1.5 shrink-0'>
                   <div className='relative flex items-center justify-center'>
                     <IonImg src={connected ? bleConnectIcon : bleDisConnectIcon} alt='ble' className='w-10' />
@@ -3177,17 +3470,6 @@ const lastSoundTimeRef = useRef<number>(0);
                       </div>
                     </>
                   ) : null}
-                  <Text label="|" />
-                  <button
-                    type='button'
-                    className='bg-transparent p-0 m-0 border-none cursor-pointer text-inherit'
-                    onClick={() => {
-                      setSettingModalMode('units-only');
-                      setVisibleSetting(true);
-                    }}
-                  >
-                    <Text label={`${t('Monitor.Header.Units')}: ${active_project.units} | ${active_project.windmeter_units}`} />
-                  </button>
                 </div>
               )}
               <div className='flex flex-row items-end gap-2 pr-2'>

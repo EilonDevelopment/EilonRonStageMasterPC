@@ -49,9 +49,9 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>This app uses Bluetooth to connect to load cells and peripheral devices.</string>
+	<string>This app uses Bluetooth to connect to load cells and PRR devices, including while monitoring in the background.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>This app uses Bluetooth to connect to load cells and peripheral devices.</string>
+	<string>This app uses Bluetooth to connect to load cells and PRR devices, including while monitoring in the background.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>The app needs camera access to capture photos for the monitor background and project images.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
@@ -63,6 +63,10 @@
 		<string>mailto</string>
 		<string>googlegmail</string>
 		<string>ms-outlook</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
 	</array>
 </dict>
 </plist>

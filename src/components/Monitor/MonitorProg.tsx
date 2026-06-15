@@ -2,6 +2,8 @@ import React, { FC, useRef } from 'react';
 import { ILC } from '../../helper/types';
 import Text from '../Text';
 import { lcBelongsToGroup } from '../../helper/lcGroupMembership';
+import { getLcGrossLoadBand } from '../../helper/lcLoadStatus';
+import useAppData from '../../hooks/useAppData';
 
 const LC_LONG_PRESS_MS = 600;
 
@@ -41,10 +43,11 @@ const MonitorProgTile: FC<{
   unit: string;
   tare: boolean;
   max: boolean;
+  preOverloadPct?: string;
   onCellLongPress?: (lc: ILC) => void;
   groupVisualGroupId?: string | null;
   groupVisualHighlight?: boolean;
-}> = ({ item, unit, tare, max, onCellLongPress, groupVisualGroupId, groupVisualHighlight }) => {
+}> = ({ item, unit, tare, max, preOverloadPct, onCellLongPress, groupVisualGroupId, groupVisualHighlight }) => {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggeredRef = useRef(false);
 
@@ -71,6 +74,8 @@ const MonitorProgTile: FC<{
   };
 
   const showAlertBorder = isUnderload(item) || isOverload(item);
+  const loadBand = !max ? getLcGrossLoadBand(item.value, item.overload, item.underload, preOverloadPct) : 'normal';
+  const isPreOverload = loadBand === 'pre-overload';
   const dv = max && item.max != null ? item.max : displayValue(item, tare);
   const inTareMode =
     dv !== 'Tr.Err' &&
@@ -121,7 +126,7 @@ const MonitorProgTile: FC<{
       }}
     >
       <div className="flex flex-col p-1 gap-2">
-        <span className={`w-full text-center text-xs py-0.5 ${inTareMode ? 'text-white bg-cyan-600' : 'text-white bg-red1'}`}>
+        <span className={`w-full text-center text-sm font-bold py-1 ${inTareMode ? 'text-white bg-cyan-700' : 'text-white bg-red1'}`}>
           {danger
             ? 'DANGER'
             : dv && dv !== 'Tr.Err' && dv !== 'Tr. Err' && !Number.isNaN(parseFloat(String(dv))) && item.overload
@@ -135,10 +140,10 @@ const MonitorProgTile: FC<{
                   : '0'}
         </span>
         <div
-          className={`flex flex-col h-24 rounded flex items-center justify-center relative ${showAlertBorder ? 'border-2 border-red-500' : ''}`}
+          className={`flex flex-col h-24 rounded flex items-center justify-center relative ${showAlertBorder ? 'border-2 border-red-500' : isPreOverload ? 'border-2 border-warning bg-warning/30' : ''}`}
           style={showAlertBorder ? alertBorderStyle : undefined}
         >
-          <span className="z-30 text-black font-normal drop-shadow-[0_1px_2px_rgba(255,255,255,0.8)]">
+          <span className="z-30 text-gray-900 font-extrabold text-xl tabular-nums drop-shadow-[0_1px_2px_rgba(255,255,255,0.9)]">
             {danger
               ? 'DANGER'
               : dv && dv !== 'Tr.Err' && dv !== 'Tr. Err' && !Number.isNaN(parseFloat(String(dv)))
@@ -153,7 +158,7 @@ const MonitorProgTile: FC<{
       </div>
       <hr className="border-dark dark:border-light" />
       <div className="flex flex-col w-full bg-gray-200 dark:bg-dark px-1 py-1.5 text-center">
-        <Text type="sm-dark" classes="font-medium leading-4 text-dark dark:text-light" label={item.title || item.id} />
+        <Text type="sm-dark" classes="font-bold leading-5 text-base text-dark dark:text-light" label={item.title || item.id} />
         <Text
           type="sm-dark"
           classes="font-medium leading-4 text-dark dark:text-light"
@@ -174,6 +179,7 @@ const MonitorProg: FC<MonitorProgProps> = (props) => {
     groupVisualGroupId = null,
     groupVisualHighlight = false,
   } = props;
+  const { curProject } = useAppData();
 
   return (
     <div className="flex flex-wrap gap-2">
@@ -185,6 +191,7 @@ const MonitorProg: FC<MonitorProgProps> = (props) => {
             unit={unit}
             tare={tare}
             max={max}
+            preOverloadPct={curProject?.pre_overload}
             onCellLongPress={onCellLongPress}
             groupVisualGroupId={groupVisualGroupId}
             groupVisualHighlight={groupVisualHighlight}

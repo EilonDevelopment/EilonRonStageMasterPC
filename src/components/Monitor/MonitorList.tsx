@@ -7,6 +7,7 @@ import useAppData from '../../hooks/useAppData';
 import { normalizeProjectId } from '../../helper/functions';
 import { lcRankKey, stableRowIndexMap } from '../../helper/lcStableRowIndex';
 import { lcBelongsToGroup } from '../../helper/lcGroupMembership';
+import { getLcGrossLoadBand } from '../../helper/lcLoadStatus';
 
 const LC_LONG_PRESS_MS = 600;
 
@@ -133,7 +134,7 @@ const MonitorList: FC<MonitorListProps> = (props) => {
       headerName: t('Monitor.List.Id'),
       // eslint-disable-next-line
       // @ts-ignore
-      renderCell: ({ row }) => <span className='text-dark dark:text-light'>{row.id}</span>
+      renderCell: ({ row }) => <span className='text-dark dark:text-light text-base font-bold tabular-nums'>{row.id}</span>
     },
     {
       flex: 0.118,
@@ -154,20 +155,27 @@ const MonitorList: FC<MonitorListProps> = (props) => {
       renderCell: ({ row }) => {
         const dv = displayValue(row);
         const isTrErr = !dv || dv === 'Tr.Err' || dv === 'Tr. Err';
-        const val = Number(dv);
-        const over = Number(row.overload);
-        const under = Number(row.underload);
-        const isDanger = !Number.isNaN(val) && !Number.isNaN(over) && over > 0 && val >= over * 1.3;
-        const isOverload = !Number.isNaN(val) && !Number.isNaN(over) && val > over;
-        const isUnderload = !Number.isNaN(val) && !Number.isNaN(under) && val < under;
+        const loadBand = getLcGrossLoadBand(row.value, row.overload, row.underload, curProject?.pre_overload);
+        const isDanger = loadBand === 'danger';
+        const isOverload = loadBand === 'overload';
+        const isUnderload = loadBand === 'underload';
+        const isPreOverload = loadBand === 'pre-overload';
         const isZeroValue = dv === '0' || parseFloat(String(dv).trim()) === 0;
         const showAlert = (isDanger || isOverload || isUnderload) && !isZeroValue;
         const hasValue = dv && !isTrErr;
         const inTareMode = !hasTransmissionError(row.value) && tareStatus && row.status_tare && row.weightnotare != null && row.weightnotare !== '';
         const display = isDanger ? 'DANGER' : (isTrErr ? 'Tr.Err' : dv);
-        const cellClass = showAlert ? 'bg-red-600 text-black' : (isTrErr ? 'bg-danger text-white' : (inTareMode ? 'bg-cyan-600 text-white' : (hasValue ? 'bg-green-600 text-white' : '')));
+        const cellClass = showAlert
+          ? 'bg-red-700 text-white font-extrabold'
+          : (isTrErr
+            ? 'bg-medium text-red-500 font-extrabold'
+            : (isPreOverload && !isZeroValue
+              ? 'bg-warning text-dark font-extrabold'
+              : (inTareMode
+                ? 'bg-cyan-700 text-white font-bold'
+                : (hasValue ? 'bg-green-600 text-white font-bold' : 'text-dark dark:text-light font-semibold'))));
         return (
-          <div className={`px-1 py-0.5 font-medium rounded inline-block min-w-[60px] text-center ${cellClass}`}>
+          <div className={`px-2 py-1 text-base tabular-nums rounded inline-block min-w-[72px] text-center ${cellClass}`}>
             {display}
           </div>
         );
