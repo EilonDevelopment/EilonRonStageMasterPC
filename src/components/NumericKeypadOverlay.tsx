@@ -17,6 +17,8 @@ type Props = {
 const KEY_CLASS =
   'min-h-[48px] rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800 text-lg font-semibold text-slate-900 dark:text-slate-100 active:opacity-80 shadow-sm';
 
+const DONE_KEY_CLASS = `${KEY_CLASS} dark:bg-primary dark:text-white dark:border-primary`;
+
 const NumericKeypadOverlay: FC<Props> = ({ open, title, value, variant, onChange, onDone, onCancel }) => {
   const { t } = useTranslation();
 
@@ -113,7 +115,7 @@ const NumericKeypadOverlay: FC<Props> = ({ open, title, value, variant, onChange
               </button>
               <button
                 type="button"
-                className={`${KEY_CLASS} bg-primary text-white border-primary dark:bg-primary dark:border-primary`}
+                className={DONE_KEY_CLASS}
                 onClick={() => press('done')}
               >
                 {t('Common.Okay')}
@@ -127,7 +129,7 @@ const NumericKeypadOverlay: FC<Props> = ({ open, title, value, variant, onChange
               <span className="min-h-[48px]" aria-hidden />
               <button
                 type="button"
-                className={`${KEY_CLASS} bg-primary text-white border-primary dark:bg-primary dark:border-primary`}
+                className={DONE_KEY_CLASS}
                 onClick={() => press('done')}
               >
                 {t('Common.Okay')}
@@ -143,7 +145,7 @@ const NumericKeypadOverlay: FC<Props> = ({ open, title, value, variant, onChange
               </button>
               <button
                 type="button"
-                className={`${KEY_CLASS} bg-primary text-white border-primary dark:bg-primary dark:border-primary`}
+                className={DONE_KEY_CLASS}
                 onClick={() => press('done')}
               >
                 {t('Common.Okay')}
@@ -152,7 +154,7 @@ const NumericKeypadOverlay: FC<Props> = ({ open, title, value, variant, onChange
           ) : (
             <button
               type="button"
-              className={`${KEY_CLASS} col-span-3 bg-primary text-white border-primary dark:bg-primary dark:border-primary`}
+              className={`${DONE_KEY_CLASS} col-span-3`}
               onClick={() => press('done')}
             >
               {t('Common.Okay')}
