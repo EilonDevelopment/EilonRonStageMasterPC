@@ -105,3 +105,36 @@ ion-button {
     backdrop-filter: blur(8px); /* Efecto de desenfoque moderno */
     z-index: 999999 !important; /* Valor superior a Toasts (9999) y Modales (20000) */
 }
+
+/* Monitor group summary bar (Grp totals) */
+.monitor-group-bar {
+  min-height: 3.25rem;
+  padding-top: 0.15rem;
+}
+
+.monitor-group-tile-title {
+  font-size: 0.8125rem !important;
+  font-weight: 700 !important;
+  line-height: 1.15;
+  letter-spacing: 0.01em;
+}
+
+.monitor-group-tile-sum {
+  font-size: 0.9375rem !important;
+  font-weight: 800 !important;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  background: #92949c;
+  color: #ffffff !important;
+}
+
+.monitor-group-tile-sum--err,
+.monitor-group-tile-sum--disconnected {
+  background: #92949c;
+  color: #dc2626 !important;
+  font-weight: 900 !important;
+}
+
+.monitor-group-tile-sum--disconnected {
+  font-size: 0.875rem !important;
+}

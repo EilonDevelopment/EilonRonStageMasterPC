@@ -35,7 +35,7 @@ import { t } from "i18next";
 import Chart from "chart.js/auto";
 import { CategoryScale } from "chart.js";
 import { logEvent } from "./services/LogService";
-import { initAlarmAudioPriming, resumeAlarmAudioIfPossible } from "./services/alarmFeedback";
+import { initAlarmAudioPriming, initSafetyAlarmNotifications, resumeAlarmAudioIfPossible } from "./services/alarmFeedback";
 
 Chart.register(CategoryScale);
 
@@ -53,6 +53,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     initAlarmAudioPriming();
+    void initSafetyAlarmNotifications();
   }, []);
 
   useEffect(() => {

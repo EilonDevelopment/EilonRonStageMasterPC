@@ -72,3 +72,123 @@
 .monitor-lc-home-scroll-thumb {
   min-height: 36px;
 }
+
+/* LC tiles on stage + home column — larger type and stronger contrast for field readability. */
+.monitor-lc-handle {
+  border: 2px solid rgba(0, 0, 0, 0.45);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+
+.monitor-lc-handle .monitor-lc-id {
+  flex: 0 0 auto;
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  padding: 0.2rem 0.15rem;
+  background: #0a0a0a;
+  color: #ffffff;
+}
+
+.monitor-lc-handle .monitor-lc-value {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.125rem;
+  font-weight: 800;
+  line-height: 1.1;
+  padding: 0.15rem 0.2rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.monitor-lc-value--ok {
+  background: #16a34a;
+  color: #ffffff;
+  font-weight: 800;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.monitor-lc-value--err {
+  background: #92949c;
+  color: #dc2626;
+  font-weight: 900;
+  text-shadow: none;
+}
+
+.monitor-lc-value--alert {
+  background: #b91c1c;
+  color: #ffffff;
+  font-weight: 900;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.monitor-lc-value--tare {
+  background: #0e7490;
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.monitor-lc-value--max {
+  background: #0f766e;
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.monitor-lc-value--pre-overload {
+  background: #ffc409;
+  color: #222428;
+  font-weight: 900;
+}
+
+/* Collapsible layout toolbar (right edge of Monitor stage). */
+.monitor-layout-tools {
+  z-index: 60;
+  max-height: 100%;
+  padding: 2px;
+  border-radius: 6px 0 0 6px;
+  background: rgba(34, 36, 40, 0.72);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.18);
+}
+
+.monitor-layout-tools--collapsed {
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.monitor-layout-tools--collapsed .monitor-layout-tools-toggle {
+  opacity: 0.42;
+  transition: opacity 0.15s ease;
+}
+
+.monitor-layout-tools--collapsed .monitor-layout-tools-toggle:hover,
+.monitor-layout-tools--collapsed .monitor-layout-tools-toggle:active {
+  opacity: 0.72;
+}
+
+.monitor-layout-tools-toggle {
+  --padding-start: 6px;
+  --padding-end: 6px;
+  min-height: 36px;
+  min-width: 36px;
+}
+
+.monitor-layout-tools-chevron {
+  display: block;
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #f4f5f8;
+  user-select: none;
+}
+
+.monitor-layout-tools-items {
+  overflow-y: auto;
+  max-height: calc(100vh - 12rem);
+}

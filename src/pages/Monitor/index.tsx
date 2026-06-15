@@ -22,6 +22,7 @@ import { format, getTime } from "date-fns";
 import useGroupOperations from "../../helper/db/groups";
 import useFunctions from "../../hooks/useFunctions";
 import { fire_error, getLCsByGroup, normalizeProjectId, strToFloat } from "../../helper/functions";
+import { lcBelongsToGroup } from "../../helper/lcGroupMembership";
 import { ROUTES } from "../../helper/constants";
 import { toast } from "react-toastify";
 import { logEvent } from "../../services/LogService";
@@ -319,6 +320,13 @@ const Monitor: FC = () => {
       .filter(Boolean);
     return parts.some((g) => effectiveIncludedGroupIds.includes(g));
   });
+  const monitorDisplayLcs = useMemo(() => {
+    const gv = groupVisual;
+    if (!gv?.only || !gv.groupId) return visibleLcs;
+    const gid = String(gv.groupId);
+    return visibleLcs.filter((item) => lcBelongsToGroup(item, gid));
+  }, [visibleLcs, groupVisual?.only, groupVisual?.groupId]);
+
   const visiblePlanLayoutRows = visibleLcs.map((item) => ({
     lc_id: String(item.lc_id),
     view_x: String(item.view_x ?? '0'),
@@ -1373,26 +1381,36 @@ const Monitor: FC = () => {
         )
       case 'list':
         return (<>
-          {/* AÑADIDO: max={maxStatus} */}
-          <MonitorList data={visibleLcs} max={maxStatus} />
+          <MonitorList
+            data={monitorDisplayLcs}
+            max={maxStatus}
+            onCellLongPress={openCellZeroModal}
+            groupVisualGroupId={groupVisual?.groupId ?? null}
+            groupVisualHighlight={!!groupVisual?.highlight}
+          />
         </>)
       case 'prog':
         return (<>
-          {/* AÑADIDO: max={maxStatus} */}
           <MonitorProg
-            data={visibleLcs}
+            data={monitorDisplayLcs}
             unit={curProject.units || ''}
             tare={tareStatus}
             max={maxStatus}
+            onCellLongPress={openCellZeroModal}
+            groupVisualGroupId={groupVisual?.groupId ?? null}
+            groupVisualHighlight={!!groupVisual?.highlight}
           />
         </>)
       case 'stop':
         return (<>
           <MonitorStop
-            data={visibleLcs}
+            data={monitorDisplayLcs}
             unit={curProject.units || ''}
             max={maxStatus}
             tare={tareStatus}
+            onCellLongPress={openCellZeroModal}
+            groupVisualGroupId={groupVisual?.groupId ?? null}
+            groupVisualHighlight={!!groupVisual?.highlight}
           />
         </>)
       default:
@@ -2528,7 +2546,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
       onMonitorPlanDelete={(planId) => { void deletePlan(String(planId)); }}
     >
       <div className={`flex flex-col flex-1 min-h-0 gap-1 ${isMonitorMapView ? 'overflow-hidden' : ''}`}>
-      <div className='grid grid-cols-16 h-11 pt-1 w-full shrink-0 overflow-visible'>
+      <div className='monitor-group-bar grid grid-cols-16 w-full shrink-0 overflow-visible'>
         {visibleGroups.map((item: IGroup, index: number) => {
           // console.log(item);
             let v = parseFloat(item.sum ?? '')
@@ -2610,19 +2628,18 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
                 {/* Título del grupo: Se mantiene Azul (Primary) a menos que haya sobrecarga real */}
                 <Text
                   classes={`
-                    h-1/2 text-dark !text-xs flex items-center justify-center
-                    ${(v > o && o > 0) ? 'bg-danger text-white' : (p > 130 ? 'bg-warning' : 'bg-primary')}
-                    ${isGroupVisualFocus ? 'font-bold' : ''}
+                    monitor-group-tile-title h-1/2 text-white flex items-center justify-center
+                    ${(v > o && o > 0) ? 'bg-danger' : (p > 130 ? 'bg-warning text-dark' : 'bg-primary')}
+                    ${isGroupVisualFocus ? 'font-extrabold' : ''}
                   `}
                   label={item.overload ? item.title : ''}
                 />
                 
                 {bleConnected ?
                   <Text
-                    /* Cuadro de valor: Cambia a Rojo solo si el texto es "Tr. Err" */
-                    classes={item.sum === "Tr.Err" 
-                      ? 'h-1/2 w-full bg-danger text-white font-bold !text-xs flex items-center justify-center' 
-                      : `h-1/2 bg-medium text-dark !text-xs flex items-center justify-center${isGroupVisualFocus ? ' font-bold' : ''}`
+                    classes={item.sum === "Tr.Err"
+                      ? 'monitor-group-tile-sum monitor-group-tile-sum--err h-1/2 w-full flex items-center justify-center'
+                      : `monitor-group-tile-sum h-1/2 w-full flex items-center justify-center${isGroupVisualFocus ? ' !font-extrabold' : ''}`
                     }
                     label={item.sum === "Tr.Err" 
                       ? 
@@ -2636,10 +2653,8 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
                     }
                   />
                   :
-                  <div className="h-1/2 w-full bg-medium text-center flex justify-center items-center">
-                    <span className={`text-xs font-bold ${item.overload && 'bg-danger'} text-white px-1.5 rounded w-max`}>
-                      {item.overload ? "Tr.Err" : ''}
-                    </span>
+                  <div className="monitor-group-tile-sum monitor-group-tile-sum--disconnected h-1/2 w-full flex items-center justify-center">
+                    <span>{item.overload ? "Tr.Err" : ''}</span>
                   </div>
                 }
               </div>

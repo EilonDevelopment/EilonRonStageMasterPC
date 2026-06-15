@@ -13,7 +13,7 @@ import Text from "../../components/Text";
 import { IProject } from "../../helper/types";
 import { normalizeProjectId } from "../../helper/functions";
 import { buildReportGroupsAsync, type ReportGroupQuery } from "../../helper/reportGrouping";
-import { formatWeightByLcResolution, getResolutionForLcId, quantizeByResolution } from "../../helper/weightResolution";
+import { formatDualWeightWithLcResolution } from "../../helper/weightResolution";
 import { db } from '../../db'
 import Swal from "sweetalert2";
 import { eachDayOfInterval, endOfDay, format, getTime, startOfDay } from "date-fns"
@@ -94,6 +94,7 @@ const Report: FC = () => {
   /** Blocks UI during CSV/PDF/email prep (native Share + large files can take several seconds). */
   const [exportBusy, setExportBusy] = useState(false)
   const [rawLogs, setRawLogs] = useState<any[] | null>(null);
+  const [reportUnitsSnapshot, setReportUnitsSnapshot] = useState<{ units: string; windmeter_units: string } | null>(null);
   const [storageTotal, setStorageTotal] = useState<number>(0)
   const [storageFree, setStorageFree] = useState<number>(0)
   const [reportsStorageUsed, setReportsStorageUsed] = useState<number>(0)
@@ -504,6 +505,10 @@ const Report: FC = () => {
     const q = reportGroupQuery(report_interval_seconds);
     try {
       const selectedProject = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(project_id));
+      setReportUnitsSnapshot({
+        units: String(selectedProject?.units ?? ''),
+        windmeter_units: String(selectedProject?.windmeter_units ?? ''),
+      });
       if (selectedProject && !selectedProject.cycle) {
         if (loadReqIdRef.current !== reqId) return;
         setLogList(null);
@@ -681,9 +686,9 @@ const Report: FC = () => {
                     : lc?.title;
                   const idCell = isPrrLink ? (sItem.unit != null && String(sItem.unit) !== '' ? String(sItem.unit) : '—') : lc?.id;
                   const isTrErr = !isPrrLink && ((sItem.log_type != null && String(sItem.log_type).toLowerCase() === 'err') || Number(sItem.value) === -99999999);
-                  const grossStr = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : formatDualWeight(sItem.value, sItem.unit));
+                  const grossStr = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : formatDualWeightWithLcResolution(sItem.value, getReportLogUnit(sItem), sItem.lc_id));
                   const netVal = (sItem as any).tare_applied === true && (sItem as any).net_value != null ? (sItem as any).net_value : sItem.value;
-                  const netStr = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : formatDualWeight(netVal, sItem.unit));
+                  const netStr = isPrrLink ? '—' : (isTrErr ? 'Tr.Err' : formatDualWeightWithLcResolution(netVal, getReportLogUnit(sItem), sItem.lc_id));
                   const statusMeta = getStatusMeta(getLogStatus(sItem, lc));
                   return (
                     <tr key={sKey} className="w-full">
@@ -861,39 +866,12 @@ const Report: FC = () => {
       .sort((a: any, b: any) => (b.log_date || 0) - (a.log_date || 0));
   };
 
-  const LBS_PER_KG = 2.20462;
-  const normalizeWeightUnit = (unitRaw: any): 'KG' | 'LBS' | 'M.TON' | null => {
-    const u = String(unitRaw ?? '').toUpperCase().replace(/\s+/g, '');
-    if (u === 'KG' || u === 'KGS') return 'KG';
-    if (u === 'LBS' || u === 'LB') return 'LBS';
-    if (u === 'M.TON' || u === 'MTON' || u === 'MTONS') return 'M.TON';
-    return null;
-  };
-  const toKg = (valueRaw: any, unitRaw: any): number | null => {
-    const n = Number(valueRaw);
-    if (!Number.isFinite(n)) return null;
-    const u = normalizeWeightUnit(unitRaw);
-    if (u === 'KG') return n;
-    if (u === 'LBS') return n / LBS_PER_KG;
-    if (u === 'M.TON') return n * 1000;
-    return null;
-  };
-  const formatDualWeight = (valueRaw: any, unitRaw: any, lcIdRaw?: any) => {
-    const kg = toKg(valueRaw, unitRaw);
-    if (kg == null) return `${valueRaw ?? ''} ${unitRaw ?? ''}`.trim();
-    const lcId = Number(lcIdRaw);
-    const kgResolution = Number.isFinite(lcId) ? getResolutionForLcId(lcId, 'kg') : null;
-    const quantizedKg = kgResolution != null ? quantizeByResolution(kg, kgResolution) : kg;
-    const lbs = quantizedKg * LBS_PER_KG;
-    const lbsResolution = Number.isFinite(lcId) ? getResolutionForLcId(lcId, 'lbs') : null;
-    const quantizedLbs = lbsResolution != null ? quantizeByResolution(lbs, lbsResolution) : lbs;
-    const kgText = Number.isFinite(lcId)
-      ? formatWeightByLcResolution(quantizedKg, lcId, 'kg', 2)
-      : quantizedKg.toFixed(2);
-    const lbsText = Number.isFinite(lcId)
-      ? formatWeightByLcResolution(quantizedLbs, lcId, 'lbs', 2)
-      : quantizedLbs.toFixed(2);
-    return `${kgText} KG\n${lbsText} LBS`;
+  const getReportLogUnit = (log: any): string => {
+    const lcId = Number(log?.lc_id);
+    const unitFromLog = String(log?.unit ?? '').trim();
+    if (!Number.isFinite(lcId)) return unitFromLog;
+    const unitFromSnapshot = lcId <= 10 ? reportUnitsSnapshot?.windmeter_units : reportUnitsSnapshot?.units;
+    return String(unitFromSnapshot ?? unitFromLog ?? '').trim();
   };
   const inlineMultilineCell = (value: string) => String(value || '').replace(/\s*\n\s*/g, ' | ');
 
@@ -902,7 +880,7 @@ const Report: FC = () => {
     if (plt === 'prr_connected') return 'PRR connected';
     if (plt === 'prr_disconnected') return 'PRR disconnected';
     const isErr = (log.log_type != null && String(log.log_type).toLowerCase() === 'err') || Number(log.value) === -99999999;
-    return isErr ? 'Tr.Err' : formatDualWeight(log.value, log.unit, log.lc_id);
+    return isErr ? 'Tr.Err' : formatDualWeightWithLcResolution(log.value, getReportLogUnit(log), log.lc_id);
   };
   const formatLogNet = (log: any) => {
     const plt = String(log.log_type || '').toLowerCase();
@@ -910,7 +888,7 @@ const Report: FC = () => {
     if (plt === 'prr_disconnected') return '—';
     const isErr = (log.log_type != null && String(log.log_type).toLowerCase() === 'err') || Number(log.value) === -99999999;
     const netVal = (log as any).tare_applied === true && (log as any).net_value != null ? (log as any).net_value : log.value;
-    return isErr ? 'Tr.Err' : formatDualWeight(netVal, log.unit, log.lc_id);
+    return isErr ? 'Tr.Err' : formatDualWeightWithLcResolution(netVal, getReportLogUnit(log), log.lc_id);
   };
 
   type ReportStatus = 'OK' | 'UNDERLOAD' | 'OVERLOAD' | 'DANGER' | 'TR.ERR' | 'PRR CONNECTED' | 'PRR DISCONNECTED';

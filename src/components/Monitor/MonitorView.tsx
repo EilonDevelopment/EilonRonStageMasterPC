@@ -3,6 +3,8 @@ import { createPortal, flushSync } from 'react-dom';
 import Draggable, { DraggableCore, DraggableData, DraggableEvent } from 'react-draggable';
 import { Rnd } from 'react-rnd';
 
+import { lcBelongsToGroup } from "../../helper/lcGroupMembership";
+import { getLcGrossLoadBand, isLcTransmissionError } from '../../helper/lcLoadStatus';
 import { arrowUndoOutline, cameraOutline, closeCircleOutline, createOutline, homeOutline, imageOutline, locateOutline, lockClosedOutline, lockOpenOutline } from "ionicons/icons";
 
 /** Re-enable the crosshair control after auto-place / home-drag issues are fixed. */
@@ -20,6 +22,10 @@ import { db } from '../../db';
 import Swal from 'sweetalert2';
 import BackgroundImageEditorModal from '../Modals/BackgroundImageEditorModal';
 import './MonitorView.css';
+
+/** Stage / home-column LC tile size (keep in sync with `.monitor-lc-handle` in MonitorView.css). */
+const MONITOR_LC_BOX_WIDTH = 96;
+const MONITOR_LC_BOX_HEIGHT = 56;
 
 interface SizeInfoType {
   width: number,
@@ -51,12 +57,6 @@ interface MonitorViewProps {
   groupVisualOnly?: boolean;
   onCellClick?: (item: ILC) => void;
   onCellLongPress?: (item: ILC) => void;
-}
-
-function lcBelongsToGroup(item: ILC, groupId: string): boolean {
-  if (!groupId) return false;
-  const parts = item.groups?.split(',').map((g) => String(g).trim()).filter(Boolean) ?? [];
-  return parts.includes(String(groupId));
 }
 
 const MAX_LAYOUT_UNDO = 10;
@@ -581,6 +581,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
   const suppressClickUntilRef = useRef(0);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggeredRef = useRef(false);
+  const { curProject } = useAppData();
 
   const {
     id,
@@ -595,23 +596,33 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
 
   const rawValueStr = String(value ?? '').trim();
   const hasTransmissionError =
-    rawValueStr === 'Tr.Err' ||
-    rawValueStr === 'Tr. Err' ||
-    rawValueStr === t("Common.TrErr") ||
-    Number(value) === -99999999;
+    isLcTransmissionError(value) ||
+    rawValueStr === t("Common.TrErr");
   const numVal = Number(value);
   const numOver = Number(overload);
   const numUnder = Number(underload);
   const useTareValue = !hasTransmissionError && tare && status_tare && weightnotare != null && weightnotare !== '';
   // Safety thresholds must always use GROSS (physical load), not tare-adjusted net.
   const safetyValue = numVal;
-  const isDanger = !Number.isNaN(safetyValue) && !Number.isNaN(numOver) && numOver > 0 && safetyValue >= numOver * 1.3;
-  const isOverload = !Number.isNaN(safetyValue) && !Number.isNaN(numOver) && safetyValue > numOver;
-  const isUnderload = !Number.isNaN(safetyValue) && !Number.isNaN(numUnder) && safetyValue < numUnder;
+  const loadBand = getLcGrossLoadBand(value, overload, underload, curProject?.pre_overload);
+  const isDanger = loadBand === 'danger';
+  const isOverload = loadBand === 'overload';
+  const isUnderload = loadBand === 'underload';
+  const isPreOverload = loadBand === 'pre-overload';
   const displayValue = isDanger ? 'DANGER' : (value ? value : (bleConnected ? value : t("Common.TrErr")));
-  const valueShown = useTareValue ? weightnotare : (value ?? '');
-  const showRedValueBg = (isDanger || isOverload || isUnderload);
+  const showRedValueBg = isDanger || isOverload || isUnderload;
   const statusText = isDanger ? 'DANGER' : '';
+  const valueStateClass = maxMode
+    ? 'monitor-lc-value--max'
+    : showRedValueBg
+      ? 'monitor-lc-value--alert'
+      : isPreOverload
+        ? 'monitor-lc-value--pre-overload'
+      : (tare && status_tare)
+        ? 'monitor-lc-value--tare'
+        : (!bleConnected || hasTransmissionError)
+          ? 'monitor-lc-value--err'
+          : 'monitor-lc-value--ok';
 
   return (
     <div
@@ -690,8 +701,8 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
         }}
       >
         <div
-          className={`handle monitor-lc-handle border w-20 h-10.5 flex flex-col text-xs rounded cursor-pointer shrink-0${groupHighlight ? ' ring-4 ring-primary ring-offset-1 z-[20] relative' : ''}`}
-          style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none' }}
+          className={`handle monitor-lc-handle flex flex-col rounded cursor-pointer shrink-0${groupHighlight ? ' ring-4 ring-primary ring-offset-1 z-[20] relative' : ''}`}
+          style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none', width: MONITOR_LC_BOX_WIDTH, height: MONITOR_LC_BOX_HEIGHT }}
           onPointerDownCapture={() => {
             onDragLiftChange?.(true, index);
             longPressTriggeredRef.current = false;
@@ -736,18 +747,10 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
             onCellClick?.(item, index);
           }}
         >
-          <div className="top-side bg-black text-white text-center rounded-t-sm py-0.5">{title ? title : id}</div>
+          <div className="monitor-lc-id top-side text-center rounded-t-sm">{title ? title : id}</div>
           <div
             id={`monitor${id}`}
-            className={`
-            bottom-side text-center py-0.5 rounded-b-sm
-            ${(maxMode ? 'bg-cyan2 text-white' : (showRedValueBg
-                ? 'bg-red-600 text-black'
-                : (tare && status_tare ? 'bg-cyan-600 text-white' : (
-                    !bleConnected ? 'bg-medium text-danger' :
-                    (`${value === t("Common.TrErr") ? 'bg-medium text-danger' :
-                      'bg-green-600 text-white'}`)))))}
-          `}
+            className={`monitor-lc-value bottom-side text-center rounded-b-sm ${valueStateClass}`}
           >
             {maxMode
               ? (bleConnected ? (item.max ?? 0) : t("Common.TrErr"))
@@ -825,6 +828,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   tempHomePositionsRef.current = tempHomePositions;
 
   const [locked, setLocked] = useState<boolean>(false);
+  const [layoutToolsOpen, setLayoutToolsOpen] = useState(false);
   const [layoutProgress, setLayoutProgress] = useState(false);
   const [layoutProgressMessageKey, setLayoutProgressMessageKey] = useState('');
   /** Force remount of LC draggable nodes after heavy layout changes (iPad WebView can leave ghost layers). */
@@ -948,8 +952,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   } | null>(null)
   /** Explicit offset parent for drag so touch/Android uses same coordinate system as wrapper. */
   //const [dragOffsetParent, setDragOffsetParent] = useState<HTMLDivElement | null>(null)
-  const LC_BOX_WIDTH = 80
-  const LC_BOX_HEIGHT = 43
+  const LC_BOX_WIDTH = MONITOR_LC_BOX_WIDTH
+  const LC_BOX_HEIGHT = MONITOR_LC_BOX_HEIGHT
   /** Extra pixels around the home strip for “drop back to home” hit-testing (fat finger / WKWebView). */
   const HOME_STRIP_DROP_SLACK_PX = 16
   const LC_HOME_STRIP_WIDTH = LC_BOX_WIDTH
@@ -2422,8 +2426,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
           >
             <div
               ref={lcColumnRef}
-              className={`relative w-20 shrink-0 ${columnLcDragging ? 'overflow-visible' : 'overflow-hidden'}`}
-              style={{ height: columnViewportH, touchAction: 'none' }}
+              className={`relative shrink-0 ${columnLcDragging ? 'overflow-visible' : 'overflow-hidden'}`}
+              style={{ width: LC_BOX_WIDTH, height: columnViewportH, touchAction: 'none' }}
               onPointerDown={onHomeTouchScrollPointerDown}
               onPointerMove={onHomeTouchScrollPointerMove}
               onPointerUp={onHomeTouchScrollPointerUp}
@@ -2551,8 +2555,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                       className="rnd-bg-drag-handle handle absolute inset-0 box overflow-hidden rounded-sm dark:text-white"
                       style={{
                         zIndex: -1,
-                        minWidth: '80px',
-                        minHeight: '80px',
+                        minWidth: `${LC_BOX_WIDTH}px`,
+                        minHeight: `${LC_BOX_HEIGHT}px`,
                         backgroundColor: 'transparent',
                         backgroundImage: `url(${JSON.stringify(curProject.p_image)})`,
                         backgroundSize: 'contain',
@@ -2704,7 +2708,21 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
               </div>
             )}
 
-            <div className="control-btns flex flex-col absolute right-0 top-0 gap-0.5">
+            <div
+              className={`monitor-layout-tools control-btns flex flex-col absolute right-0 top-0 gap-0.5 ${layoutToolsOpen ? 'monitor-layout-tools--open' : 'monitor-layout-tools--collapsed'}`}
+            >
+              <IonButton
+                color="medium"
+                className="monitor-layout-tools-toggle m-0"
+                onClick={() => setLayoutToolsOpen((v) => !v)}
+                title={layoutToolsOpen ? (t('Monitor.HideLayoutTools') || 'Hide layout tools') : (t('Monitor.ShowLayoutTools') || 'Show layout tools')}
+                aria-expanded={layoutToolsOpen}
+                aria-label={layoutToolsOpen ? (t('Monitor.HideLayoutTools') || 'Hide layout tools') : (t('Monitor.ShowLayoutTools') || 'Show layout tools')}
+              >
+                <span className="monitor-layout-tools-chevron" aria-hidden="true">{layoutToolsOpen ? '«' : '»'}</span>
+              </IonButton>
+              {layoutToolsOpen ? (
+                <div className="monitor-layout-tools-items flex flex-col gap-0.5">
               <IonButton color="medium" className="m-0" onClick={() => handleLoadBackgroundImage('gallery')} title={t('Common.Image')}>
                 <IonIcon slot="icon-only" icon={imageOutline} size="small"></IonIcon>
               </IonButton>
@@ -2763,6 +2781,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
               >
                 <IonIcon slot="icon-only" icon={arrowUndoOutline} size="small"></IonIcon>
               </IonButton>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

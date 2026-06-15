@@ -1,18 +1,82 @@
-import React, { FC, useMemo } from 'react';
+import React, { FC, useMemo, useRef } from 'react';
+import { GridRow, GridRowProps } from '@mui/x-data-grid';
 import { ILC } from '../../helper/types';
 import CustomDataGrid from '../CustomDataGrid';
 import { useTranslation } from 'react-i18next';
 import useAppData from '../../hooks/useAppData';
 import { normalizeProjectId } from '../../helper/functions';
 import { lcRankKey, stableRowIndexMap } from '../../helper/lcStableRowIndex';
+import { lcBelongsToGroup } from '../../helper/lcGroupMembership';
+import { getLcGrossLoadBand } from '../../helper/lcLoadStatus';
+
+const LC_LONG_PRESS_MS = 600;
+
+/** Filled each render by `MonitorList` when long-press zero is enabled (single list instance on screen). */
+const monitorListLongPressHandler = { current: null as null | ((lc: ILC) => void) };
+
+const MonitorListLongPressRow = React.memo(
+  React.forwardRef<HTMLDivElement, GridRowProps>(function MonitorListLongPressRow(props, ref) {
+    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const triggeredRef = useRef(false);
+
+    const emitLongPress = () => {
+      const fn = monitorListLongPressHandler.current;
+      if (!fn) return;
+      const raw = props.row as ILC & { __stableIndex?: number };
+      const { __stableIndex: _s, ...lc } = raw;
+      fn(lc as ILC);
+    };
+
+    return (
+      <GridRow
+        ref={ref}
+        {...props}
+        onPointerDownCapture={(e: React.PointerEvent) => {
+          props.onPointerDownCapture?.(e as any);
+          if (!monitorListLongPressHandler.current) return;
+          if (timerRef.current) clearTimeout(timerRef.current);
+          triggeredRef.current = false;
+          timerRef.current = setTimeout(() => {
+            timerRef.current = null;
+            triggeredRef.current = true;
+            emitLongPress();
+          }, LC_LONG_PRESS_MS);
+        }}
+        onPointerUpCapture={(e: React.PointerEvent) => {
+          props.onPointerUpCapture?.(e as any);
+          if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+          }
+          if (triggeredRef.current) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+          triggeredRef.current = false;
+        }}
+        onPointerCancelCapture={(e: React.PointerEvent) => {
+          props.onPointerCancelCapture?.(e as any);
+          if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+          }
+          triggeredRef.current = false;
+        }}
+      />
+    );
+  })
+);
 
 interface MonitorListProps {
   data: ILC[];
-  max: boolean; // AÑADIDO
+  max: boolean;
+  onCellLongPress?: (lc: ILC) => void;
+  groupVisualGroupId?: string | null;
+  groupVisualHighlight?: boolean;
 }
 
-const MonitorList: FC<MonitorListProps> = props => {
-  const { data, max} = props;
+const MonitorList: FC<MonitorListProps> = (props) => {
+  const { data, max, onCellLongPress, groupVisualGroupId = null, groupVisualHighlight = false } = props;
   const { t } = useTranslation()
   const { curProject, tareStatus, monitorListSortedLcIdsRef, lcs } = useAppData();
 
@@ -70,7 +134,7 @@ const MonitorList: FC<MonitorListProps> = props => {
       headerName: t('Monitor.List.Id'),
       // eslint-disable-next-line
       // @ts-ignore
-      renderCell: ({ row }) => <span className='text-dark dark:text-light'>{row.id}</span>
+      renderCell: ({ row }) => <span className='text-dark dark:text-light text-base font-bold tabular-nums'>{row.id}</span>
     },
     {
       flex: 0.118,
@@ -91,20 +155,27 @@ const MonitorList: FC<MonitorListProps> = props => {
       renderCell: ({ row }) => {
         const dv = displayValue(row);
         const isTrErr = !dv || dv === 'Tr.Err' || dv === 'Tr. Err';
-        const val = Number(dv);
-        const over = Number(row.overload);
-        const under = Number(row.underload);
-        const isDanger = !Number.isNaN(val) && !Number.isNaN(over) && over > 0 && val >= over * 1.3;
-        const isOverload = !Number.isNaN(val) && !Number.isNaN(over) && val > over;
-        const isUnderload = !Number.isNaN(val) && !Number.isNaN(under) && val < under;
+        const loadBand = getLcGrossLoadBand(row.value, row.overload, row.underload, curProject?.pre_overload);
+        const isDanger = loadBand === 'danger';
+        const isOverload = loadBand === 'overload';
+        const isUnderload = loadBand === 'underload';
+        const isPreOverload = loadBand === 'pre-overload';
         const isZeroValue = dv === '0' || parseFloat(String(dv).trim()) === 0;
         const showAlert = (isDanger || isOverload || isUnderload) && !isZeroValue;
         const hasValue = dv && !isTrErr;
         const inTareMode = !hasTransmissionError(row.value) && tareStatus && row.status_tare && row.weightnotare != null && row.weightnotare !== '';
         const display = isDanger ? 'DANGER' : (isTrErr ? 'Tr.Err' : dv);
-        const cellClass = showAlert ? 'bg-red-600 text-black' : (isTrErr ? 'bg-danger text-white' : (inTareMode ? 'bg-cyan-600 text-white' : (hasValue ? 'bg-green-600 text-white' : '')));
+        const cellClass = showAlert
+          ? 'bg-red-700 text-white font-extrabold'
+          : (isTrErr
+            ? 'bg-medium text-red-500 font-extrabold'
+            : (isPreOverload && !isZeroValue
+              ? 'bg-warning text-dark font-extrabold'
+              : (inTareMode
+                ? 'bg-cyan-700 text-white font-bold'
+                : (hasValue ? 'bg-green-600 text-white font-bold' : 'text-dark dark:text-light font-semibold'))));
         return (
-          <div className={`px-1 py-0.5 font-medium rounded inline-block min-w-[60px] text-center ${cellClass}`}>
+          <div className={`px-2 py-1 text-base tabular-nums rounded inline-block min-w-[72px] text-center ${cellClass}`}>
             {display}
           </div>
         );
@@ -255,11 +326,22 @@ const MonitorList: FC<MonitorListProps> = props => {
     },
   ];
 
+  monitorListLongPressHandler.current = onCellLongPress ?? null;
+
+  const getRowClassName = (params: { row: ILC & { __stableIndex?: number } }) => {
+    const gid = String(groupVisualGroupId || '').trim();
+    if (!groupVisualHighlight || !gid) return '';
+    return lcBelongsToGroup(params.row, gid) ? 'monitor-list-row-group-hl' : '';
+  };
+
   return (
     <div className="w-full min-w-0">
       <CustomDataGrid
         columns={columns}
         data={gridRows}
+        getRowId={(row) => String((row as ILC).lc_id)}
+        getRowClassName={groupVisualHighlight && groupVisualGroupId ? getRowClassName : undefined}
+        components={onCellLongPress ? { Row: MonitorListLongPressRow } : undefined}
         onSortedRowIdsChange={(ids) => {
           if (monitorListSortedLcIdsRef) monitorListSortedLcIdsRef.current = ids;
         }}
