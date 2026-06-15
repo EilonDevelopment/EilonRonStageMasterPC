@@ -26,6 +26,10 @@ import './MonitorView.css';
 /** Stage / home-column LC tile size (keep in sync with `.monitor-lc-handle` in MonitorView.css). */
 const MONITOR_LC_BOX_WIDTH = 96;
 const MONITOR_LC_BOX_HEIGHT = 56;
+/** Finger jitter below this (px) still counts as tap / double-tap, not drag. */
+const LC_TAP_DRAG_SLOP_PX = 28;
+const LC_DOUBLE_TAP_MS = 500;
+const LC_DOUBLE_TAP_MAX_DIST_PX = 64;
 
 interface SizeInfoType {
   width: number,
@@ -577,8 +581,11 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
   const lastDragPosRef = useRef({ x: 0, y: 0 });
   const lastDragClientRef = useRef<{ x: number; y: number } | null>(null);
   const dragMovedRef = useRef(false);
+  const dragCommittedRef = useRef(false);
   const lastTapAtRef = useRef(0);
+  const lastTapClientRef = useRef<{ x: number; y: number } | null>(null);
   const suppressClickUntilRef = useRef(0);
+  const [handleDragPos, setHandleDragPos] = useState({ x: 0, y: 0 });
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggeredRef = useRef(false);
   const { curProject } = useAppData();
@@ -639,7 +646,7 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     >
       <Draggable
         handle=".handle"
-        defaultPosition={{ x: 0, y: 0 }}
+        position={handleDragPos}
         grid={[1, 1]}
         scale={dragScale}
         disabled={!!disabled || locked}
@@ -653,17 +660,27 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
           lastDragPosRef.current = { x: 0, y: 0 };
           lastDragClientRef.current = null;
           dragMovedRef.current = false;
-          onDragLiftChange?.(true, index);
+          dragCommittedRef.current = false;
+          setHandleDragPos({ x: 0, y: 0 });
         }}
         onDrag={(dragEvt, d) => {
-          if (longPressTimerRef.current) {
-            clearTimeout(longPressTimerRef.current);
-            longPressTimerRef.current = null;
-          }
-          if (!dragMovedRef.current) {
+          const dist = Math.hypot(d.x, d.y);
+          if (!dragCommittedRef.current) {
+            if (dist <= LC_TAP_DRAG_SLOP_PX) {
+              setHandleDragPos({ x: 0, y: 0 });
+              lastDragPosRef.current = { x: 0, y: 0 };
+              return;
+            }
+            dragCommittedRef.current = true;
             dragMovedRef.current = true;
+            onDragLiftChange?.(true, index);
+            if (longPressTimerRef.current) {
+              clearTimeout(longPressTimerRef.current);
+              longPressTimerRef.current = null;
+            }
           }
           lastDragPosRef.current = { x: d.x, y: d.y };
+          setHandleDragPos({ x: d.x, y: d.y });
           const p = getClientPoint(dragEvt);
           if (p) lastDragClientRef.current = p;
         }}
@@ -672,9 +689,16 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
             clearTimeout(longPressTimerRef.current);
             longPressTimerRef.current = null;
           }
-          if (!dragMovedRef.current) {
+          const lx = lastDragPosRef.current.x;
+          const ly = lastDragPosRef.current.y;
+          const dragDist = Math.hypot(lx, ly);
+          const isRealDrag = dragCommittedRef.current && dragDist > LC_TAP_DRAG_SLOP_PX;
+          setHandleDragPos({ x: 0, y: 0 });
+          dragCommittedRef.current = false;
+          if (!isRealDrag) {
+            dragMovedRef.current = false;
             const p = getClientPoint(e);
-            const enriched = p ? { ...data, __clientX: p.x, __clientY: p.y } : data;
+            const enriched = p ? { ...data, x: 0, y: 0, deltaX: 0, deltaY: 0, __clientX: p.x, __clientY: p.y } : { ...data, x: 0, y: 0, deltaX: 0, deltaY: 0 };
             onStop(e, enriched as DraggableData, index, x, y, false);
           } else {
             const lx = lastDragPosRef.current.x;
@@ -704,7 +728,6 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
           className={`handle monitor-lc-handle flex flex-col rounded cursor-pointer shrink-0${groupHighlight ? ' ring-4 ring-primary ring-offset-1 z-[20] relative' : ''}`}
           style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none', width: MONITOR_LC_BOX_WIDTH, height: MONITOR_LC_BOX_HEIGHT }}
           onPointerDownCapture={() => {
-            onDragLiftChange?.(true, index);
             longPressTriggeredRef.current = false;
             if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
             longPressTimerRef.current = setTimeout(() => {
@@ -724,21 +747,31 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
               ev.stopPropagation();
               return;
             }
-            if (dragMovedRef.current) return;
+            const dragDist = Math.hypot(lastDragPosRef.current.x, lastDragPosRef.current.y);
+            const isTap = dragDist <= LC_TAP_DRAG_SLOP_PX;
+            if (!isTap) return;
+            const pt = getClientPoint(ev);
             // Trigger on pointer-up because Draggable may suppress `onClick` after tiny moves.
             onCellClick?.(item, index);
             suppressClickUntilRef.current = Date.now() + 250;
             // Keep desktop double-click behavior for "send back to home" via onDoubleClick below.
             if (!onCellDoubleTap || ev.pointerType !== 'touch') return;
             const now = Date.now();
-            if (now - lastTapAtRef.current <= 350) {
+            const lastPt = lastTapClientRef.current;
+            const tapDist =
+              lastPt && pt
+                ? Math.hypot(pt.x - lastPt.x, pt.y - lastPt.y)
+                : Number.POSITIVE_INFINITY;
+            if (now - lastTapAtRef.current <= LC_DOUBLE_TAP_MS && tapDist <= LC_DOUBLE_TAP_MAX_DIST_PX) {
               lastTapAtRef.current = 0;
+              lastTapClientRef.current = null;
               onCellDoubleTap(item, index);
               ev.preventDefault();
               ev.stopPropagation();
               return;
             }
             lastTapAtRef.current = now;
+            if (pt) lastTapClientRef.current = pt;
           }}
           onDoubleClick={() => onCellDoubleTap?.(item, index)}
           onClick={() => {
@@ -1556,6 +1589,9 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
     dragGestureSeen = false
   ) => {
     if (locked || layoutProgress) return;
+    // Tap / double-tap must not reposition: release coords center the LC under the finger
+    // even when the finger did not move (react-draggable grab offset).
+    if (!dragGestureSeen) return;
     const layoutList = listRef.current;
     const cur = layoutList[index];
     if (!cur) return;

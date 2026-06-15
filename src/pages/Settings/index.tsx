@@ -119,7 +119,11 @@ const Settings: FC = () => {
       return;
     }
     if (lcs.length > 0) {
-      setLCList(lcs.filter(item => normalizeProjectId(item.project_id) === normalizeProjectId(curProject.id)));
+      setLCList(
+        lcs
+          .filter((item) => normalizeProjectId(item.project_id) === normalizeProjectId(curProject.id))
+          .sort((a, b) => sortLcIdNumeric(a) - sortLcIdNumeric(b)),
+      );
     } else {
       setLCList([]);
     }

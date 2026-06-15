@@ -3442,7 +3442,7 @@ const lastSoundTimeRef = useRef<number>(0);
                               }}
                             >
                               <FontAwesomeIcon icon={batteryIcon} size='lg' color={`${isDark ? 'grey' : 'black'}`} style={{ transform: 'scale(1.73)' }} />
-                              <span className='absolute text-[9px] font-semibold leading-none text-black dark:text-white'>
+                              <span className='absolute z-10 text-[9px] font-semibold leading-none text-white pointer-events-none'>
                                 {`${batteryPct}%`}
                               </span>
                             </div>

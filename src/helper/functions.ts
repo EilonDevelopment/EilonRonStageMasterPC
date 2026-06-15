@@ -37,26 +37,28 @@ interface getValidLcIdListType {
   ids: string[]
 }
 const getValidLcIdList = (unitList: string):getValidLcIdListType => {
-  const ids = unitList.split(',')
-  const valid_ids: string[] = []
-  ids.forEach((id) => {
-    if (id.includes("-")) {
-      const range = id.split("-");
-      const startRange = parseInt(range[0]);
-      const endRange = parseInt(range[1]);
+  const ids = unitList.split(',').map((part) => part.trim()).filter(Boolean);
+  const valid_ids: string[] = [];
+  for (const id of ids) {
+    if (id.includes('-')) {
+      const range = id.split('-');
+      const startRange = parseInt(range[0], 10);
+      const endRange = parseInt(range[1], 10);
 
       if (startRange > endRange) {
-        return { isValid: false, startRange, endRange }
-      } else {
-        for (let index = startRange; index <= endRange; index++) {
-          valid_ids.push(index.toString())
-        }
+        return { isValid: false, startRange: String(startRange), endRange: String(endRange), ids: [] };
+      }
+      for (let index = startRange; index <= endRange; index++) {
+        valid_ids.push(index.toString());
       }
     } else {
       valid_ids.push(id);
     }
-  })
-  return {isValid: true, ids: valid_ids}
+  }
+  const sortedUnique = Array.from(new Set(valid_ids)).sort(
+    (a, b) => parseInt(a, 10) - parseInt(b, 10),
+  );
+  return { isValid: true, ids: sortedUnique };
 }
 const getNewLCIds = (ids: string[], unitStr: string) => {
   const totalReg = /^[1-9,-]+$/
