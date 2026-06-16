@@ -1,7 +1,7 @@
 import React, { FC, useEffect, useMemo, useRef, useState } from "react";
 import { IonIcon, IonToggle } from "@ionic/react";
 import { useTranslation } from "react-i18next";
-import { codeSlashSharp, cubeSharp, documentSharp, downloadSharp, mailSharp, refreshSharp, trashSharp } from "ionicons/icons";
+import { codeSlashSharp, createOutline, cubeSharp, documentSharp, downloadSharp, mailSharp, refreshSharp, trashSharp } from "ionicons/icons";
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -17,9 +17,16 @@ import { formatDualWeightWithLcResolution } from "../../helper/weightResolution"
 import { db } from '../../db'
 import Swal from "sweetalert2";
 import { eachDayOfInterval, endOfDay, format, getTime, startOfDay } from "date-fns"
-import { jsPDF } from 'jspdf';
 import { EmailComposer } from "@awesome-cordova-plugins/email-composer";
 import { toast } from 'react-toastify';
+import ReportBrandingModal from '../../components/Modals/ReportBrandingModal';
+import {
+  buildCsvBrandingLines,
+  buildReportRangeLabel,
+  loadReportBranding,
+  type ReportBrandingLabels,
+} from '../../helper/reportBranding';
+import { buildReportLogsPdfDocument } from '../../helper/reportPdfExport';
 import './index.css';
 
 interface LogFilter {
@@ -93,6 +100,7 @@ const Report: FC = () => {
   const [loadProgressText, setLoadProgressText] = useState<string>('')
   /** Blocks UI during CSV/PDF/email prep (native Share + large files can take several seconds). */
   const [exportBusy, setExportBusy] = useState(false)
+  const [brandingModalOpen, setBrandingModalOpen] = useState(false)
   const [rawLogs, setRawLogs] = useState<any[] | null>(null);
   const [reportUnitsSnapshot, setReportUnitsSnapshot] = useState<{ units: string; windmeter_units: string } | null>(null);
   const [storageTotal, setStorageTotal] = useState<number>(0)
@@ -1072,6 +1080,47 @@ const Report: FC = () => {
     return getAllLogsFromList();
   };
 
+  const getReportBrandingLabels = (): ReportBrandingLabels => ({
+    reportTitle: tr('Report.Export', 'Report'),
+    project: tr('Report.BrandingProject', 'Project'),
+    artist: tr('Report.BrandingArtist', 'Artist'),
+    city: tr('Report.BrandingCity', 'City'),
+    user: tr('Report.BrandingUser', 'User'),
+    website: tr('Report.BrandingWebsite', 'Website'),
+    range: tr('Report.BrandingRange', 'Range'),
+    generated: tr('Report.BrandingGenerated', 'Generated'),
+  });
+
+  const buildPdfDocumentForLogs = async (
+    sourceLogData: any[],
+    truncated?: { totalRows: number },
+  ) => {
+    const project = projects.find((p) => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
+    const branding = await loadReportBranding(selectedId, project?.title ?? '');
+    const brandingLabels = getReportBrandingLabels();
+    return buildReportLogsPdfDocument({
+      rows: getReportRows(sourceLogData),
+      branding,
+      labels: {
+        ...brandingLabels,
+        battery: tr('Report.Battery', 'Battery'),
+        time: tr('Report.Time', 'Time'),
+      },
+      isSingleDayRange,
+      filterStart: filter.start,
+      filterEnd: filter.end,
+      hourStart: filter.hourStart,
+      hourEnd: filter.hourEnd,
+      truncatedNote: truncated
+        ? tr(
+          'Report.PdfTruncatedNote',
+          `First ${MAX_NATIVE_PDF_ROWS} of ${truncated.totalRows} rows. Use CSV for full report.`,
+        )
+        : undefined,
+      getStatusMeta: (status) => getStatusMeta(status as ReportStatus),
+    });
+  };
+
   const handleExport = async (type: string) => {
     setExportBusy(true);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -1093,13 +1142,23 @@ const Report: FC = () => {
       case t('Report.CSV'): {
         try {
           const project = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
+          const branding = await loadReportBranding(selectedId, project?.title ?? '');
+          const brandingLabels = getReportBrandingLabels();
+          const rangeLabel = buildReportRangeLabel(
+            isSingleDayRange,
+            filter.start,
+            filter.end,
+            filter.hourStart,
+            filter.hourEnd,
+          );
+          const preamble = buildCsvBrandingLines(branding, brandingLabels, rangeLabel);
           const escapeCsv = (v: any) => {
             const s = v == null ? '' : String(v);
             if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
             return s;
           };
           const reportRows = getReportRows(logData);
-          const rows: string[] = ['Name,ID,Status,Gross,Net,Battery,Time'];
+          const rows: string[] = [...preamble, 'Name,ID,Status,Gross,Net,Battery,Time'];
           reportRows.forEach((r) => rows.push([r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(escapeCsv).join(',')));
           const csvStr = rows.join('\r\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
@@ -1113,8 +1172,8 @@ const Report: FC = () => {
             a.click();
             URL.revokeObjectURL(url);
           } else if (platformType === 'android' || platformType === 'ios') {
-                const reportRows = getReportRows(logData);
-                const csvChunks: string[] = ['\uFEFFName,ID,Status,Gross,Net,Battery,Time\r\n'];
+                const csvHeader = '\uFEFF' + preamble.join('\r\n') + '\r\nName,ID,Status,Gross,Net,Battery,Time\r\n';
+                const csvChunks: string[] = [csvHeader];
                 reportRows.forEach((r) => {
                   csvChunks.push([r.Name, r.ID, r.Status, r.Gross, r.Net, r.Battery, r.Time].map(escapeCsv).join(',') + '\r\n');
                 });
@@ -1262,88 +1321,10 @@ const Report: FC = () => {
               const totalRows = logData.length;
               const capped = totalRows > MAX_NATIVE_PDF_ROWS;
               const rowsForPdfSource = capped ? logData.slice(0, MAX_NATIVE_PDF_ROWS) : logData;
-              const rowsForPdf = getReportRows(rowsForPdfSource);
-              const project = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
-              const doc = new jsPDF('p', 'mm', 'a4');
-              const pageW = doc.internal.pageSize.getWidth();
-              const margin = 10;
-              const colWidths = [30, 16, 22, 22, 22, 16, 42];
-              const rowHeight = 10;
-              let y = margin;
-              doc.setFontSize(14);
-              doc.text(t('Report.Export') || 'Report', margin, y);
-              y += 10;
-              doc.setFontSize(10);
-              if (project) doc.text(`${t('Report.MyProjects') || 'Project'}: ${project.title}`, margin, y);
-              y += 6;
-              doc.text(
-                isSingleDayRange
-                  ? `Range: ${format(filter.start, 'yyyy-MM-dd')} ${filter.hourStart}-${filter.hourEnd}`
-                  : `Range: ${format(filter.start, 'yyyy-MM-dd')} → ${format(filter.end, 'yyyy-MM-dd')}`,
-                margin,
-                y
+              const doc = await buildPdfDocumentForLogs(
+                rowsForPdfSource,
+                capped ? { totalRows } : undefined,
               );
-              y += 10;
-              const headers = ['Name', 'ID', 'Status', 'Gross', 'Net', t('Report.Battery'), t('Report.Time')];
-              doc.setFontSize(8);
-              doc.setFillColor(240, 240, 240);
-              doc.rect(margin, y, pageW - 2 * margin, rowHeight, 'F');
-              headers.forEach((h, i) => {
-                doc.text(h, margin + (i === 0 ? 2 : colWidths.slice(0, i).reduce((a, b) => a + b, 0) + 2), y + 5);
-              });
-              doc.setDrawColor(200, 200, 200);
-              let colX = margin;
-              colWidths.forEach((w) => { doc.line(colX, y, colX, y + rowHeight); colX += w; });
-              doc.line(margin, y + rowHeight, pageW - margin, y + rowHeight);
-              y += rowHeight;
-              const maxY = doc.internal.pageSize.getHeight() - margin;
-              for (let i = 0; i < rowsForPdf.length; i++) {
-                if (y + rowHeight > maxY) {
-                  doc.addPage();
-                  y = margin;
-                  doc.setFillColor(240, 240, 240);
-                  doc.rect(margin, y, pageW - 2 * margin, rowHeight, 'F');
-                  headers.forEach((h, ii) => {
-                    doc.text(h, margin + (ii === 0 ? 2 : colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2), y + 5);
-                  });
-                  colX = margin;
-                  colWidths.forEach((w) => { doc.line(colX, y, colX, y + rowHeight); colX += w; });
-                  doc.line(margin, y + rowHeight, pageW - margin, y + rowHeight);
-                  y += rowHeight;
-                }
-                const r = rowsForPdf[i];
-                const row = [
-                  [r.Name.slice(0, 14)],
-                  [r.ID.slice(0, 9)],
-                  [r.Status.slice(0, 12)],
-                  String(r.Gross || '').split('\n').map((s) => s.slice(0, 18)),
-                  String(r.Net || '').split('\n').map((s) => s.slice(0, 18)),
-                  [r.Battery.slice(0, 7)],
-                  [r.Time.slice(0, 19)],
-                ];
-                row.forEach((cellLines, ii) => {
-                  const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
-                  if (ii === 2) {
-                    const meta = getStatusMeta(r.Status as ReportStatus);
-                    doc.setTextColor(meta.textColor);
-                    doc.text(cellLines, x, y + 4);
-                    doc.setTextColor(0, 0, 0);
-                  } else {
-                    doc.text(cellLines, x, y + 4);
-                  }
-                });
-                colX = margin;
-                colWidths.forEach((w) => { doc.line(colX, y, colX, y + rowHeight); colX += w; });
-                doc.line(margin, y + rowHeight, pageW - margin, y + rowHeight);
-                y += rowHeight;
-              }
-              if (capped) {
-                y += 6;
-                doc.setFontSize(7);
-                doc.setTextColor(120, 120, 120);
-                doc.text(t('Report.PdfTruncatedNote') || `First ${MAX_NATIVE_PDF_ROWS} of ${totalRows} rows. Use CSV for full report.`, margin, y);
-                doc.setTextColor(0, 0, 0);
-              }
               const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.pdf`;
               const base64 = doc.output('datauristring').split(',')[1];
               await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Cache });
@@ -1368,81 +1349,7 @@ const Report: FC = () => {
           break;
         }
         try {
-          const project = projects.find(p => normalizeProjectId(p.id) === normalizeProjectId(selectedId));
-          const doc = new jsPDF('p', 'mm', 'a4');
-          const pageW = doc.internal.pageSize.getWidth();
-          const margin = 10;
-          const colWidths = [30, 16, 22, 22, 22, 16, 42];
-          const rowHeight = 10;
-          let y = margin;
-          doc.setFontSize(14);
-          doc.text(t('Report.Export') || 'Report', margin, y);
-          y += 10;
-          doc.setFontSize(10);
-          if (project) doc.text(`${t('Report.MyProjects') || 'Project'}: ${project.title}`, margin, y);
-          y += 6;
-          doc.text(
-            isSingleDayRange
-              ? `Range: ${format(filter.start, 'yyyy-MM-dd')} ${filter.hourStart}-${filter.hourEnd}`
-              : `Range: ${format(filter.start, 'yyyy-MM-dd')} → ${format(filter.end, 'yyyy-MM-dd')}`,
-            margin,
-            y
-          );
-          y += 10;
-          const headers = ['Name', 'ID', 'Status', 'Gross', 'Net', t('Report.Battery'), t('Report.Time')];
-          doc.setFontSize(8);
-          doc.setFillColor(240, 240, 240);
-          doc.rect(margin, y, pageW - 2 * margin, rowHeight, 'F');
-          headers.forEach((h, i) => {
-            doc.text(h, margin + (i === 0 ? 2 : colWidths.slice(0, i).reduce((a, b) => a + b, 0) + 2), y + 5);
-          });
-          doc.setDrawColor(200, 200, 200);
-          let colX = margin;
-          colWidths.forEach((w) => { doc.line(colX, y, colX, y + rowHeight); colX += w; });
-          doc.line(margin, y + rowHeight, pageW - margin, y + rowHeight);
-          y += rowHeight;
-          const maxY = doc.internal.pageSize.getHeight() - margin;
-          const reportRowsPdf = getReportRows(logData);
-          for (let i = 0; i < reportRowsPdf.length; i++) {
-            if (y + rowHeight > maxY) {
-              doc.addPage();
-              y = margin;
-              doc.setFillColor(240, 240, 240);
-              doc.rect(margin, y, pageW - 2 * margin, rowHeight, 'F');
-              headers.forEach((h, ii) => {
-                doc.text(h, margin + (ii === 0 ? 2 : colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2), y + 5);
-              });
-              colX = margin;
-              colWidths.forEach((w) => { doc.line(colX, y, colX, y + rowHeight); colX += w; });
-              doc.line(margin, y + rowHeight, pageW - margin, y + rowHeight);
-              y += rowHeight;
-            }
-            const r = reportRowsPdf[i];
-            const row = [
-              [r.Name.slice(0, 14)],
-              [r.ID.slice(0, 9)],
-              [r.Status.slice(0, 12)],
-              String(r.Gross || '').split('\n').map((s) => s.slice(0, 18)),
-              String(r.Net || '').split('\n').map((s) => s.slice(0, 18)),
-              [r.Battery.slice(0, 7)],
-              [r.Time.slice(0, 19)],
-            ];
-            row.forEach((cellLines, ii) => {
-              const x = margin + colWidths.slice(0, ii).reduce((a, b) => a + b, 0) + 2;
-              if (ii === 2) {
-                const meta = getStatusMeta(r.Status as ReportStatus);
-                doc.setTextColor(meta.textColor);
-                doc.text(cellLines, x, y + 4);
-                doc.setTextColor(0, 0, 0);
-              } else {
-                doc.text(cellLines, x, y + 4);
-              }
-            });
-            colX = margin;
-            colWidths.forEach((w) => { doc.line(colX, y, colX, y + rowHeight); colX += w; });
-            doc.line(margin, y + rowHeight, pageW - margin, y + rowHeight);
-            y += rowHeight;
-          }
+          const doc = await buildPdfDocumentForLogs(logData);
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.pdf`;
           if (platformType === 'web') {
             const blob = doc.output('blob');
@@ -2167,7 +2074,7 @@ const Report: FC = () => {
                   </span>
                 </div>
               )}
-              <div className="flex flex-row items-center gap-2 py-2">
+              <div className="flex flex-row items-center gap-2 py-2 flex-wrap">
                 <Text label={`${t('Report.Export')}: `} />
                 {ExportList.filter((item) => !(item as { hidden?: boolean }).hidden).map((item, key) => (
                   <button
@@ -2182,6 +2089,16 @@ const Report: FC = () => {
                     <Text label={item.title} />
                   </button>
                 ))}
+                <button
+                  type="button"
+                  disabled={!selectedId || exportBusy}
+                  className={`flex flex-row items-center gap-1 border-0 bg-transparent p-0 touch-manipulation ml-2 ${!selectedId || exportBusy ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+                  onPointerUp={(e) => runFromTouchPointerUp('report-branding', e, () => setBrandingModalOpen(true))}
+                  onClick={() => runFromClick('report-branding', () => setBrandingModalOpen(true))}
+                >
+                  <IonIcon icon={createOutline} color="primary" />
+                  <Text label={t('Report.BrandingButton')} />
+                </button>
               </div>
               <hr className="w-full border border-gray-300" />
               <div className="flex flex-col gap-2">
@@ -2309,6 +2226,12 @@ const Report: FC = () => {
         </div>
       </div>
     </CommonLayout>
+    <ReportBrandingModal
+      visible={brandingModalOpen}
+      projectId={selectedId}
+      projectTitle={selectedProject?.title ?? ''}
+      onClose={() => setBrandingModalOpen(false)}
+    />
     </>
   )
 }

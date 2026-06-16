@@ -88,6 +88,8 @@
     "AutoPlaceDone": "{{count}} 個のセルを画像上に配置しました。",
     "AutoPlaceError": "レイアウトを保存できませんでした。",
     "UndoLayout": "レイアウトを元に戻す（最大10回）",
+    "LcSizeLarge": "セルアイコン（大）",
+    "LcSizeSmall": "セルアイコン（小）",
     "Modal": {
       "HighlightLC": "LCを強調表示",
       "ShowOnlyGroupLcs": "このグループのLCのみ表示",
@@ -230,7 +232,19 @@
     "CycleDisabled": "Reports Cycle is disabled",
     "CycleDisabledMessage": "Reports are not available. Please enable Reports Cycle in project settings to view reports.",
     "PreparingExport": "エクスポート準備中...",
-    "LoadingReport": "レポートを読み込み中..."
+    "LoadingReport": "レポートを読み込み中...",
+    "BrandingButton": "レポートヘッダー",
+    "BrandingTitle": "レポートヘッダーとブランディング",
+    "BrandingSubtitle": "PDF/CSVエクスポート用のロゴ、プロジェクト情報、Webサイト、QRコード。",
+    "BrandingProject": "プロジェクト",
+    "BrandingArtist": "アーティスト",
+    "BrandingCity": "都市",
+    "BrandingUser": "ユーザー",
+    "BrandingWebsite": "Webサイト",
+    "BrandingLogo": "会社ロゴ",
+    "BrandingShowQr": "QRコードを含める（Webサイトリンク）",
+    "BrandingRange": "期間",
+    "BrandingGenerated": "生成日時"
   },
   "Msg": {
     "ConfirmSetting": "Project settings successfully updated",

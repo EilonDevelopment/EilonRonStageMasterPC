@@ -5,7 +5,7 @@ import { Rnd } from 'react-rnd';
 
 import { lcBelongsToGroup } from "../../helper/lcGroupMembership";
 import { getLcGrossLoadBand, isLcTransmissionError } from '../../helper/lcLoadStatus';
-import { arrowUndoOutline, cameraOutline, closeCircleOutline, createOutline, homeOutline, imageOutline, locateOutline, lockClosedOutline, lockOpenOutline } from "ionicons/icons";
+import { appsOutline, arrowUndoOutline, cameraOutline, closeCircleOutline, createOutline, gridOutline, homeOutline, imageOutline, locateOutline, lockClosedOutline, lockOpenOutline } from "ionicons/icons";
 
 /** Re-enable the crosshair control after auto-place / home-drag issues are fixed. */
 const SHOW_MONITOR_AUTO_PLACE_BUTTON = false;
@@ -23,9 +23,24 @@ import Swal from 'sweetalert2';
 import BackgroundImageEditorModal from '../Modals/BackgroundImageEditorModal';
 import './MonitorView.css';
 
-/** Stage / home-column LC tile size (keep in sync with `.monitor-lc-handle` in MonitorView.css). */
-const MONITOR_LC_BOX_WIDTH = 96;
-const MONITOR_LC_BOX_HEIGHT = 56;
+/** LC tile size presets (large = current field layout; small = pre–8daa2ec w-20 / h-10.5). */
+export type MonitorLcBoxSize = 'large' | 'small';
+
+const MONITOR_LC_BOX_SIZES: Record<MonitorLcBoxSize, { width: number; height: number }> = {
+  large: { width: 96, height: 56 },
+  small: { width: 80, height: 42 },
+};
+
+const MONITOR_LC_SIZE_STORAGE_KEY = 'monitorLcBoxSize';
+
+function readStoredMonitorLcBoxSize(): MonitorLcBoxSize {
+  try {
+    const v = localStorage.getItem(MONITOR_LC_SIZE_STORAGE_KEY);
+    return v === 'small' ? 'small' : 'large';
+  } catch {
+    return 'large';
+  }
+}
 /** Finger jitter below this (px) still counts as tap / double-tap, not drag. */
 const LC_TAP_DRAG_SLOP_PX = 28;
 const LC_DOUBLE_TAP_MS = 500;
@@ -536,6 +551,9 @@ type MonitorLcBoxProps = {
   /** Home column: this LC is the one under the finger — paint above siblings and the image panel. */
   columnLiftRaised?: boolean;
   groupHighlight?: boolean;
+  boxWidth: number;
+  boxHeight: number;
+  boxSize: MonitorLcBoxSize;
   /** `columnIndex` is list index (home column); optional for stage LCs. */
   onDragLiftChange?: (active: boolean, columnIndex?: number) => void;
   onCellClick?: (item: ILC, index: number) => void;
@@ -570,6 +588,9 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     boundsTopSlop = 0,
     columnLiftRaised = false,
     groupHighlight,
+    boxWidth,
+    boxHeight,
+    boxSize,
     onDragLiftChange,
     onCellClick,
     onCellDoubleTap,
@@ -725,8 +746,8 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
         }}
       >
         <div
-          className={`handle monitor-lc-handle flex flex-col rounded cursor-pointer shrink-0${groupHighlight ? ' ring-4 ring-primary ring-offset-1 z-[20] relative' : ''}`}
-          style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none', width: MONITOR_LC_BOX_WIDTH, height: MONITOR_LC_BOX_HEIGHT }}
+          className={`handle monitor-lc-handle flex flex-col rounded cursor-pointer shrink-0${boxSize === 'small' ? ' monitor-lc-handle--small' : ''}${groupHighlight ? ' ring-4 ring-primary ring-offset-1 z-[20] relative' : ''}`}
+          style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none', width: boxWidth, height: boxHeight }}
           onPointerDownCapture={() => {
             longPressTriggeredRef.current = false;
             if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
@@ -812,6 +833,9 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     (prev.boundsTopSlop ?? 0) === (next.boundsTopSlop ?? 0) &&
     prev.columnLiftRaised === next.columnLiftRaised &&
     prev.groupHighlight === next.groupHighlight &&
+    prev.boxWidth === next.boxWidth &&
+    prev.boxHeight === next.boxHeight &&
+    prev.boxSize === next.boxSize &&
     prev.onDragLiftChange === next.onDragLiftChange &&
     prev.onCellClick === next.onCellClick &&
     prev.onCellDoubleTap === next.onCellDoubleTap &&
@@ -854,6 +878,22 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   /** Single source of truth: parent `lcs` via `data`. */
   const list = data;
   const listRef = useRef<ILC[]>([]);
+  const allLcsRef = useRef<ILC[]>(lcs);
+  allLcsRef.current = lcs;
+
+  const mergeProjectLayoutIntoAllLcs = useCallback((projectLayoutRows: ILC[]) => {
+    const pid = normalizeProjectId(curProject?.id);
+    if (!pid) return allLcsRef.current;
+    const patchByKey = new Map(
+      projectLayoutRows.map((row) => [`${normalizeProjectId(row.project_id)}::${String(row.id)}`, row])
+    );
+    return allLcsRef.current.map((row) => {
+      if (normalizeProjectId(row.project_id) !== pid) return row;
+      const key = `${normalizeProjectId(row.project_id)}::${String(row.id)}`;
+      const hit = patchByKey.get(key);
+      return hit ? { ...row, ...hit } : row;
+    });
+  }, [curProject?.id]);
 
   /** No background image: LCs live in the left column; drags are temporary until we add image layout. */
   const [tempHomePositions, setTempHomePositions] = useState<Record<number, { x: number; y: number }>>({});
@@ -862,6 +902,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
 
   const [locked, setLocked] = useState<boolean>(false);
   const [layoutToolsOpen, setLayoutToolsOpen] = useState(false);
+  const [lcBoxSize, setLcBoxSize] = useState<MonitorLcBoxSize>(readStoredMonitorLcBoxSize);
   const [layoutProgress, setLayoutProgress] = useState(false);
   const [layoutProgressMessageKey, setLayoutProgressMessageKey] = useState('');
   /** Force remount of LC draggable nodes after heavy layout changes (iPad WebView can leave ghost layers). */
@@ -985,8 +1026,8 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
   } | null>(null)
   /** Explicit offset parent for drag so touch/Android uses same coordinate system as wrapper. */
   //const [dragOffsetParent, setDragOffsetParent] = useState<HTMLDivElement | null>(null)
-  const LC_BOX_WIDTH = MONITOR_LC_BOX_WIDTH
-  const LC_BOX_HEIGHT = MONITOR_LC_BOX_HEIGHT
+  const LC_BOX_WIDTH = MONITOR_LC_BOX_SIZES[lcBoxSize].width
+  const LC_BOX_HEIGHT = MONITOR_LC_BOX_SIZES[lcBoxSize].height
   /** Extra pixels around the home strip for “drop back to home” hit-testing (fat finger / WKWebView). */
   const HOME_STRIP_DROP_SLACK_PX = 16
   const LC_HOME_STRIP_WIDTH = LC_BOX_WIDTH
@@ -2149,7 +2190,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
             tempColumn: beforeTemp,
           })
         );
-        updateLCs(updated);
+        updateLCs(mergeProjectLayoutIntoAllLcs(updated));
         setTempHomePositions({});
         setLcRenderEpoch((v) => v + 1);
       });
@@ -2192,7 +2233,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       flushSync(() => {
         setLayoutUndoStack(nextStack);
         setTempHomePositions(cloneTempColumn(entry.tempColumn ?? {}));
-        updateLCs(merged);
+        updateLCs(mergeProjectLayoutIntoAllLcs(merged));
         setLcRenderEpoch((v) => v + 1);
         setStageLcDragging(false);
         setColumnLcDragging(false);
@@ -2204,6 +2245,18 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
       console.error('[MonitorView] Undo layout failed:', err);
     }
   };
+
+  const handleToggleLcBoxSize = useCallback(() => {
+    setLcBoxSize((prev) => {
+      const next: MonitorLcBoxSize = prev === 'large' ? 'small' : 'large';
+      try {
+        localStorage.setItem(MONITOR_LC_SIZE_STORAGE_KEY, next);
+      } catch {
+        /* ignore quota / private mode */
+      }
+      return next;
+    });
+  }, []);
 
   const handleHomeLayoutClick = () => {
     if (locked || layoutProgress) return;
@@ -2224,7 +2277,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
         );
         await db.lcs.bulkPut(homeItems);
         flushSync(() => {
-          updateLCs(homeItems);
+          updateLCs(mergeProjectLayoutIntoAllLcs(homeItems));
           setTempHomePositions({});
           setStageLcDragging(false);
           setColumnLcDragging(false);
@@ -2479,7 +2532,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                 {columnLaneEntries.map(({ item, index }) => {
                   const displayPos = columnDisplayPosition(index, tempHomePositions, LC_BOX_HEIGHT);
 
-                  const key = `${lcRenderEpoch}-${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
+                  const key = `${lcRenderEpoch}-${lcBoxSize}-${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
                   return (
                     <MonitorLcBox
                       key={key}
@@ -2497,6 +2550,9 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                       boundsBottom={lcBoundsBottom - displayPos.y}
                       columnLiftRaised={columnDragLiftIndex === index}
                       groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
+                      boxWidth={LC_BOX_WIDTH}
+                      boxHeight={LC_BOX_HEIGHT}
+                      boxSize={lcBoxSize}
                       onCellClick={handleHomeCellClickToCanvas}
                       onStop={(_e, data, idx, baseX, baseY, dragGestureSeen = false) =>
                         reposition_lc(
@@ -2637,7 +2693,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                         const dynamicLeftSlop = Math.max(stageToHomeLeftSlop, Math.ceil(-minDispX) + 6);
                         const dynamicTopSlop = Math.max(0, Math.ceil(-minDispY) + 6);
                         // Important: include x/y so Draggable remounts after saving a new base position.
-                        const key = `${lcRenderEpoch}-${item.id}-${normalizeProjectId(item.project_id)}-${logicalPos.x}-${logicalPos.y}-${stageViewZoom.toFixed(3)}-${Math.round(stageViewPan.x)}-${Math.round(stageViewPan.y)}`;
+                        const key = `${lcRenderEpoch}-${lcBoxSize}-${item.id}-${normalizeProjectId(item.project_id)}-${logicalPos.x}-${logicalPos.y}-${stageViewZoom.toFixed(3)}-${Math.round(stageViewPan.x)}-${Math.round(stageViewPan.y)}`;
 
                         return (
                           <MonitorLcBox
@@ -2658,6 +2714,9 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                             boundsLeftSlop={dynamicLeftSlop}
                             boundsTopSlop={dynamicTopSlop}
                             groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
+                            boxWidth={LC_BOX_WIDTH}
+                            boxHeight={LC_BOX_HEIGHT}
+                            boxSize={lcBoxSize}
                             onDragLiftChange={onStageLcDragLift}
                             onCellDoubleTap={handleStageCellDoubleTapToHome}
                             onCellClick={onCellClick}
@@ -2706,7 +2765,7 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                       const stageH = Math.max(LC_BOX_HEIGHT, imageBoundsBottom);
                       const boundsRight = Math.max(-displayPos.x, stageW - LC_BOX_WIDTH - displayPos.x);
                       const boundsBottom = Math.max(-displayPos.y, stageH - LC_BOX_HEIGHT - displayPos.y);
-                      const key = `${lcRenderEpoch}-noimg-${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
+                      const key = `${lcRenderEpoch}-${lcBoxSize}-noimg-${item.id}-${normalizeProjectId(item.project_id)}-${displayPos.x}-${displayPos.y}`;
                       return (
                         <MonitorLcBox
                           key={key}
@@ -2725,6 +2784,9 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
                           dragScale={1}
                           boundsLeftSlop={stageToHomeLeftSlop}
                           groupHighlight={highlightActive && lcBelongsToGroup(item, groupVid)}
+                          boxWidth={LC_BOX_WIDTH}
+                          boxHeight={LC_BOX_HEIGHT}
+                          boxSize={lcBoxSize}
                           onDragLiftChange={onStageLcDragLift}
                           onCellDoubleTap={handleStageCellDoubleTapToHome}
                           onCellClick={onCellClick}
@@ -2798,6 +2860,19 @@ const MonitorView: FC<MonitorViewProps> = (props) => {
               ) : null}
               <IonButton color="medium" className="m-0" onClick={() => setLocked(v => !v)}>
                 <IonIcon slot="icon-only" icon={locked ? lockClosedOutline : lockOpenOutline} size="small"></IonIcon>
+              </IonButton>
+              <IonButton
+                color="medium"
+                className="m-0"
+                onClick={handleToggleLcBoxSize}
+                title={lcBoxSize === 'large' ? (t('Monitor.LcSizeSmall') || 'Small cell icons') : (t('Monitor.LcSizeLarge') || 'Large cell icons')}
+                aria-label={lcBoxSize === 'large' ? (t('Monitor.LcSizeSmall') || 'Small cell icons') : (t('Monitor.LcSizeLarge') || 'Large cell icons')}
+              >
+                <IonIcon
+                  slot="icon-only"
+                  icon={lcBoxSize === 'large' ? appsOutline : gridOutline}
+                  size="small"
+                />
               </IonButton>
               <IonButton
                 color="medium"

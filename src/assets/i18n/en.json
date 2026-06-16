@@ -91,6 +91,8 @@
     "AutoPlaceError": "Could not save layout.",
     "HomeScroll": "Scroll home cells",
     "UndoLayout": "Undo last layout (up to 10 steps)",
+    "LcSizeLarge": "Large cell icons",
+    "LcSizeSmall": "Small cell icons",
     "Modal": {
       "GroupAction": "Group Actions",
       "Tare": "TARE",
@@ -275,7 +277,19 @@
     "CycleDisabled": "Reports Cycle is disabled",
     "CycleDisabledMessage": "Reports are not available. Please enable Reports Cycle in project settings to view reports.",
     "PreparingExport": "Preparing export...",
-    "LoadingReport": "Loading report data..."
+    "LoadingReport": "Loading report data...",
+    "BrandingButton": "Report header",
+    "BrandingTitle": "Report header & branding",
+    "BrandingSubtitle": "Logo, project details, website and QR code for PDF/CSV exports.",
+    "BrandingProject": "Project",
+    "BrandingArtist": "Artist",
+    "BrandingCity": "City",
+    "BrandingUser": "User",
+    "BrandingWebsite": "Website",
+    "BrandingLogo": "Company logo",
+    "BrandingShowQr": "Include QR code (website link)",
+    "BrandingRange": "Range",
+    "BrandingGenerated": "Generated"
   },
   "Msg": {
     "ConfirmSetting": "Project settings successfully updated",

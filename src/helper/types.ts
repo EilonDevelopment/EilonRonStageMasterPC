@@ -37,9 +37,19 @@ export type IProject = {
 }
 
 export type IProjectDetail = {
-  id: string;
+  id?: string | number;
   project_id: string;
   logoheaderpdf?: string;
+  /** PDF/CSV report header — artist name */
+  report_artist?: string;
+  /** PDF/CSV report header — city / venue */
+  report_city?: string;
+  /** PDF/CSV report header — operator / user name */
+  report_user?: string;
+  /** Website URL — printed in footer and encoded in QR when enabled */
+  report_website_url?: string;
+  /** When false, QR code is omitted even if website URL is set */
+  report_show_qr?: boolean;
   certnumber?: string;
   certcompany?: string;
   certcompanyaddress?: string;

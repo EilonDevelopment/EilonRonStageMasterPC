@@ -23,6 +23,12 @@ import useGroupOperations from "../../helper/db/groups";
 import useFunctions from "../../hooks/useFunctions";
 import { fire_error, getLCsByGroup, normalizeProjectId, strToFloat } from "../../helper/functions";
 import { lcBelongsToGroup } from "../../helper/lcGroupMembership";
+import {
+  getLcGrossWeightForZeroCheck,
+  getLcNominalCapacity,
+  isGrossAboveZeroCapacityLimit,
+  ZERO_BLOCK_CAPACITY_FRACTION,
+} from "../../helper/lcLoadStatus";
 import { ROUTES } from "../../helper/constants";
 import { toast } from "react-toastify";
 import { logEvent } from "../../services/LogService";
@@ -94,7 +100,8 @@ const Monitor: FC = () => {
     f_update_project_image_position,
     f_load_cells,
     play_beep,
-    f_get_units_multiply
+    f_get_units_multiply,
+    f_verify_lc_id,
 
   } = useFunctions()
 
@@ -1947,26 +1954,45 @@ const updateSumByGroup = async () => {
           
           const inGroup = (item: ILC) => (item.groups?.split(',').map(g => g.trim()) ?? []).includes(groupId);
           const groupLcs = lcs.filter(lc => normalizeProjectId(lc.project_id) === normalizeProjectId(curProject.id) && inGroup(lc));
-          // Safety rule for ZERO: block when any LC in the target group carries >30% of its capacity (raw load).
-          // Capacity baseline = LC overload threshold.
+          const projectToMton = Number(f_get_units_multiply('M.TON')) || 0;
+          // Safety rule for ZERO: block when any LC in the target group carries >30% of its nominal capacity (raw gross).
           const overLimitLc = groupLcs.find((lc) => {
-            const overloadNum = Number(lc.overload);
-            if (!Number.isFinite(overloadNum) || overloadNum <= 0) return false;
+            const capacityNum = getLcNominalCapacity(
+              lc,
+              curProject.units,
+              f_verify_lc_id(String(lc.id))?.capacity,
+            );
+            if (!Number.isFinite(capacityNum) || capacityNum <= 0) return false;
             const live = liveLC.find((x: any) => String(x.id) === String(lc.id));
-            const rawGross = Number((live as any)?.realval ?? lc.realval);
+            const rawGross = getLcGrossWeightForZeroCheck(
+              lc,
+              live,
+              curProject.units,
+              projectToMton,
+            );
             if (!Number.isFinite(rawGross)) return false;
-            return Math.abs(rawGross) > overloadNum * 0.3;
+            return isGrossAboveZeroCapacityLimit(rawGross, capacityNum);
           });
           setVisibleModal('');
           if (groupLcs.length === 0) return setVisibleModal('');
           if (overLimitLc) {
-            const overloadNum = Number(overLimitLc.overload);
+            const capacityNum = getLcNominalCapacity(
+              overLimitLc,
+              curProject.units,
+              f_verify_lc_id(String(overLimitLc.id))?.capacity,
+            );
             const live = liveLC.find((x: any) => String(x.id) === String(overLimitLc.id));
-            const rawGross = Number((live as any)?.realval ?? overLimitLc.realval);
+            const rawGross = getLcGrossWeightForZeroCheck(
+              overLimitLc,
+              live,
+              curProject.units,
+              projectToMton,
+            );
             const unitLabel = String(curProject.units || '').trim() || 'unit';
+            const limit = capacityNum * ZERO_BLOCK_CAPACITY_FRACTION;
             await Swal.fire({
               title: 'Zero not allowed',
-              text: `Cannot apply ZERO to this group because load cell ${overLimitLc.id} is above 30% of capacity (${Math.abs(rawGross).toFixed(2)} ${unitLabel} > ${(overloadNum * 0.3).toFixed(2)} ${unitLabel}). Remove load and try again.`,
+              text: `Cannot apply ZERO to this group because load cell ${overLimitLc.id} is above 30% of capacity (${Math.abs(rawGross).toFixed(2)} ${unitLabel} > ${limit.toFixed(2)} ${unitLabel}). Remove load and try again.`,
               icon: 'warning',
               heightAuto: false,
             });
@@ -2045,7 +2071,13 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
           rawValue === 'Tr.Err' ||
           rawValue === 'Tr. Err' ||
           Number(rawValue) === -99999999
-        const rawGross = Number((live as any)?.realval ?? target.realval)
+        const projectToMton = Number(f_get_units_multiply('M.TON')) || 0
+        const rawGross = getLcGrossWeightForZeroCheck(
+          target,
+          live,
+          curProject.units,
+          projectToMton,
+        )
         if (isTransmissionError || !Number.isFinite(rawGross)) {
           await Swal.fire({
             title: 'Zero not allowed',
@@ -2056,12 +2088,22 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
           return
         }
 
-        const overloadNum = Number(target.overload)
-        if (Number.isFinite(overloadNum) && overloadNum > 0 && Number.isFinite(rawGross) && Math.abs(rawGross) > overloadNum * 0.3) {
+        const capacityNum = getLcNominalCapacity(
+          target,
+          curProject.units,
+          f_verify_lc_id(String(target.id))?.capacity,
+        )
+        if (
+          Number.isFinite(capacityNum) &&
+          capacityNum > 0 &&
+          Number.isFinite(rawGross) &&
+          isGrossAboveZeroCapacityLimit(rawGross, capacityNum)
+        ) {
           const unitLabel = String(curProject.units || '').trim() || 'unit'
+          const limit = capacityNum * ZERO_BLOCK_CAPACITY_FRACTION
           await Swal.fire({
             title: 'Zero not allowed',
-            text: `Cannot apply ZERO to load cell ${target.id} because it is above 30% of capacity (${Math.abs(rawGross).toFixed(2)} ${unitLabel} > ${(overloadNum * 0.3).toFixed(2)} ${unitLabel}). Remove load and try again.`,
+            text: `Cannot apply ZERO to load cell ${target.id} because it is above 30% of capacity (${Math.abs(rawGross).toFixed(2)} ${unitLabel} > ${limit.toFixed(2)} ${unitLabel}). Remove load and try again.`,
             icon: 'warning',
             heightAuto: false,
           })
