@@ -252,6 +252,7 @@
     "ShowingReports": "Showing reports for:",
     "CurrentProject": "Current project",
     "Export": "Export",
+    "DocumentTitle": "Report",
     "Email": "Email",
     "CSV": "CSV",
     "JSON": "JSON",
@@ -287,9 +288,11 @@
     "BrandingUser": "User",
     "BrandingWebsite": "Website",
     "BrandingLogo": "Company logo",
+    "BrandingLogoCsvNote": "Included in PDF export only",
     "BrandingShowQr": "Include QR code (website link)",
     "BrandingRange": "Range",
-    "BrandingGenerated": "Generated"
+    "BrandingGenerated": "Generated",
+    "SnapshotTitle": "Snapshot Report"
   },
   "Msg": {
     "ConfirmSetting": "Project settings successfully updated",

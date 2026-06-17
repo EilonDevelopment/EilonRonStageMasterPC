@@ -242,9 +242,12 @@
     "BrandingUser": "ユーザー",
     "BrandingWebsite": "Webサイト",
     "BrandingLogo": "会社ロゴ",
+    "BrandingLogoCsvNote": "PDFエクスポートのみに含まれます",
     "BrandingShowQr": "QRコードを含める（Webサイトリンク）",
     "BrandingRange": "期間",
-    "BrandingGenerated": "生成日時"
+    "BrandingGenerated": "生成日時",
+    "SnapshotTitle": "スナップショットレポート",
+    "DocumentTitle": "レポート"
   },
   "Msg": {
     "ConfirmSetting": "Project settings successfully updated",

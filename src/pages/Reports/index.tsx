@@ -24,6 +24,7 @@ import {
   buildCsvBrandingLines,
   buildReportRangeLabel,
   loadReportBranding,
+  resolveReportBrandingLabels,
   type ReportBrandingLabels,
 } from '../../helper/reportBranding';
 import { buildReportLogsPdfDocument } from '../../helper/reportPdfExport';
@@ -1080,16 +1081,8 @@ const Report: FC = () => {
     return getAllLogsFromList();
   };
 
-  const getReportBrandingLabels = (): ReportBrandingLabels => ({
-    reportTitle: tr('Report.Export', 'Report'),
-    project: tr('Report.BrandingProject', 'Project'),
-    artist: tr('Report.BrandingArtist', 'Artist'),
-    city: tr('Report.BrandingCity', 'City'),
-    user: tr('Report.BrandingUser', 'User'),
-    website: tr('Report.BrandingWebsite', 'Website'),
-    range: tr('Report.BrandingRange', 'Range'),
-    generated: tr('Report.BrandingGenerated', 'Generated'),
-  });
+  const getReportBrandingLabels = (): ReportBrandingLabels =>
+    resolveReportBrandingLabels(t, tr('Report.DocumentTitle', 'Report'));
 
   const buildPdfDocumentForLogs = async (
     sourceLogData: any[],
