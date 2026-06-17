@@ -143,6 +143,26 @@
   font-weight: 900;
 }
 
+/* Compact LC tiles (legacy w-20 / h-10.5 layout). */
+.monitor-lc-handle--small {
+  border-width: 1px;
+  box-shadow: none;
+}
+
+.monitor-lc-handle--small .monitor-lc-id {
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.15;
+  padding: 0.125rem 0.1rem;
+}
+
+.monitor-lc-handle--small .monitor-lc-value {
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+  padding: 0.125rem 0.1rem;
+}
+
 /* Collapsible layout toolbar (right edge of Monitor stage). */
 .monitor-layout-tools {
   z-index: 60;
