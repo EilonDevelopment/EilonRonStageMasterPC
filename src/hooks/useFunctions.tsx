@@ -242,16 +242,31 @@ export default function useFunctions() {
   const f_use_update_project_setting = async (id: any, data: Partial<IProject>, multiply: number, weight: any) => {
     try {
       const projectsStore = db.projects;
-      await projectsStore.update(id, data);
+      const patch: Partial<IProject> = { ...data };
+      const nextUnits = String(patch.units ?? curProjectRef.current?.units ?? '');
+      const converted = multiply !== 1 || weight !== 1;
+
+      // Always convert Total Overload from the pre-change project when units change
+      // (groups/LCs are converted in f_update_units; this keeps the project row in sync).
+      if (multiply !== 1) {
+        const prevTotal = curProjectRef.current?.total_overload;
+        if (prevTotal != null && String(prevTotal).trim() !== '') {
+          const n = Number(prevTotal) * multiply;
+          if (Number.isFinite(n)) {
+            patch.total_overload = formatGroupOverloadStringForUnit(n, nextUnits);
+          }
+        }
+      }
+
+      await projectsStore.update(id, patch);
       console.log('project settings updated successfully');
-      updateCurProject(data)
-      updateProjects({ id, ...data })
-      const nextUnits = String(data.units ?? curProjectRef.current?.units ?? '')
-      const converted = multiply !== 1 || weight !== 1
+      updateCurProject(patch);
+      updateProjects({ id, ...patch });
       await f_update_units(multiply, weight, {
         nextProjectUnits: nextUnits,
         applyLcThresholdQuantize: converted,
-      })
+      });
+      await Promise.all([f_load_groups(), f_load_cells()]);
       return true;
     } catch (error) {
       console.error('Error updating row: ' + error);
@@ -301,14 +316,14 @@ export default function useFunctions() {
   }
 
   const f_load_groups = async () => {
-    if (!curProject.id) return
-    const pid = normalizeProjectId(curProject.id);
-    db.groups.filter((g: any) => normalizeProjectId(g.project_id) === pid).toArray().then(function (data) {
-      console.log('load_groups', { data })
-      updateGroups(data)
-    }).catch(function (error) {
+    const pid = normalizeProjectId((curProjectRef.current?.id ?? curProject?.id) as any);
+    if (!pid) return;
+    try {
+      const data = await db.groups.filter((g: any) => normalizeProjectId(g.project_id) === pid).toArray();
+      updateGroups(data);
+    } catch (error) {
       console.error('Error querying data from the table: ' + error);
-    });
+    }
   }
   const init_groups = () => {
     console.log('init_groups')
@@ -397,8 +412,8 @@ export default function useFunctions() {
   }
 
   const f_load_cells = async () => {
-    if (!curProject.id) return
-    const pid = normalizeProjectId(curProject.id);
+    const pid = normalizeProjectId((curProjectRef.current?.id ?? curProject?.id) as any);
+    if (!pid) return;
     try {
       const data: ILC[] = await db.lcs.filter(lc => normalizeProjectId(lc.project_id) === pid).toArray()
       updateLCsFromDb(data)
