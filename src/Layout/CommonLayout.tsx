@@ -62,7 +62,7 @@ import { checkNativeBleScanPrerequisites } from '../helper/nativeBleScan';
 import { pickProjectCsvText, shouldUseNativeCsvPickerForImport } from '../helper/nativeProjectCsvImport';
 import { BLE_CONNECT_TIMEOUT_MS } from '../helper/bleConstants';
 import { collectBleDevicesForService, type BleDiscoveredDevice } from '../helper/bleLeScanCollection';
-import { formatDualWeightWithLcResolution, formatWeightByLcResolution, getResolutionForLcId, quantizeByResolution } from '../helper/weightResolution';
+import { formatDualWeightWithLcResolution, formatGroupOverloadStringForUnit, formatWeightByLcResolution, getResolutionForLcId, quantizeByResolution } from '../helper/weightResolution';
 import { getPreOverloadThreshold } from '../helper/lcLoadStatus';
 import { toast } from 'react-toastify';
 import useFunctions from '../hooks/useFunctions';
@@ -792,12 +792,22 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
 
     // curProject.units
     const multiply = (curProject.units !== project.units) ? get_units_multiply(curProject.units, project.units) : 1;
-    // project = { ...project, total_overload: (parseFloat(project.total_overload) * (multiply)).toString() }
     const weight = (curProject.windmeter_units !== project.windmeter_units) ? convert_wind_speed(curProject.windmeter_units, project.windmeter_units) : 1;
-    const { id, ...rest } = project;
-    await f_use_update_project_setting(id, rest, multiply, weight);
-    setSelectProject(project);
-    activeProjectRef.current = project;
+    const projectToSave: IProject =
+      multiply !== 1 && curProject.total_overload != null && String(curProject.total_overload).trim() !== ''
+        ? {
+            ...project,
+            total_overload: formatGroupOverloadStringForUnit(
+              Number(curProject.total_overload) * multiply,
+              project.units || curProject.units || 'KG',
+            ),
+          }
+        : project;
+    const { id, ...rest } = projectToSave;
+    const saved = await f_use_update_project_setting(id, rest, multiply, weight);
+    if (!saved) return;
+    setSelectProject(projectToSave);
+    activeProjectRef.current = projectToSave;
     setVisibleSetting(false);
     if (newProjectSettingsFlow) {
       setNewProjectSettingsFlow(false);
