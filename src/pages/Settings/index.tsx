@@ -20,6 +20,7 @@ import { db } from '../../db'
 import useFunctions from '../../hooks/useFunctions';
 import './index.css';
 import { logEvent } from '../../services/LogService';
+import { requestCrrLcListSync } from '../../helper/crrUsbService';
 import { withStableRowIndex } from '../../helper/lcStableRowIndex';
 import type { GridColDef, GridValueGetterParams } from '@mui/x-data-grid';
 import { gridNumberComparator } from '@mui/x-data-grid';
@@ -621,6 +622,7 @@ const Settings: FC = () => {
             await f_edit_lc(lc);
           } else {
             await f_insert_lcs_bulk(newLCList);
+            await requestCrrLcListSync();
           }
 
           const editedLcId = lc.id ? String(lc.id) : '';

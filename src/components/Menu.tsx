@@ -26,6 +26,7 @@ import {
   timerOutline,
   tvOutline,
   mailOutline,
+  codeSlashOutline,
 } from 'ionicons/icons';
 import { MENUS, ModalMenus, ModalNames, ROUTES } from '../helper/constants';
 
@@ -47,6 +48,7 @@ import { Share } from "@capacitor/share";
 import { exportLast60MinutesLogsFile, logEvent } from "../services/LogService";
 
 import { buildDiagnosticContext } from "../services/DiagnosticContext";
+import { isDesktopPc } from '../helper/appPlatform';
 
 
 interface AppPage {
@@ -56,6 +58,7 @@ interface AppPage {
   title: string;
   imgIcon: string;
   hidden?: boolean;
+  desktopOnly?: boolean;
 }
 
 const appPages: AppPage[] = [
@@ -93,6 +96,14 @@ const appPages: AppPage[] = [
     iosIcon: bluetoothOutline,
     mdIcon: bluetoothOutline,
     imgIcon: connectMenuIcon,
+  },
+  {
+    title: MENUS.SerialDebug,
+    url: ROUTES.SerialDebug,
+    iosIcon: codeSlashOutline,
+    mdIcon: codeSlashOutline,
+    imgIcon: connectMenuIcon,
+    desktopOnly: true,
   },
   {
     title: MENUS.ProofTest,
@@ -364,6 +375,7 @@ const Menu: React.FC = () => {
             </div>
             {appPages.map((appPage, index) => {
               if (appPage.hidden) return null;
+              if (appPage.desktopOnly && !isDesktopPc()) return null;
               if (appPage.title === '') return null;
               if (ModalMenus.includes(appPage.title)) {
                 const isSelected = location.pathname === appPage.url;

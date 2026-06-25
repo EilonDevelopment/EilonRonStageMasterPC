@@ -3,6 +3,7 @@ import { IGroup, ILC, ILog, IProject, ILCOverloadAlert } from '../helper/types';
 import { MonitorStatus } from '../helper/constants';
 import { normalizeProjectId } from '../helper/functions';
 import { Capacitor } from '@capacitor/core';
+import { getAppPlatform, isDesktopPc } from '../helper/appPlatform';
 import { db } from '../db';
 import { toast } from 'react-toastify';
 import { logEvent } from '../services/LogService';
@@ -446,8 +447,8 @@ export const AppDataProvider = (props: any) => {
     setWeighData(data);
   }
 
-  const isMobile = Capacitor.isNativePlatform();
-  const platformType = Capacitor.getPlatform();
+  const isMobile = Capacitor.isNativePlatform() && !isDesktopPc();
+  const platformType = getAppPlatform();
 
 
   const load_projects = async () => {

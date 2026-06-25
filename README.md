@@ -34,10 +34,26 @@ C:\Users\Moshe\Cursor\EilonRonStageMasterPC
 ```powershell
 cd C:\Users\Moshe\Cursor\EilonRonStageMasterPC
 npm install
-npm run build
+npm run electron:install
 ```
 
-Desktop packaging (Electron, etc.) will be added on this branch as the PC port progresses.
+## Run on Windows (Electron + USB)
+
+```powershell
+npm run electron:dev
+```
+
+This builds the React app, opens the desktop window, and uses **Connect Device → COM port list** (USB serial) instead of Bluetooth. Default baud: **115200** (see `src/helper/usbSerialBridge.ts`).
+
+PRR/CRR USB weight frames are `A5 F7 04 … FF FF` (15 bytes), converted to 11-byte BLE payloads for `bt_parse` (`src/helper/prrPacketFramer.ts`). Connect flow verifies CRR via `CMD_ReturnCode` (`0x34`) and pushes the LC list (S2S) on connect and when LCs are added. Default baud: **115200**.
+
+## Web-only dev (no serial)
+
+```powershell
+npm start
+```
+
+USB connect requires the Electron shell (`npm run electron:dev`).
 
 ## Syncing shared app code from mobile
 

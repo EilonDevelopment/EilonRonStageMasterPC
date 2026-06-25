@@ -1,0 +1,5 @@
+.com-port-list-modal {
+  --width: min(520px, 92vw);
+  --height: min(70vh, 640px);
+  --border-radius: 12px;
+}

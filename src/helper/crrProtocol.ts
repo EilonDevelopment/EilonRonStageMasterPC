@@ -1,0 +1,62 @@
+/** CRR USB protocol helpers (S2S LC list, identify, checksum). */
+
+export const CRR_BROADCAST_PREAMBLE = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff] as const;
+export const CRR_PACKET_TERMINATOR = 0xaa;
+export const CRR_CMD_RETURN_CODE = 0x34;
+export const CRR_CMD_SET_LC_LIST = 0x32;
+export const CRR_IDENTITY_RESPONSE = ' IDN_ 4';
+
+export type CrrS2sCell = {
+  /** Hardware export socket on the CRR (0 = default RF path). */
+  export: number;
+  id: number;
+};
+
+export function calcCrrNibbleChecksum(bytes: readonly number[]): number {
+  let sum = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    const b = bytes[i] & 0xff;
+    sum += (b >> 4) + (b & 0x0f);
+  }
+  return (0xff - (sum & 0xff)) & 0xff;
+}
+
+function buildCrrPacket(content: readonly number[]): Uint8Array {
+  const length = 2 + content.length + 1;
+  const block = [(length >> 8) & 0xff, length & 0xff, ...content];
+  const checksum = calcCrrNibbleChecksum(block);
+  return new Uint8Array([...CRR_BROADCAST_PREAMBLE, ...block, checksum, CRR_PACKET_TERMINATOR]);
+}
+
+/** CMD_ReturnCode — expect ASCII response ` IDN_ 4`. */
+export function buildCrrReturnCodePacket(): Uint8Array {
+  return buildCrrPacket([CRR_CMD_RETURN_CODE]);
+}
+
+function appendS2sCell(body: number[], cell: CrrS2sCell): void {
+  const id = Math.max(0, Math.floor(cell.id)) & 0xffffff;
+  body.push(cell.export & 0xff);
+  body.push((id >> 16) & 0xff, (id >> 8) & 0xff, id & 0xff);
+}
+
+/** Build Set-LC-List (wireless + optional RS485 sections). */
+export function buildCrrS2sPacket(rfCells: CrrS2sCell[], wiredCells: CrrS2sCell[] = []): Uint8Array {
+  const content: number[] = [CRR_CMD_SET_LC_LIST, rfCells.length & 0xff];
+  rfCells.forEach((cell) => appendS2sCell(content, cell));
+  content.push(CRR_CMD_SET_LC_LIST, wiredCells.length & 0xff);
+  wiredCells.forEach((cell) => appendS2sCell(content, cell));
+  return buildCrrPacket(content);
+}
+
+export function bytesToAscii(data: Uint8Array): string {
+  let text = '';
+  for (let i = 0; i < data.length; i += 1) {
+    const code = data[i];
+    text += code >= 0x20 && code <= 0x7e ? String.fromCharCode(code) : '.';
+  }
+  return text;
+}
+
+export function bufferContainsCrrIdentity(data: Uint8Array): boolean {
+  return bytesToAscii(data).includes(CRR_IDENTITY_RESPONSE);
+}

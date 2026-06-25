@@ -28,6 +28,7 @@ import Verify from "./pages/Auth/Verify";
 import Settings from "./pages/Settings";
 import Monitor from "./pages/Monitor";
 import Report from "./pages/Reports";
+import SerialDebug from "./pages/SerialDebug";
 import { db } from "./db";
 import { App as Application } from "@capacitor/app";
 import Swal from "sweetalert2";
@@ -218,6 +219,7 @@ const App: React.FC = () => {
             <Route path={ROUTES.Monitor} exact={true} render={() => <Monitor />} />
             <Route path={ROUTES.Settings} exact={true} render={() => <Settings />} />
             <Route path={ROUTES.Reports} exact={true} render={() => <Report />} />
+            <Route path={ROUTES.SerialDebug} exact={true} render={() => <SerialDebug />} />
             <Route path={ROUTES.ConnectDevice} exact={true} render={() => <Empty />} />
             <Route path={ROUTES.Totalizer} exact={true} render={() => <Empty />} />
             <Route path={ROUTES.Document} exact={true} render={() => <Empty />} />

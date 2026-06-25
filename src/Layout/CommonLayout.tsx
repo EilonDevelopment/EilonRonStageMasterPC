@@ -33,6 +33,7 @@ import SuccessModal from '../components/Modals/SuccessModal';
 import ProjectListModal from '../components/Modals/ProjectListModal';
 import ProofTestModal from '../components/Modals/ProofTestModal';
 import BleDeviceListModal from '../components/Modals/BleDeviceListModal';
+import ComPortListModal from '../components/Modals/ComPortListModal';
 import TotalizerModal from '../components/Modals/TotalizerModal';
 import DocumentModal from '../components/Modals/DocumentModal';
 import ProjectInformationModal from '../components/Modals/ProjectInformationModal';
@@ -65,6 +66,26 @@ import { collectBleDevicesForService, type BleDiscoveredDevice } from '../helper
 import { formatDualWeightWithLcResolution, formatGroupOverloadStringForUnit, formatWeightByLcResolution, getResolutionForLcId, quantizeByResolution } from '../helper/weightResolution';
 import { getPreOverloadThreshold } from '../helper/lcLoadStatus';
 import { toast } from 'react-toastify';
+import { getAppPlatform, isDesktopPc, isWebLikePlatform } from '../helper/appPlatform';
+import { CrrPacketFramer } from '../helper/prrPacketFramer';
+import {
+  connectUsbSerial,
+  disconnectUsbSerial,
+  listUsbSerialPorts,
+  subscribeUsbSerialData,
+  subscribeUsbSerialDisconnected,
+  subscribeUsbSerialError,
+  type SerialPortInfo,
+} from '../helper/usbSerialBridge';
+import {
+  getVerifiedCrrPort,
+  identifyCrrDevice,
+  isFtdiSerialPort,
+  lcsToS2sCells,
+  registerCrrLcListSync,
+  sendCrrS2sList,
+  setVerifiedCrrPort,
+} from '../helper/crrUsbService';
 import useFunctions from '../hooks/useFunctions';
 
 // Añade esto arriba con los demás imports
@@ -359,6 +380,12 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const [blePickerScanning, setBlePickerScanning] = useState(false);
   const [blePickerDevices, setBlePickerDevices] = useState<BleDiscoveredDevice[]>([]);
   const [blePickerType, setBlePickerType] = useState<'prr' | 'lc' | null>(null);
+  const [comPickerOpen, setComPickerOpen] = useState(false);
+  const [comPickerLoading, setComPickerLoading] = useState(false);
+  const [comPorts, setComPorts] = useState<SerialPortInfo[]>([]);
+  const usbFramerByPortRef = useRef<Record<string, CrrPacketFramer>>({});
+  const resolveCrrLcIdRef = useRef<(idLow: number) => number | null>(() => null);
+  const btParseRef = useRef<(a: Uint8Array, sourceDeviceId?: string) => Promise<void>>(async () => undefined);
   const bleScanAbortRef = useRef(false);
   const bleScanInProgressRef = useRef(false);
   const bleInitializedRef = useRef(false);
@@ -875,7 +902,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       return;
     }
     const { csvStr, fileName } = result;
-    if (platformType === 'web') {
+    if (isWebLikePlatform()) {
       const blob = new Blob([csvStr], { type: 'text/csv;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1046,7 +1073,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
 
     const isCsv = pick.isConfirmed;
     const fileBase = `monitor_snapshot_${format(now, 'yyyy-MM-dd_HH-mm')}`;
-    const isWeb = platformType === 'web';
+    const isWeb = isWebLikePlatform();
     const isNative = platformType === 'android' || platformType === 'ios';
     const isUserCancelledError = (err: any) => {
       const msg = String(err?.message || err || '').toLowerCase();
@@ -1267,6 +1294,126 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     }
   }
 
+  const refreshComPorts = async () => {
+    setComPickerLoading(true);
+    try {
+      const ports = await listUsbSerialPorts();
+      setComPorts(ports.filter(isFtdiSerialPort));
+    } catch (error) {
+      console.error('COM port list failed', error);
+      setComPorts([]);
+    } finally {
+      setComPickerLoading(false);
+    }
+  };
+
+  const openComPortPicker = async () => {
+    handleCloseModal();
+    setComPickerOpen(true);
+    await refreshComPorts();
+  };
+
+  const handleComPickerClose = () => {
+    setComPickerOpen(false);
+    setComPickerLoading(false);
+    handleCloseModal();
+  };
+
+  const resolveCrrLcId = (idLow: number): number | null => {
+    const liveProject = curProjectRef.current;
+    if (!liveProject?.id) return null;
+    const pid = normalizeProjectId(liveProject.id);
+    const projectLcs = (lcsRef?.current ?? currentLcs.current ?? []).filter(
+      (item: ILC) => normalizeProjectId(item.project_id) === pid
+    );
+    const low = idLow & 0xff;
+    const matches = projectLcs
+      .map((lc) => Number.parseInt(String(lc.id), 10))
+      .filter((id) => Number.isFinite(id) && id > 0 && (id & 0xff) === low);
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      const preferred = matches.find((id) => id === 0x200 + low);
+      return preferred ?? matches[0];
+    }
+    const fallback = 0x200 + low;
+    if (projectLcs.some((lc) => Number.parseInt(String(lc.id), 10) === fallback)) {
+      return fallback;
+    }
+    return null;
+  };
+  resolveCrrLcIdRef.current = resolveCrrLcId;
+
+  const syncCrrLcList = async (portPath: string) => {
+    const liveProject = curProjectRef.current;
+    if (!liveProject?.id) return;
+    const cells = lcsToS2sCells(lcsRef?.current ?? lcs, liveProject.id);
+    if (cells.length === 0) return;
+    const result = await sendCrrS2sList(portPath, cells);
+    if (!result.ok) {
+      void logEvent('ERROR', 'CRR S2S list send failed', { portPath, error: result.error, cellCount: cells.length }, 'USB');
+      return;
+    }
+    void logEvent('INFO', 'CRR S2S list sent', { portPath, cellCount: cells.length }, 'USB');
+  };
+
+  const usbConnect = async (portPath: string) => {
+    if (!portPath) return;
+    const portInfo = comPorts.find((p) => p.path === portPath);
+    if (portInfo && !isFtdiSerialPort(portInfo)) {
+      updateErrStr(t('ConnectDevice.NotFtdiPort'));
+      return;
+    }
+
+    const result = await connectUsbSerial(portPath);
+    if (!result.ok) {
+      updateErrStr(result.error || t('ConnectDevice.UsbConnectFailed'));
+      void logEvent('ERROR', 'USB serial connect failed', { portPath, error: result.error }, 'USB');
+      return;
+    }
+
+    const isCrr = await identifyCrrDevice(portPath);
+    if (!isCrr) {
+      await disconnectUsbSerial(portPath);
+      updateErrStr(t('ConnectDevice.NotCrrDevice'));
+      void logEvent('ERROR', 'CRR identify failed', { portPath }, 'USB');
+      return;
+    }
+
+    setVerifiedCrrPort(portPath);
+    prrManualDisconnectRef.current[portPath] = false;
+    if (usbFramerByPortRef.current[portPath]) {
+      usbFramerByPortRef.current[portPath].reset();
+    }
+    lastBleRxAtRef.current = Date.now();
+
+    const trimmedName = portPath;
+    prrDisplayNameByDeviceRef.current[portPath] = trimmedName;
+    if (!prrBleDeviceIdRef.current) {
+      prrBleDeviceIdRef.current = portPath;
+      prrBleDisplayNameRef.current = trimmedName;
+    }
+
+    setConnectedPrrDevices((prev) => {
+      if (prev.some((d) => String(d.deviceId) === String(portPath))) {
+        updateBleConnected(true);
+        return prev;
+      }
+      const next = [...prev, { deviceId: portPath, displayName: trimmedName }];
+      updateBleConnected(true);
+      return next;
+    });
+    setPrrConnectedListName(trimmedName);
+    logPrrLinkEventSafely('connected', trimmedName);
+    void logEvent('INFO', 'CRR USB connected', { portPath }, 'USB');
+    setComPickerOpen(false);
+    handleCloseModal();
+    await syncCrrLcList(portPath);
+  };
+
+  const handleComPickerConnect = (portPath: string) => {
+    void usbConnect(portPath);
+  };
+
   const handleSelectDevice = (type: string) => {
     if (!isViewActiveRef.current) return;
     ////console.log('selected device: ', type)
@@ -1276,7 +1423,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         handleStartScan(type) //bt_scan(type)
         break;
       case 'usb':
-        usb_scan()
+        void openComPortPicker();
         break;
       default:
         break;
@@ -1284,7 +1431,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     handleCloseModal()
   }
 
-  /** Connect Device menu: run the same path as old "PRR" button, once per modal open. */
+  /** Connect Device menu: desktop opens COM picker; mobile runs BLE PRR scan once per open. */
   useEffect(() => {
     if (visibleModal !== MENUS.ConnectDevice) {
       connectDeviceAutoRunRef.current = false;
@@ -1293,11 +1440,19 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     if (!isViewActiveRef.current) return;
     if (connectDeviceAutoRunRef.current) return;
     connectDeviceAutoRunRef.current = true;
-    handleSelectDevice('prr');
+    if (isDesktopPc()) {
+      void openComPortPicker();
+    } else {
+      handleSelectDevice('prr');
+    }
   }, [visibleModal]);
 
   const handleStartScan = async (type: string) => {
   if (!isViewActiveRef.current) return;
+  if (isDesktopPc()) {
+    void openComPortPicker();
+    return;
+  }
   if (type === 'prr') {
     // Manual flow wins: cancel pending auto-reconnect retries and invalidate stale callbacks.
     const timers = prrReconnectTimersRef.current;
@@ -2970,6 +3125,9 @@ const lastSoundTimeRef = useRef<number>(0);
   };
 
   function bt_disconnect(deviceId: string): void {
+    if (isDesktopPc()) {
+      setVerifiedCrrPort(null);
+    }
     const disconnected = connectedPrrDevicesRef.current.find((d) => String(d.deviceId) === String(deviceId));
     const reportLabel = disconnected ? ((disconnected.displayName && disconnected.displayName.trim()) || disconnected.deviceId) : null;
     let shouldReconnectThisDevice = false;
@@ -2995,10 +3153,56 @@ const lastSoundTimeRef = useRef<number>(0);
     if (reportLabel) {
       logPrrLinkEventSafely('disconnected', reportLabel);
     }
-    if (shouldReconnectThisDevice) {
+    if (shouldReconnectThisDevice && !isDesktopPc()) {
       schedulePrrAutoReconnect(deviceId, "disconnect_callback");
     }
   }
+
+  btParseRef.current = bt_parse;
+
+  useEffect(() => {
+    if (!isDesktopPc()) return undefined;
+
+    const unsubData = subscribeUsbSerialData((portPath, chunk) => {
+      queueMicrotask(() => {
+        if (!usbFramerByPortRef.current[portPath]) {
+          usbFramerByPortRef.current[portPath] = new CrrPacketFramer(
+            (packet) => {
+              void btParseRef.current(packet, portPath);
+            },
+            (idLow) => resolveCrrLcIdRef.current(idLow)
+          );
+        }
+        usbFramerByPortRef.current[portPath].push(chunk);
+      });
+    });
+
+    const unsubDisc = subscribeUsbSerialDisconnected((portPath) => {
+      delete usbFramerByPortRef.current[portPath];
+      prrManualDisconnectRef.current[portPath] = true;
+      bt_disconnect(portPath);
+      delete prrManualDisconnectRef.current[portPath];
+    });
+
+    const unsubErr = subscribeUsbSerialError((portPath, message) => {
+      void logEvent('ERROR', 'USB serial error', { portPath, message }, 'USB');
+    });
+
+    return () => {
+      unsubData();
+      unsubDisc();
+      unsubErr();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isDesktopPc()) return undefined;
+    return registerCrrLcListSync(async () => {
+      const portPath = getVerifiedCrrPort();
+      if (!portPath) return;
+      await syncCrrLcList(portPath);
+    });
+  }, []);
 
   const disconnectPrrWithConfirm = async (deviceId: string, label: string) => {
     if (!deviceId) return;
@@ -3024,7 +3228,11 @@ const lastSoundTimeRef = useRef<number>(0);
     }
 
     try {
-      await BleClient.disconnect(deviceId);
+      if (isDesktopPc()) {
+        await disconnectUsbSerial(deviceId);
+      } else {
+        await BleClient.disconnect(deviceId);
+      }
     } catch (_) {
       // Some platforms may already be disconnected.
     } finally {
@@ -3049,8 +3257,8 @@ const lastSoundTimeRef = useRef<number>(0);
   }, [bleConnected, active_project?.id, active_project?.cycle]);
 
   const usb_scan = () => {
-    //console.log('')
-  }
+    void openComPortPicker();
+  };
 
   const bt_auto_reconnect = () => {
     connectedPrrDevicesRef.current.forEach((d) => {
@@ -3074,7 +3282,7 @@ const lastSoundTimeRef = useRef<number>(0);
   }
 
   const bt_notify = async (device_id: any, service_uuid: any, characteristic_uuid: any) => {
-    if (platformType === 'web') {
+    if (isWebLikePlatform()) {
       bt_parse(device_id)
     } else {
       BleClient.startNotifications(device_id, service_uuid, characteristic_uuid, function (buffer: any) {
@@ -3673,6 +3881,15 @@ const lastSoundTimeRef = useRef<number>(0);
         devices={blePickerDevices}
         onClose={handleBlePickerClose}
         onConnect={(id, name) => void handleBlePickerConnect(id, name)}
+      />
+
+      <ComPortListModal
+        isOpen={comPickerOpen}
+        loading={comPickerLoading}
+        ports={comPorts}
+        onClose={handleComPickerClose}
+        onConnect={handleComPickerConnect}
+        onRefresh={() => { void refreshComPorts(); }}
       />
 
       <IonAlert

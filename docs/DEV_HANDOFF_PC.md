@@ -55,3 +55,5 @@ Skip or resolve carefully:
 | Date (UTC) | Branch | Author | Summary | Commit |
 |------------|--------|--------|---------|--------|
 | 2026-06-22 | main | Windows | Repo created from mobile `development-ai` @ `67f2aae`; PC/USB work isolated | initial |
+| 2026-06-22 | main | Windows | Electron pilot + USB COM connect → `bt_parse` (11-byte framer, 115200 baud) | superseded |
+| 2026-06-07 | main | Windows | Electron + CRR USB: FTDI COM picker, identify (`0x34` / `IDN_ 4`), S2S LC list TX, `A5 F7 04` RX framer → Monitor, Serial Debug | pending |

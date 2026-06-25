@@ -12,6 +12,7 @@ import useAppData from "../../hooks/useAppData";
 import Text from "../../components/Text";
 import { IProject } from "../../helper/types";
 import { normalizeProjectId } from "../../helper/functions";
+import { isWebLikePlatform } from "../../helper/appPlatform";
 import { buildReportGroupsAsync, type ReportGroupQuery } from "../../helper/reportGrouping";
 import { formatDualWeightWithLcResolution } from "../../helper/weightResolution";
 import { db } from '../../db'
@@ -1156,7 +1157,7 @@ const Report: FC = () => {
           const csvStr = rows.join('\r\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
 
-          if (platformType === 'web') {
+          if (isWebLikePlatform()) {
             const blob = new Blob(['\uFEFF' + csvStr], { type: 'text/csv;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -1228,7 +1229,7 @@ const Report: FC = () => {
           const reportRows = getReportRows(logData);
           const jsonStr = JSON.stringify(reportRows, null, 2);
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.json`;
-          if (platformType === 'web') {
+          if (isWebLikePlatform()) {
             const blob = new Blob([jsonStr], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -1289,7 +1290,7 @@ const Report: FC = () => {
           );
           const sqlStr = lines.join('\n');
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.sql`;
-          if (platformType === 'web') {
+          if (isWebLikePlatform()) {
             const blob = new Blob([sqlStr], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -1344,7 +1345,7 @@ const Report: FC = () => {
         try {
           const doc = await buildPdfDocumentForLogs(logData);
           const fileName = `report_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.pdf`;
-          if (platformType === 'web') {
+          if (isWebLikePlatform()) {
             const blob = doc.output('blob');
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -1726,7 +1727,7 @@ const Report: FC = () => {
       });
       const csvStr = '\uFEFF' + lines.join('\r\n');
       const fileName = `legacy_rescue_${format(new Date(), 'yyyy-MM-dd_HH-mm')}.csv`;
-      if (platformType === 'web') {
+      if (isWebLikePlatform()) {
         const blob = new Blob([csvStr], { type: 'text/csv;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');

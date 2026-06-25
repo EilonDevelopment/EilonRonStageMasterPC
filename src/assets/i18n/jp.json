@@ -185,7 +185,11 @@
     "NoDevices": "デバイスが見つかりません。近づいて再試行してください。",
     "UnknownDevice": "不明なデバイス",
     "Connect": "接続",
-    "ScanFailed": "Bluetoothスキャンに失敗しました。"
+    "ScanFailed": "Bluetoothスキャンに失敗しました。",
+    "ComPortsTitle": "COMポートを選択（USB）",
+    "ComPortsLoading": "シリアルポートを検索中…",
+    "ComPortsEmpty": "COMポートが見つかりません。USBで接続して更新してください。",
+    "UsbConnectFailed": "COMポートを開けませんでした。"
   },
   "ProofTest": {
     "Title": "Proof Test",

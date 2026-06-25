@@ -11,6 +11,7 @@ const ROUTES = {
   ProofTest: '/proof',
   Totalizer: '/totalizer',
   Document: '/document',
+  SerialDebug: '/serial-debug',
   // StressTest: '/stress-test',
 };
 
@@ -27,6 +28,7 @@ const MENUS = {
   ProofTest: "ProofTest",
   Totalizer: "Totalizer",
   Document: "Document",
+  SerialDebug: "SerialDebug",
 }
 
 const ModalMenus = [

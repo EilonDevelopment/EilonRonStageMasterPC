@@ -2,6 +2,7 @@
   "name": "eilon.app",
   "version": "0.0.1",
   "private": true,
+  "homepage": "./",
   "dependencies": {
     "@awesome-cordova-plugins/core": "^6.6.0",
     "@awesome-cordova-plugins/email-composer": "^6.16.0",
@@ -97,7 +98,10 @@
     "build": "react-scripts build",
     "test": "react-scripts test --transformIgnorePatterns 'node_modules/(?!(@ionic/react|@ionic/react-router|@ionic/core|@stencil/core|ionicons)/)'",
     "eject": "react-scripts eject",
-    "lint": "eslint --ext .ts,.tsx src"
+    "lint": "eslint --ext .ts,.tsx src",
+    "electron:install": "cd electron && npm install && npm run rebuild",
+    "electron:dev": "npm run build && cd electron && npm start",
+    "electron:build": "npm run build && cd electron && npm run rebuild"
   },
   "browserslist": [
     "Chrome >=79",
