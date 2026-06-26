@@ -159,3 +159,9 @@ export class MySubClassedDexie extends Dexie {
 }
 
 export const db = new MySubClassedDexie();
+
+/** Await before any Dexie read/write (avoids race on cold start). */
+export const dbReady = db.open().catch((error) => {
+  console.error('Dexie open failed:', error);
+  throw error;
+});

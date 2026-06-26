@@ -13,6 +13,8 @@ let mainWindow = null;
 let staticServer = null;
 
 const DEFAULT_BAUD = 115200;
+/** Fixed port so IndexedDB origin stays stable between Electron launches. */
+const ELECTRON_STATIC_PORT = 47891;
 const BUILD_DIR = path.join(__dirname, '..', 'build');
 
 const MIME = {
@@ -68,9 +70,9 @@ function startStaticServer(rootDir) {
     });
 
     server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(ELECTRON_STATIC_PORT, '127.0.0.1', () => {
       const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
+      const port = typeof address === 'object' && address ? address.port : ELECTRON_STATIC_PORT;
       resolve({ server, url: `http://127.0.0.1:${port}/` });
     });
   });
@@ -102,6 +104,7 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      partition: 'persist:rsm-desktop',
     },
     show: false,
   });

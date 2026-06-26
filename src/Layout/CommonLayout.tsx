@@ -45,7 +45,7 @@ import BeforeAlertModal from '../components/Modals/BeforeAlertModal';
 import { BleClient, numberToUUID } from '@capacitor-community/bluetooth-le';
 import { fire_error, fire_success, getImageDimensions, hexToInt, normalizeProjectId, strToFloat, strToInt, toHexString } from '../helper/functions';
 import { lcRankKey, stableRowIndexMap } from '../helper/lcStableRowIndex';
-import { db } from '../db';
+import { db, dbReady } from '../db';
 import Swal from 'sweetalert2';
 import { useTheme } from '@emotion/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -67,12 +67,12 @@ import { formatDualWeightWithLcResolution, formatGroupOverloadStringForUnit, for
 import { getPreOverloadThreshold } from '../helper/lcLoadStatus';
 import { toast } from 'react-toastify';
 import { getAppPlatform, isDesktopPc, isWebLikePlatform } from '../helper/appPlatform';
-import { CrrPacketFramer } from '../helper/prrPacketFramer';
+import { dropCrrUsbFramer, ensureCrrUsbPipeline, resetCrrUsbFramer } from '../helper/crrUsbPipeline';
+import { bindCrrUsbRuntime, beginCrrUsbLinkSession, crrUsbRuntime, installCrrUsbDebugConsole, isCrrUsbLinkGraceActive, logCrrUsbDrop } from '../helper/crrUsbRuntime';
 import {
   connectUsbSerial,
   disconnectUsbSerial,
   listUsbSerialPorts,
-  subscribeUsbSerialData,
   subscribeUsbSerialDisconnected,
   subscribeUsbSerialError,
   type SerialPortInfo,
@@ -383,7 +383,6 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const [comPickerOpen, setComPickerOpen] = useState(false);
   const [comPickerLoading, setComPickerLoading] = useState(false);
   const [comPorts, setComPorts] = useState<SerialPortInfo[]>([]);
-  const usbFramerByPortRef = useRef<Record<string, CrrPacketFramer>>({});
   const resolveCrrLcIdRef = useRef<(idLow: number) => number | null>(() => null);
   const btParseRef = useRef<(a: Uint8Array, sourceDeviceId?: string) => Promise<void>>(async () => undefined);
   const bleScanAbortRef = useRef(false);
@@ -395,6 +394,24 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
 
   useIonViewDidEnter(() => {
     isViewActiveRef.current = true;
+    if (isDesktopPc()) {
+      bindCrrUsbRuntime({
+        btParse: (packet, portPath) => {
+          void btParseRef.current(packet, portPath);
+        },
+        resolveLcId: (idLow) => resolveCrrLcIdRef.current(idLow),
+      });
+    }
+  });
+
+  useLayoutEffect(() => {
+    if (!isDesktopPc() || !isViewActiveRef.current) return;
+    bindCrrUsbRuntime({
+      btParse: (packet, portPath) => {
+        void btParseRef.current(packet, portPath);
+      },
+      resolveLcId: (idLow) => resolveCrrLcIdRef.current(idLow),
+    });
   });
 
   useIonViewDidLeave(() => {
@@ -620,7 +637,9 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     //     }
     //   })
 
-    load_projects()
+    void dbReady.then(() => load_projects()).catch((error) => {
+      console.error('load_projects failed:', error);
+    });
   }, [])
 
   useEffect(() => {
@@ -694,7 +713,11 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   useEffect(() => {
     setConnected(bleConnected)
     bleConnectedRef.current = bleConnected;
-    if (!bleConnected) {
+    if (bleConnected) {
+      timeoutHandledRef.current = false;
+      lastUpdatedRef.current = Date.now();
+      setNoChange(false);
+    } else {
       // Disconnected monitor should never show stale numeric payload from previous sessions.
       lcDisplayBufferRef.current = {};
       dataTimeByIdRef.current = [];
@@ -1326,6 +1349,10 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const projectLcs = (lcsRef?.current ?? currentLcs.current ?? []).filter(
       (item: ILC) => normalizeProjectId(item.project_id) === pid
     );
+    if (projectLcs.length === 1) {
+      const onlyId = Number.parseInt(String(projectLcs[0].id), 10);
+      if (Number.isFinite(onlyId) && onlyId > 0) return onlyId;
+    }
     const low = idLow & 0xff;
     const matches = projectLcs
       .map((lc) => Number.parseInt(String(lc.id), 10))
@@ -1381,10 +1408,14 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
 
     setVerifiedCrrPort(portPath);
     prrManualDisconnectRef.current[portPath] = false;
-    if (usbFramerByPortRef.current[portPath]) {
-      usbFramerByPortRef.current[portPath].reset();
-    }
+    resetCrrUsbFramer(portPath);
+    beginCrrUsbLinkSession();
+    dataTimeByIdRef.current = [];
+    setDataTimeById([]);
+    timeoutHandledRef.current = false;
+    lastUpdatedRef.current = Date.now();
     lastBleRxAtRef.current = Date.now();
+    setNoChange(false);
 
     const trimmedName = portPath;
     prrDisplayNameByDeviceRef.current[portPath] = trimmedName;
@@ -1395,19 +1426,18 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
 
     setConnectedPrrDevices((prev) => {
       if (prev.some((d) => String(d.deviceId) === String(portPath))) {
-        updateBleConnected(true);
         return prev;
       }
-      const next = [...prev, { deviceId: portPath, displayName: trimmedName }];
-      updateBleConnected(true);
-      return next;
+      return [...prev, { deviceId: portPath, displayName: trimmedName }];
     });
+
+    await syncCrrLcList(portPath);
+    updateBleConnected(true);
     setPrrConnectedListName(trimmedName);
     logPrrLinkEventSafely('connected', trimmedName);
     void logEvent('INFO', 'CRR USB connected', { portPath }, 'USB');
     setComPickerOpen(false);
     handleCloseModal();
-    await syncCrrLcList(portPath);
   };
 
   const handleComPickerConnect = (portPath: string) => {
@@ -1728,8 +1758,19 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const merged = TrrLcs.map((trr: any) => {
       const cur = lcs.find((c: any) => String(c.id) === String(trr.id) && normalizeProjectId(c.project_id) === normalizeProjectId(trr.project_id));
       if (!cur) return trr;
+      const trrIsErr = trr.value === 'Tr.Err' || trr.value === 'Tr. Err' || Number(trr.value) === -99999999;
+      const curIsLive = cur.value !== 'Tr.Err' && cur.value !== 'Tr. Err' && Number(cur.value) !== -99999999;
+      const base = trrIsErr && curIsLive
+        ? {
+            ...trr,
+            value: cur.value,
+            ...(cur.realval !== undefined && { realval: cur.realval }),
+            ...(cur.battery !== undefined && { battery: cur.battery }),
+            ...(cur.max !== undefined && { max: cur.max }),
+          }
+        : trr;
       return {
-        ...trr,
+        ...base,
         ...(cur.status_tare !== undefined && { status_tare: cur.status_tare }),
         ...(cur.tare !== undefined && { tare: cur.tare }),
         ...(cur.weightnotare !== undefined && { weightnotare: cur.weightnotare }),
@@ -1958,8 +1999,11 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   };
   markAppBackgroundedRef.current = markAppBackgrounded;
 
+  const isLcPipelineActive = (): boolean =>
+    isDesktopPc() || appIsActiveRef.current;
+
   const evaluateTransmissionFreshness = () => {
-    if (!bleConnectedRef.current || !appIsActiveRef.current) return;
+    if (!bleConnectedRef.current || !isLcPipelineActive()) return;
 
     const now = Date.now();
     const currentDataTimeById = dataTimeByIdRef.current;
@@ -1983,6 +2027,9 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       if (timeSinceLastUpdate < PRR_SILENCE_ALL_TRERR_MS) {
         if (timeoutHandledRef.current) timeoutHandledRef.current = false;
       } else if (!timeoutHandledRef.current) {
+        if (isDesktopPc() && isCrrUsbLinkGraceActive()) {
+          return;
+        }
         timeoutHandledRef.current = true;
         setNoChange(true);
         const lcsArray: any[] = [];
@@ -2056,7 +2103,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const latestRef = (lcsRef?.current ?? []) as any[];
     const refMap = latestRef.length > 0 ? new Map(latestRef.map((lc: any) => [`${lc.id}-${normalizeProjectId(lc.project_id)}`, lc])) : null;
     let nextLcs = curLcs.map((item: any) => {
-      const p = buffer[item.id];
+      const p = buffer[String(item.id)];
       const refLc = refMap?.get(`${item.id}-${normalizeProjectId(item.project_id)}`);
       if (!p) return item;
       let weightnotare = p.weightnotare;
@@ -2218,7 +2265,7 @@ const lastSoundTimeRef = useRef<number>(0);
     const refMap = latestRef.length > 0 ? new Map(latestRef.map((lc: any) => [`${lc.id}-${normalizeProjectId(lc.project_id)}`, lc])) : null;
 
     let nextLcs = curLcs.map((item: any) => {
-      const p = buffer[item.id];
+      const p = buffer[String(item.id)];
       const refLc = refMap?.get(`${item.id}-${normalizeProjectId(item.project_id)}`);
       if (!p) return item;
 
@@ -2244,6 +2291,7 @@ const lastSoundTimeRef = useRef<number>(0);
     
     // Actualizamos Celdas
     updateLCs(nextLcs);
+    setTrrLcs(nextLcs);
 
     // Actualizamos Peso Total (Si hay algo pendiente)
     if (pendingTotalHtmlRef.current) {
@@ -2310,9 +2358,10 @@ const lastSoundTimeRef = useRef<number>(0);
     const onBackground = () => markAppBackgroundedRef.current();
 
     void CapApp.getState().then((state) => {
-      appIsActiveRef.current = state.isActive;
-      setAlarmAppInForeground(state.isActive);
-      if (!state.isActive) onBackground();
+      const active = isDesktopPc() ? true : state.isActive;
+      appIsActiveRef.current = active;
+      setAlarmAppInForeground(active);
+      if (!active) onBackground();
     });
 
     const onVisibilityChange = () => {
@@ -2357,7 +2406,7 @@ const lastSoundTimeRef = useRef<number>(0);
     const ms = getLcDisplayBatchMs(platformType, Array.isArray(lcs) ? lcs.length : 0);
 
     const t = window.setInterval(() => {
-      if (!appIsActiveRef.current) {
+      if (!isLcPipelineActive()) {
         refreshLcFreshnessFromBuffer();
         return;
       }
@@ -2417,21 +2466,40 @@ const lastSoundTimeRef = useRef<number>(0);
         });
       }
     } else if (a[2] <= 10) {
-      const lc = parseInt('0x' + toHexString([a[3], a[4], a[5]]), 16);
+      let lc = parseInt('0x' + toHexString([a[3], a[4], a[5]]), 16);
       const liveProject = curProjectRef.current?.id ? curProjectRef.current : curProject;
       const liveProjectIdNorm = normalizeProjectId(liveProject?.id);
       const liveProjectLcs = (lcsRef?.current ?? currentLcs.current ?? []).filter(
         (item: any) => normalizeProjectId(item.project_id) === liveProjectIdNorm
       );
-      const lcExistsInLiveProject = liveProjectLcs.some((item: any) => String(item.id) === String(lc));
-      if (!lcExistsInLiveProject) {
-        return;
+      const lcInProject = liveProjectLcs.some(
+        (item: any) => String(item.id) === String(lc) || Number(item.id) === lc
+      );
+      if (!lcInProject) {
+        if (isDesktopPc() && liveProjectLcs.length === 1) {
+          const onlyId = Number.parseInt(String(liveProjectLcs[0].id), 10);
+          if (!Number.isFinite(onlyId) || onlyId <= 0) {
+            logCrrUsbDrop(`lc ${lc} not in project`);
+            return;
+          }
+          logCrrUsbDrop(`lc id remap ${lc} -> ${onlyId}`);
+          lc = onlyId;
+        } else {
+          logCrrUsbDrop(`lc ${lc} not in project (${liveProjectLcs.length} cells)`);
+          return;
+        }
       }
 
       //logEvent("INFO", "LC data received", { lc, raw: toHexString(a) }, "BLE");
       //console.log('Received data for LC', lc, 'Raw data:', toHexString(a));
       let realval: any = hexToInt(toHexString([a[6], a[7], a[8], a[9]])) / 10000; // mt.TON
-      let weight: any = hexToInt(toHexString([a[6], a[7], a[8], a[9]])) / 10000; // mt.TON      
+      let weight: any = hexToInt(toHexString([a[6], a[7], a[8], a[9]])) / 10000; // mt.TON
+
+      if (isDesktopPc() && sourceDeviceId && a[0] !== 0 && a[1] !== 0) {
+        const wire = ((a[0] & 0xff) << 8) | (a[1] & 0xff);
+        crrUsbRuntime.stats.lastWireU16 = wire;
+        crrUsbRuntime.stats.lastAnchorU16 = (wire - (((a[6] << 24) | (a[7] << 16) | (a[8] << 8) | a[9]) | 0)) & 0xffff;
+      }
 
       let lc_btry;
       if (a[2] == 55) {
@@ -2457,11 +2525,15 @@ const lastSoundTimeRef = useRef<number>(0);
       const capacity: any = f_lc_capacity_id(lc);
       const nominalCapacityMton = Number(capacity?.mton ?? 0);
       const hasNominalCapacity = Number.isFinite(nominalCapacityMton) && nominalCapacityMton > 0;
-      // Noise guard with high tolerance: only reject extreme negative spikes (< -200% nominal capacity).
+      // Noise guard: reject only corrupted positive spikes (>> physical range), not real overload.
+      const maxPlausiblePositiveMton = hasNominalCapacity
+        ? Math.max(nominalCapacityMton * 50, 500)
+        : Number.POSITIVE_INFINITY;
+      // Negative guard: extreme negative spikes (< -200% nominal capacity).
       const minValidNegativeMton = hasNominalCapacity ? -(nominalCapacityMton * 2) : Number.NEGATIVE_INFINITY;
 
-      if (lc > 10 && hasNominalCapacity && weight > nominalCapacityMton * 2) {
-        // something disturbed, number wrong 
+      if (lc > 10 && hasNominalCapacity && weight > maxPlausiblePositiveMton) {
+        logCrrUsbDrop(`lc ${lc} weight ${weight} mton > max plausible ${maxPlausiblePositiveMton}`);
         return;
       }
 
@@ -2618,6 +2690,11 @@ const lastSoundTimeRef = useRef<number>(0);
           overload,
           underload,
         };
+        if (isDesktopPc()) {
+          crrUsbRuntime.stats.btParseAccepted += 1;
+          crrUsbRuntime.stats.lastUiValue = String(w);
+          crrUsbRuntime.stats.lastDropReason = '';
+        }
         touchLcFreshnessInRef(bid, {
           value: w,
           realval,
@@ -2626,6 +2703,9 @@ const lastSoundTimeRef = useRef<number>(0);
           overload,
           underload,
         });
+        if (isDesktopPc()) {
+          flushLcDisplayBufferRef.current();
+        }
         const nowUnitsLog = Date.now();
         if (nowUnitsLog - (unitsDisplayLogLastRef.current[bid] ?? 0) > 4000) {
           unitsDisplayLogLastRef.current[bid] = nowUnitsLog;
@@ -3163,22 +3243,8 @@ const lastSoundTimeRef = useRef<number>(0);
   useEffect(() => {
     if (!isDesktopPc()) return undefined;
 
-    const unsubData = subscribeUsbSerialData((portPath, chunk) => {
-      queueMicrotask(() => {
-        if (!usbFramerByPortRef.current[portPath]) {
-          usbFramerByPortRef.current[portPath] = new CrrPacketFramer(
-            (packet) => {
-              void btParseRef.current(packet, portPath);
-            },
-            (idLow) => resolveCrrLcIdRef.current(idLow)
-          );
-        }
-        usbFramerByPortRef.current[portPath].push(chunk);
-      });
-    });
-
     const unsubDisc = subscribeUsbSerialDisconnected((portPath) => {
-      delete usbFramerByPortRef.current[portPath];
+      dropCrrUsbFramer(portPath);
       prrManualDisconnectRef.current[portPath] = true;
       bt_disconnect(portPath);
       delete prrManualDisconnectRef.current[portPath];
@@ -3189,7 +3255,6 @@ const lastSoundTimeRef = useRef<number>(0);
     });
 
     return () => {
-      unsubData();
       unsubDisc();
       unsubErr();
     };

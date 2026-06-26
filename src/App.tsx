@@ -29,7 +29,10 @@ import Settings from "./pages/Settings";
 import Monitor from "./pages/Monitor";
 import Report from "./pages/Reports";
 import SerialDebug from "./pages/SerialDebug";
-import { db } from "./db";
+import { db, dbReady } from "./db";
+import { ensureCrrUsbPipeline } from "./helper/crrUsbPipeline";
+import { installCrrUsbDebugConsole } from "./helper/crrUsbRuntime";
+import { isDesktopPc } from "./helper/appPlatform";
 import { App as Application } from "@capacitor/app";
 import Swal from "sweetalert2";
 import { t } from "i18next";
@@ -189,7 +192,7 @@ const App: React.FC = () => {
 
     const dbConnect = async () => {
       try {
-        await db.open();
+        await dbReady;
       } catch (error) {
         console.error("Error opening database:", error);
       }
@@ -203,6 +206,10 @@ const App: React.FC = () => {
 
     void initLang();
     void dbConnect();
+    if (isDesktopPc()) {
+      installCrrUsbDebugConsole();
+      ensureCrrUsbPipeline();
+    }
   }, [i18n]);
 
   return (
