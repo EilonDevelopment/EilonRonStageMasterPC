@@ -817,8 +817,15 @@ const MonitorLcBox = React.memo((props: MonitorLcBoxProps) => {
     </div>
   );
 }, (prev, next) => {
+  const prevItem = prev.item;
+  const nextItem = next.item;
   return (
-    prev.item === next.item &&
+    prevItem.id === nextItem.id &&
+    prevItem.value === nextItem.value &&
+    prevItem.weightnotare === nextItem.weightnotare &&
+    prevItem.battery === nextItem.battery &&
+    prevItem.max === nextItem.max &&
+    prevItem.status_tare === nextItem.status_tare &&
     prev.x === next.x &&
     prev.y === next.y &&
     prev.tare === next.tare &&

@@ -11,6 +11,8 @@ import {
 import { useTranslation } from 'react-i18next';
 import CommonLayout from '../../Layout/CommonLayout';
 import { isDesktopPc } from '../../helper/appPlatform';
+import { formatCrrUsbFrameRxLog } from '../../helper/crrUsbSerialDebug';
+import { CrrPacketFramer } from '../../helper/prrPacketFramer';
 import {
   SERIAL_BAUD_OPTIONS,
   PRR_USB_DEFAULT_BAUD,
@@ -45,12 +47,6 @@ function bytesToHex(data: Uint8Array): string {
   return Array.from(data)
     .map((b) => b.toString(16).toUpperCase().padStart(2, '0'))
     .join(' ');
-}
-
-function bytesToAscii(data: Uint8Array): string {
-  return Array.from(data)
-    .map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.'))
-    .join('');
 }
 
 function appendLineSuffix(text: string, cr: boolean, lf: boolean): Uint8Array {
@@ -121,6 +117,8 @@ const SerialDebug: React.FC = () => {
   const logIdRef = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
   const activePortRef = useRef('');
+  const framerRef = useRef<CrrPacketFramer | null>(null);
+  const framerPortRef = useRef('');
 
   const pushLine = useCallback((dir: LogLine['dir'], text: string) => {
     logIdRef.current += 1;
@@ -129,6 +127,16 @@ const SerialDebug: React.FC = () => {
       return next.length > MAX_LOG_LINES ? next.slice(-MAX_LOG_LINES) : next;
     });
   }, []);
+
+  const resetRxFramer = useCallback((portPath: string) => {
+    framerPortRef.current = portPath;
+    framerRef.current = new CrrPacketFramer(
+      (frame) => {
+        pushLine('RX', formatCrrUsbFrameRxLog(portPath, frame));
+      },
+      () => null,
+    );
+  }, [pushLine]);
 
   const refreshPorts = useCallback(async () => {
     const list = await listUsbSerialPorts();
@@ -143,6 +151,7 @@ const SerialDebug: React.FC = () => {
     const open = status.open.find((p) => p.isOpen);
     if (open) {
       activePortRef.current = open.path;
+      resetRxFramer(open.path);
       setSelectedPort(open.path);
       setBaudRate(open.baudRate);
       setConnected(true);
@@ -152,7 +161,7 @@ const SerialDebug: React.FC = () => {
       setConnected(false);
       setStatusText(t('SerialDebug.Disconnected'));
     }
-  }, [t]);
+  }, [t, resetRxFramer]);
 
   useEffect(() => {
     if (!isDesktopPc()) return;
@@ -163,9 +172,10 @@ const SerialDebug: React.FC = () => {
   useEffect(() => {
     if (!isDesktopPc()) return undefined;
     const unsubData = subscribeUsbSerialData((portPath, chunk) => {
-      const hex = bytesToHex(chunk);
-      const ascii = bytesToAscii(chunk);
-      pushLine('RX', `[${portPath}] ${chunk.length} B | HEX ${hex} | ASCII "${ascii}"`);
+      if (!framerRef.current || framerPortRef.current !== portPath) {
+        resetRxFramer(portPath);
+      }
+      framerRef.current?.push(chunk);
     });
     const unsubDisc = subscribeUsbSerialDisconnected((portPath) => {
       if (portPath === activePortRef.current) {
@@ -183,7 +193,7 @@ const SerialDebug: React.FC = () => {
       unsubDisc();
       unsubErr();
     };
-  }, [pushLine, t]);
+  }, [pushLine, resetRxFramer, t]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -197,6 +207,7 @@ const SerialDebug: React.FC = () => {
       return;
     }
     activePortRef.current = selectedPort;
+    resetRxFramer(selectedPort);
     setConnected(true);
     setStatusText(t('SerialDebug.Connected', { port: selectedPort, baud: baudRate }));
     pushLine('SYS', t('SerialDebug.Opened', { port: selectedPort, baud: baudRate }));
@@ -207,6 +218,8 @@ const SerialDebug: React.FC = () => {
     if (!port) return;
     await disconnectUsbSerial(port);
     activePortRef.current = '';
+    framerRef.current = null;
+    framerPortRef.current = '';
     setConnected(false);
     setStatusText(t('SerialDebug.Disconnected'));
     pushLine('SYS', t('SerialDebug.Closed', { port }));
