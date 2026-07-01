@@ -39,13 +39,24 @@ function appendS2sCell(body: number[], cell: CrrS2sCell): void {
   body.push((id >> 16) & 0xff, (id >> 8) & 0xff, id & 0xff);
 }
 
-/** Build Set-LC-List (wireless + optional RS485 sections). */
-export function buildCrrS2sPacket(rfCells: CrrS2sCell[], wiredCells: CrrS2sCell[] = []): Uint8Array {
-  const content: number[] = [CRR_CMD_SET_LC_LIST, rfCells.length & 0xff];
-  rfCells.forEach((cell) => appendS2sCell(content, cell));
+/** Build Set-LC-List (0x32): section 1 = all LCs (RF+RS485), section 2 = RS485 only (LabVIEW). */
+export function buildCrrS2sPacket(allCells: CrrS2sCell[], wiredCells: CrrS2sCell[] = []): Uint8Array {
+  const content: number[] = [CRR_CMD_SET_LC_LIST, allCells.length & 0xff];
+  allCells.forEach((cell) => appendS2sCell(content, cell));
   content.push(CRR_CMD_SET_LC_LIST, wiredCells.length & 0xff);
   wiredCells.forEach((cell) => appendS2sCell(content, cell));
   return buildCrrPacket(content);
+}
+
+/** Human-readable summary for Serial Debug / logs. */
+export function formatCrrS2sPacketSummary(allCells: CrrS2sCell[], wiredCells: CrrS2sCell[] = []): string {
+  const fmtIds = (cells: CrrS2sCell[]) =>
+    cells.length === 0
+      ? '—'
+      : cells
+          .map((c) => (c.export ? `${c.id}(exp${c.export})` : String(c.id)))
+          .join(', ');
+  return `S2S 0x32 | ALL×${allCells.length}: ${fmtIds(allCells)} | RS485×${wiredCells.length}: ${fmtIds(wiredCells)}`;
 }
 
 export function bytesToAscii(data: Uint8Array): string {

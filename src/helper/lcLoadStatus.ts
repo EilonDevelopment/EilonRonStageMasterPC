@@ -37,6 +37,12 @@ export function isGrossAboveZeroCapacityLimit(grossRaw: number, nominalCapacity:
   return Math.abs(grossRaw) > nominalCapacity * ZERO_BLOCK_CAPACITY_FRACTION;
 }
 
+/** Zero offset stored on LC row (M.TON — same unit as `realval`). */
+export function computeZeroOffsetMton(realvalMton: number): number {
+  if (!Number.isFinite(realvalMton)) return 0;
+  return -realvalMton;
+}
+
 /** DB `realval` is stored in M.TON; live BLE buffer uses project display units. */
 export function convertStoredRealvalToProjectUnits(
   rawMton: number,
@@ -44,8 +50,12 @@ export function convertStoredRealvalToProjectUnits(
   projectToMtonMultiply: number,
 ): number {
   if (!Number.isFinite(rawMton)) return Number.NaN;
-  const units = String(projectUnits ?? 'KG').trim();
-  if (units === 'M.TON') return rawMton;
+  const key = projectUnitCapacityKey(projectUnits);
+  if (key === 'mton') return rawMton;
+  // Legacy USB rows may have stored display-unit gross in `realval` (e.g. -27 kg as -27).
+  if ((key === 'kg' || key === 'lbs') && Math.abs(rawMton) >= 1) {
+    return rawMton;
+  }
   if (projectToMtonMultiply > 0) return rawMton / projectToMtonMultiply;
   return rawMton;
 }
@@ -55,20 +65,29 @@ export function convertStoredRealvalToProjectUnits(
  * (overload/danger use display `value` after zero — see getLcGrossLoadBand).
  */
 export function getLcGrossWeightForZeroCheck(
-  lc: Pick<ILC, 'realval'>,
-  live: { realval?: unknown } | null | undefined,
+  lc: Pick<ILC, 'realval' | 'value' | 'zero' | 'psw'>,
+  live: { realval?: unknown; value?: unknown } | null | undefined,
   projectUnits: string | undefined,
   projectToMtonMultiply: number,
 ): number {
-  const liveReal = live != null ? Number(live.realval) : Number.NaN;
-  if (Number.isFinite(liveReal)) {
-    return liveReal;
-  }
-  return convertStoredRealvalToProjectUnits(
+  const fromStored = convertStoredRealvalToProjectUnits(
     Number(lc.realval),
     projectUnits,
     projectToMtonMultiply,
   );
+
+  const liveReal = live != null ? Number(live.realval) : Number.NaN;
+  if (Number.isFinite(liveReal)) {
+    if (Number.isFinite(fromStored)) {
+      const tolerance = Math.max(50, Math.abs(fromStored) * 0.5 + 50);
+      if (Math.abs(liveReal - fromStored) <= tolerance) {
+        return liveReal;
+      }
+      return fromStored;
+    }
+    return liveReal;
+  }
+  return fromStored;
 }
 
 export const isLcTransmissionError = (valueRaw: unknown): boolean => {

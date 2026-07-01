@@ -25,6 +25,7 @@ import { withStableRowIndex } from '../../helper/lcStableRowIndex';
 import type { GridColDef, GridValueGetterParams } from '@mui/x-data-grid';
 import { gridNumberComparator } from '@mui/x-data-grid';
 import { formatWeightByLcResolution } from '../../helper/weightResolution';
+import { lcLinkTypeLabel, normalizeLcLinkType } from '../../helper/lcLinkType';
 
 type SettingsLcGridRow = ILC & { __stableIndex: number };
 
@@ -204,6 +205,19 @@ const Settings: FC = () => {
       ),
     },
     {
+      flex: 0.085,
+      minWidth: 68,
+      field: 'link_type',
+      headerName: t('Setting.LinkType'),
+      valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) =>
+        normalizeLcLinkType(params.row.link_type),
+      renderCell: ({ row }) => (
+        <span className="text-dark dark:text-light col-item" onClick={() => handleEditLC(row)}>
+          {lcLinkTypeLabel(normalizeLcLinkType(row.link_type), t)}
+        </span>
+      ),
+    },
+    {
       flex: 0.118,
       minWidth: 90,
       field: 'capacity',
@@ -355,6 +369,7 @@ const Settings: FC = () => {
     updateLCs(filteredList)
     await db.lcs.bulkDelete(delLCList)
     await f_reset_empty_groups_after_delete(deletedLcs, filteredList)
+    await requestCrrLcListSync()
 
     setDeleteList([])
     setVisibleDeleteModal(false)
@@ -431,6 +446,7 @@ const Settings: FC = () => {
         if (overrides.overload) next.overload = values.overload;
         if (overrides.total_sum) next.total_sum = values.total_sum;
         if (overrides.groups) next.groups = normalizeGroupsString(values.groups);
+        if (overrides.link_type) next.link_type = normalizeLcLinkType(values.link_type);
 
         const ov = Number(next.overload);
         const un = Number(next.underload);
@@ -461,6 +477,7 @@ const Settings: FC = () => {
       setDeleteList([]);
       setSelectAll(false);
       setVisibleBulkEditModal(false);
+      await requestCrrLcListSync();
     } catch (error: any) {
       updateErrStr(String(error?.message || error || 'Failed to bulk edit LCs.'));
     }
@@ -616,13 +633,13 @@ const Settings: FC = () => {
             project_id: normalizeProjectId(curProject.id),
             lc_id: lc.lc_id,
             capacity,
+            link_type: normalizeLcLinkType(lc.link_type),
           }));
 
           if (lc.id) {
             await f_edit_lc(lc);
           } else {
             await f_insert_lcs_bulk(newLCList);
-            await requestCrrLcListSync();
           }
 
           const editedLcId = lc.id ? String(lc.id) : '';

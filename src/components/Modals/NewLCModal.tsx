@@ -6,8 +6,9 @@ import Modal from './Modal';
 import { useTranslation } from 'react-i18next';
 import Text from '../Text';
 import { ILC } from '../../helper/types';
+import { normalizeLcLinkType, type LcLinkType } from '../../helper/lcLinkType';
 import TextInput from '../TextInput';
-import { IonIcon, IonToggle } from '@ionic/react';
+import { IonIcon, IonSelect, IonSelectOption, IonToggle } from '@ionic/react';
 import Button from '../Buttons/Button';
 import { getNewLCIds } from '../../helper/functions';
 import useAppData from '../../hooks/useAppData';
@@ -125,6 +126,7 @@ const NewLCModal: FC<NewLCModalProps> = (props) => {
       underload: '-10',
       calibration_offset: '1',
       ...data,
+      link_type: normalizeLcLinkType(data?.link_type),
       total_sum: data?.total_sum ?? false,
     }));
     if (data?.groups) {
@@ -212,8 +214,8 @@ const NewLCModal: FC<NewLCModalProps> = (props) => {
   };
 
   const handleDupllicate = () => {
-    const { groups: g, overload, underload, project_id, psw, title, total_sum } = lc;
-    setLC({ groups: g, overload, underload, project_id, psw, title, total_sum });
+    const { groups: g, overload, underload, project_id, psw, title, total_sum, link_type } = lc;
+    setLC({ groups: g, overload, underload, project_id, psw, title, total_sum, link_type: normalizeLcLinkType(link_type) });
     refIDInput.current?.focus();
   };
 
@@ -430,6 +432,18 @@ const NewLCModal: FC<NewLCModalProps> = (props) => {
             onChange={(e) => handleChangeProject('overload', sanitizeUnsignedDecimal(e.target.value))}
           />
         )}
+      </div>
+      <div>
+        <Text label={t('Setting.LinkType')} />
+        <IonSelect
+          interface="popover"
+          className={`w-full ${TEXT_FIELD_ROW_CHROME} border border-medium border-gray2 rounded-none`}
+          value={normalizeLcLinkType(lc.link_type)}
+          onIonChange={(e) => handleChangeProject('link_type', e.detail.value as LcLinkType)}
+        >
+          <IonSelectOption value="rf">{t('Setting.LinkTypeRf')}</IonSelectOption>
+          <IonSelectOption value="rs485">{t('Setting.LinkTypeRs485')}</IonSelectOption>
+        </IonSelect>
       </div>
       <div className="col-span-1 sm:col-span-2 flex flex-row items-center gap-3 py-1">
         <IonToggle enableOnOffLabels={true} checked={lc.total_sum || false} onIonChange={(e) => handleChangeProject('total_sum', e.detail.checked)} />

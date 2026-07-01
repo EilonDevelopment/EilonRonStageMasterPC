@@ -1,8 +1,9 @@
 /**
  * CRR USB weight decode — G4 5-byte fixed-point (`G4_Tx Protocol.doc`).
  *
- * USB frame: `FF A5 F7 04 … 0E FF` (15 bytes).
- * - [0]=FF start, [1]=A5 G4, [2]=F7 flags/units, [3-4]=ID
+ * USB frame (15 B): `FF A5` + G4 (11 B) + `0E FF`.
+ * Bytes after `A5` are G4 payload: [1]=flags, [2][3]=LC ID, [4..8]=weight, [9]=checksum.
+ * Example for LC 600: `FF A5 F7 04 58 …` — `F7` is flags, `04 58` is ID (not a fixed `F7 04` header).
  * - [5-9]=weight BE (byte 5 most significant); bit7 of byte 5 = sign (1 negative)
  * - [10]=checksum (nibble sum of G4 bytes [0..8])
  */

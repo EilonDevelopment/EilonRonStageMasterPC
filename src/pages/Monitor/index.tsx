@@ -29,6 +29,8 @@ import {
   isGrossAboveZeroCapacityLimit,
   ZERO_BLOCK_CAPACITY_FRACTION,
 } from "../../helper/lcLoadStatus";
+import { applyLcZeroWithDisplay } from "../../helper/crrUsbDisplay";
+import { computeMonitorTotals } from "../../helper/monitorTotals";
 import { ROUTES } from "../../helper/constants";
 import { toast } from "react-toastify";
 import { logEvent } from "../../services/LogService";
@@ -104,6 +106,23 @@ const Monitor: FC = () => {
     f_verify_lc_id,
 
   } = useFunctions()
+
+  const refreshMonitorTotalsForProject = (nextLcs: ILC[]) => {
+    if (!curProject?.id) return;
+    const pid = normalizeProjectId(curProject.id);
+    const projectLcs = nextLcs.filter((lc) => normalizeProjectId(lc.project_id) === pid);
+    const totals = computeMonitorTotals(
+      projectLcs,
+      groups,
+      curProject.id,
+      curProject.units,
+      !!tareStatus,
+    );
+    if (totals.groupsChanged) {
+      updateGroups([...totals.groups].sort((a, b) => parseInt(a.id || '0', 10) - parseInt(b.id || '0', 10)));
+    }
+    updateTotalWeightHtml(totals.totalDisplayHtml);
+  };
 
   const weighing = {
     status: 0,
@@ -2011,16 +2030,7 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
           // PASO 2: Usamos un pequeño delay para permitir que la Barra de Progreso se dibuje
           setTimeout(async () => {
             try {
-              const multiply = f_get_units_multiply('M.TON');
-              
-              // Procesamiento de datos en memoria (rápido)
-              const updatedLcsData = groupLcs.map(lc => {
-                const valReal = Number(lc.realval);
-                const zeroValue = curProject.units !== 'M.TON' 
-                  ? (valReal * Number(multiply)) * -1 
-                  : valReal * -1;
-                return { ...lc, zero: zeroValue, realval: parseInt(lc.realval ?? '0'), psw: '0' };
-              });
+              const updatedLcsData = groupLcs.map((lc) => applyLcZeroWithDisplay(lc, curProject.units));
 
               setZeroProgress(40);
 
@@ -2029,12 +2039,13 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
               setZeroProgress(80);
 
               // Actualización masiva del contexto (aquí suele ocurrir el lag)
-              const finalLcsArray = lcs.map(item => {
-                const updated = updatedLcsData.find(u => u.lc_id === item.lc_id);
-                return updated ? updated : item;
+              const finalLcsArray = lcs.map((item) => {
+                const updated = updatedLcsData.find((u) => String(u.id) === String(item.id));
+                return updated ?? item;
               });
 
-              updateLCs(finalLcsArray); //
+              updateLCs(finalLcsArray);
+              refreshMonitorTotalsForProject(finalLcsArray);
               setZeroProgress(100);
 
               // Finalización
@@ -2110,25 +2121,19 @@ logEvent('INFO', `Starting Zero massive for group: ${groupId}`, { Loadcells: gro
           return
         }
 
-        const multiply = f_get_units_multiply('M.TON')
-        const valReal = Number(target.realval)
-        const zeroValue = curProject.units !== 'M.TON'
-          ? (valReal * Number(multiply)) * -1
-          : valReal * -1
-        const updatedLc = {
-          ...target,
-          zero: zeroValue,
-          realval: parseInt(target.realval ?? '0'),
-          psw: '0'
-        }
+        const updatedLc = applyLcZeroWithDisplay(target, curProject.units)
 
         try {
           await db.lcs.update(target.lc_id as any, {
             zero: updatedLc.zero,
             realval: updatedLc.realval,
-            psw: updatedLc.psw
+            psw: updatedLc.psw,
+            value: updatedLc.value,
+            weightnotare: updatedLc.weightnotare,
           })
-          updateLCs(lcs.map((item) => (item.lc_id === target.lc_id ? updatedLc : item)))
+          const nextLcs = lcs.map((item) => (String(item.id) === String(target.id) ? updatedLc : item))
+          updateLCs(nextLcs)
+          refreshMonitorTotalsForProject(nextLcs)
           setSuccess({
             title: `${t('Monitor.Modal.Zero')} ${target.id}`,
             subtitle: `Load cell ${target.id}${target.title ? ` (${target.title})` : ''} has been zeroed.`

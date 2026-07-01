@@ -1,5 +1,6 @@
 import { isDesktopPc } from './appPlatform';
 import { normalizeProjectId } from './functions';
+import { isRs485Lc } from './lcLinkType';
 import type { ILC } from './types';
 import {
   bufferContainsCrrIdentity,
@@ -70,13 +71,46 @@ export function isFtdiSerialPort(port: SerialPortInfo): boolean {
   return manufacturer.includes('ftdi') || friendlyName.includes('ftdi');
 }
 
-export function lcsToS2sCells(lcs: ILC[], projectId: string): CrrS2sCell[] {
+export type CrrS2sPartition = {
+  /** First S2S section: every LC (RF + RS485), per CRR/LabVIEW. */
+  allCells: CrrS2sCell[];
+  /** Second S2S section: RS485/wired only (may repeat IDs from allCells). */
+  wiredCells: CrrS2sCell[];
+};
+
+function lcToS2sCell(lc: ILC): CrrS2sCell | null {
+  const id = Number.parseInt(String(lc.id), 10);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  return { export: 0, id };
+}
+
+/**
+ * Build S2S lists for CRR Set-LC-List (0x32).
+ * Section 1: all project LCs. Section 2: RS485 subset only.
+ */
+export function lcsToS2sPartition(lcs: ILC[], projectId: string): CrrS2sPartition {
   const pid = normalizeProjectId(projectId);
-  return lcs
+  const allCells: CrrS2sCell[] = [];
+  const wiredCells: CrrS2sCell[] = [];
+  lcs
     .filter((lc) => normalizeProjectId(lc.project_id) === pid)
-    .map((lc) => ({ export: 0, id: Number.parseInt(String(lc.id), 10) }))
-    .filter((cell) => Number.isFinite(cell.id) && cell.id > 0)
-    .sort((a, b) => a.id - b.id);
+    .forEach((lc) => {
+      const cell = lcToS2sCell(lc);
+      if (!cell) return;
+      allCells.push(cell);
+      if (isRs485Lc(lc)) {
+        wiredCells.push(cell);
+      }
+    });
+  allCells.sort((a, b) => a.id - b.id);
+  wiredCells.sort((a, b) => a.id - b.id);
+  return { allCells, wiredCells };
+}
+
+/** @deprecated Use {@link lcsToS2sPartition}. */
+export function lcsToS2sCells(lcs: ILC[], projectId: string): CrrS2sCell[] {
+  const { allCells } = lcsToS2sPartition(lcs, projectId);
+  return allCells;
 }
 
 export function getVerifiedCrrPort(): string | null {
@@ -125,9 +159,14 @@ export async function identifyCrrDevice(portPath: string): Promise<boolean> {
   return false;
 }
 
-export async function sendCrrS2sList(portPath: string, cells: CrrS2sCell[]): Promise<{ ok: boolean; error?: string }> {
-  const rfCells = cells.filter((c) => Number.isFinite(c.id) && c.id > 0);
-  const packet = buildCrrS2sPacket(rfCells, []);
+export async function sendCrrS2sList(
+  portPath: string,
+  allCells: CrrS2sCell[],
+  wiredCells: CrrS2sCell[] = [],
+): Promise<{ ok: boolean; error?: string }> {
+  const primary = allCells.filter((c) => Number.isFinite(c.id) && c.id > 0);
+  const wired = wiredCells.filter((c) => Number.isFinite(c.id) && c.id > 0);
+  const packet = buildCrrS2sPacket(primary, wired);
   return writeUsbSerial(portPath, packet);
 }
 

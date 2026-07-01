@@ -24,7 +24,7 @@ function formatWeightKgMton(kg: number, mton: number): string {
 
 function rejectReason(g4: Uint8Array | null): string {
   if (!g4 || !g4PacketStartsAtA5(g4)) {
-    return 'no es trama CRR F7 04';
+    return 'no es trama CRR G4 (FF A5 … 0E FF)';
   }
   if (!g4ChecksumValid(g4)) {
     return 'checksum';

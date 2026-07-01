@@ -67,6 +67,41 @@ body.dark .serial-debug-banner {
   opacity: 0.85;
 }
 
+.serial-debug-quick-tests {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.serial-debug-quick-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.serial-debug-rs485-id-field {
+  --background: transparent;
+  --padding-start: 0;
+  --inner-padding-end: 0;
+  min-width: 120px;
+  max-width: 140px;
+  margin: 0;
+}
+
+.serial-debug-rs485-id-field ion-input {
+  --padding-start: 8px;
+  border: 1px solid var(--ion-color-medium);
+  border-radius: 6px;
+  min-height: 36px;
+}
+
+.serial-debug-rs485-id-invalid ion-input {
+  border-color: var(--ion-color-danger);
+}
+
 .serial-debug-log {
   flex: 1;
   min-height: 160px;
@@ -101,6 +136,14 @@ body.dark .serial-debug-banner {
 
 .serial-debug-line-sys .serial-debug-dir {
   color: #ffd27d;
+}
+
+.serial-debug-line-rx-idn .serial-debug-dir {
+  color: #ffcc66;
+}
+
+.serial-debug-line-rx-cand .serial-debug-dir {
+  color: #ffb86c;
 }
 
 .serial-debug-ts {

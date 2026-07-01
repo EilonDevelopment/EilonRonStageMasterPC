@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   IonButton,
   IonCheckbox,
+  IonInput,
   IonItem,
   IonLabel,
   IonSelect,
@@ -12,6 +13,8 @@ import { useTranslation } from 'react-i18next';
 import CommonLayout from '../../Layout/CommonLayout';
 import { isDesktopPc } from '../../helper/appPlatform';
 import { formatCrrUsbFrameRxLog } from '../../helper/crrUsbSerialDebug';
+import { SerialDebugRxScanner } from '../../helper/crrUsbSerialDebugScan';
+import { buildCrrS2sPacket, formatCrrS2sPacketSummary, type CrrS2sCell } from '../../helper/crrProtocol';
 import { CrrPacketFramer } from '../../helper/prrPacketFramer';
 import {
   SERIAL_BAUD_OPTIONS,
@@ -32,11 +35,23 @@ import './SerialDebug.css';
 type LogLine = {
   id: number;
   ts: string;
-  dir: 'RX' | 'TX' | 'SYS';
+  dir: 'RX' | 'TX' | 'SYS' | 'RX-IDN' | 'RX-CAND';
   text: string;
 };
 
 const MAX_LOG_LINES = 500;
+
+/** Debug-only LC IDs for quick-test buttons. */
+const DEBUG_RF_LC_ID = 600;
+const DEFAULT_DEBUG_RS485_LC_ID = 4321;
+
+function parseLcIdInput(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const id = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(id) || id <= 0 || id > 0xffffff) return null;
+  return id;
+}
 
 function formatTs(d = new Date()): string {
   const pad = (n: number, w = 2) => String(n).padStart(w, '0');
@@ -112,6 +127,7 @@ const SerialDebug: React.FC = () => {
   const [appendLf, setAppendLf] = useState(true);
   const [sendAsHex, setSendAsHex] = useState(true);
   const [command, setCommand] = useState('');
+  const [rs485LcIdInput, setRs485LcIdInput] = useState(String(DEFAULT_DEBUG_RS485_LC_ID));
   const [lines, setLines] = useState<LogLine[]>([]);
   const [statusText, setStatusText] = useState('');
   const logIdRef = useRef(0);
@@ -119,6 +135,9 @@ const SerialDebug: React.FC = () => {
   const activePortRef = useRef('');
   const framerRef = useRef<CrrPacketFramer | null>(null);
   const framerPortRef = useRef('');
+  const rxScannerRef = useRef<SerialDebugRxScanner | null>(null);
+
+  const rs485LcId = useMemo(() => parseLcIdInput(rs485LcIdInput), [rs485LcIdInput]);
 
   const pushLine = useCallback((dir: LogLine['dir'], text: string) => {
     logIdRef.current += 1;
@@ -130,6 +149,7 @@ const SerialDebug: React.FC = () => {
 
   const resetRxFramer = useCallback((portPath: string) => {
     framerPortRef.current = portPath;
+    rxScannerRef.current = new SerialDebugRxScanner();
     framerRef.current = new CrrPacketFramer(
       (frame) => {
         pushLine('RX', formatCrrUsbFrameRxLog(portPath, frame));
@@ -175,6 +195,14 @@ const SerialDebug: React.FC = () => {
       if (!framerRef.current || framerPortRef.current !== portPath) {
         resetRxFramer(portPath);
       }
+      if (!rxScannerRef.current) {
+        rxScannerRef.current = new SerialDebugRxScanner();
+      }
+      const scanEvents = rxScannerRef.current.push(chunk, portPath);
+      scanEvents.forEach((ev) => {
+        if (ev.kind === 'idn') pushLine('RX-IDN', ev.text);
+        else pushLine('RX-CAND', ev.text);
+      });
       framerRef.current?.push(chunk);
     });
     const unsubDisc = subscribeUsbSerialDisconnected((portPath) => {
@@ -266,6 +294,43 @@ const SerialDebug: React.FC = () => {
     setCommand('');
   };
 
+  const handleSendS2sTest = async (
+    testName: string,
+    allCells: CrrS2sCell[],
+    wiredCells: CrrS2sCell[],
+    hintKey: string,
+    hintParams?: Record<string, string | number>,
+  ) => {
+    const port = activePortRef.current || selectedPort;
+    if (!port || !connected) {
+      pushLine('SYS', t('SerialDebug.SendNeedsConnection'));
+      return;
+    }
+
+    const packet = buildCrrS2sPacket(allCells, wiredCells);
+    const summary = formatCrrS2sPacketSummary(allCells, wiredCells);
+    const hex = bytesToHex(packet);
+
+    const result = await writeUsbSerial(port, packet);
+    if (!result.ok) {
+      pushLine('SYS', result.error || t('SerialDebug.SendFailed'));
+      return;
+    }
+
+    pushLine('TX', `[${port}] ${packet.length} B | ${summary} | HEX ${hex}`);
+    pushLine('SYS', t(hintKey, hintParams));
+
+    console.log(`[SerialDebug] CRR Set-LC-List (0x32) — ${testName}`, {
+      port,
+      allCells,
+      wiredCells,
+      summary,
+      byteLength: packet.length,
+      hex,
+      packet: Array.from(packet),
+    });
+  };
+
   const handleKeyDown = (ev: React.KeyboardEvent) => {
     if (ev.key === 'Enter' && !ev.shiftKey) {
       ev.preventDefault();
@@ -345,6 +410,89 @@ const SerialDebug: React.FC = () => {
         </div>
 
         <p className="serial-debug-status">{statusText}</p>
+
+        <div className="serial-debug-quick-tests">
+          <span className="serial-debug-quick-label">{t('SerialDebug.QuickTests')}</span>
+          <IonItem
+            lines="none"
+            className={`serial-debug-rs485-id-field${rs485LcId == null ? ' serial-debug-rs485-id-invalid' : ''}`}
+          >
+            <IonLabel position="stacked">{t('SerialDebug.Rs485LcId')}</IonLabel>
+            <IonInput
+              legacy
+              type="text"
+              inputMode="numeric"
+              value={rs485LcIdInput}
+              placeholder={String(DEFAULT_DEBUG_RS485_LC_ID)}
+              onIonInput={(e) => setRs485LcIdInput(String(e.detail.value ?? '').replace(/\D/g, ''))}
+            />
+          </IonItem>
+          <IonButton
+            size="small"
+            fill="outline"
+            color="tertiary"
+            disabled={!connected}
+            onClick={() => {
+              void handleSendS2sTest(
+                'RF-only test',
+                [{ export: 0, id: DEBUG_RF_LC_ID }],
+                [],
+                'SerialDebug.S2sRfOnlyHint',
+                { id: DEBUG_RF_LC_ID },
+              );
+            }}
+          >
+            {t('SerialDebug.S2sRfOnly', { id: DEBUG_RF_LC_ID })}
+          </IonButton>
+          <IonButton
+            size="small"
+            fill="outline"
+            color="tertiary"
+            disabled={!connected || rs485LcId == null}
+            onClick={() => {
+              if (rs485LcId == null) {
+                pushLine('SYS', t('SerialDebug.InvalidLcId'));
+                return;
+              }
+              void handleSendS2sTest(
+                'RF+RS485 test',
+                [
+                  { export: 0, id: DEBUG_RF_LC_ID },
+                  { export: 0, id: rs485LcId },
+                ],
+                [{ export: 0, id: rs485LcId }],
+                'SerialDebug.S2sRfRs485Hint',
+                { rfId: DEBUG_RF_LC_ID, rs485Id: rs485LcId },
+              );
+            }}
+          >
+            {t('SerialDebug.S2sRfRs485', {
+              rfId: DEBUG_RF_LC_ID,
+              rs485Id: rs485LcId ?? DEFAULT_DEBUG_RS485_LC_ID,
+            })}
+          </IonButton>
+          <IonButton
+            size="small"
+            fill="outline"
+            color="tertiary"
+            disabled={!connected || rs485LcId == null}
+            onClick={() => {
+              if (rs485LcId == null) {
+                pushLine('SYS', t('SerialDebug.InvalidLcId'));
+                return;
+              }
+              void handleSendS2sTest(
+                'RS485-only test',
+                [{ export: 0, id: rs485LcId }],
+                [{ export: 0, id: rs485LcId }],
+                'SerialDebug.S2sRs485OnlyHint',
+                { id: rs485LcId },
+              );
+            }}
+          >
+            {t('SerialDebug.S2sRs485Only', { id: rs485LcId ?? DEFAULT_DEBUG_RS485_LC_ID })}
+          </IonButton>
+        </div>
 
         <div className="serial-debug-log" aria-label="serial log">
           {lines.map((line) => (

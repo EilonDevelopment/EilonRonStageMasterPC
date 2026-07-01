@@ -1,7 +1,7 @@
 import React, { FC, useEffect, useMemo, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { Keyboard } from '@capacitor/keyboard';
-import { IonToggle } from '@ionic/react';
+import { IonSelect, IonSelectOption, IonToggle } from '@ionic/react';
 import Modal from './Modal';
 import Text from '../Text';
 import TextInput from '../TextInput';
@@ -14,6 +14,7 @@ import {
   sanitizeUnsignedDecimal,
   type NumericKeypadVariant,
 } from '../../helper/numericFieldInput';
+import { normalizeLcLinkType, type LcLinkType } from '../../helper/lcLinkType';
 
 type OverrideFlags = {
   title: boolean;
@@ -22,6 +23,7 @@ type OverrideFlags = {
   overload: boolean;
   total_sum: boolean;
   groups: boolean;
+  link_type: boolean;
 };
 
 type BulkValues = {
@@ -32,6 +34,7 @@ type BulkValues = {
   overload: string;
   total_sum: boolean;
   groups: string;
+  link_type: LcLinkType;
 };
 
 export type BulkEditLcPayload = {
@@ -140,6 +143,7 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
     overload: false,
     total_sum: false,
     groups: false,
+    link_type: false,
   });
   const [values, setValues] = useState<BulkValues>({
     idsInput: '',
@@ -149,6 +153,7 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
     overload: '',
     total_sum: false,
     groups: '',
+    link_type: 'rf',
   });
   const [localError, setLocalError] = useState('');
   const [numericPad, setNumericPad] = useState<NumericPadState | null>(null);
@@ -168,6 +173,7 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
       overload: false,
       total_sum: false,
       groups: false,
+      link_type: false,
     });
     setValues({
       idsInput: Array.from(new Set((initialIds || []).map((id) => String(id).trim()).filter(Boolean))).join(','),
@@ -177,6 +183,7 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
       overload: '',
       total_sum: false,
       groups: '',
+      link_type: 'rf',
     });
     setLocalError('');
   }, [initialIds, visible]);
@@ -447,6 +454,33 @@ const BulkEditLCModal: FC<BulkEditLCModalProps> = ({ visible, initialIds = [], o
           );
         })()}
         {overrideSwitchBlock(overrides.groups, (checked) => setOverride('groups', checked))}
+      </div>
+
+      <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_120px] gap-2 sm:gap-3 items-end">
+        {(() => {
+          const f = fieldVisualState(overrides.link_type);
+          return (
+            <div className="gap-3 flex flex-col w-full min-w-0">
+              <Text type="dark" label="Link type" />
+              <IonSelect
+                interface="popover"
+                disabled={!overrides.link_type}
+                className={`w-full min-h-[44px] border rounded ${f.inputContainerClasses}`}
+                value={values.link_type}
+                onIonChange={(e) =>
+                  setValues((v) => ({
+                    ...v,
+                    link_type: normalizeLcLinkType(e.detail.value),
+                  }))
+                }
+              >
+                <IonSelectOption value="rf">RF</IonSelectOption>
+                <IonSelectOption value="rs485">RS485</IonSelectOption>
+              </IonSelect>
+            </div>
+          );
+        })()}
+        {overrideSwitchBlock(overrides.link_type, (checked) => setOverride('link_type', checked))}
       </div>
 
       {numericPad && (

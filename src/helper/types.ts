@@ -77,6 +77,8 @@ export type ILC = {
   overload?: string;
   total_sum?: boolean;
   groups?: string;
+  /** CRR path: RF (wireless) or RS485 (wired). Defaults to RF when unset. */
+  link_type?: 'rf' | 'rs485' | string;
 
   // for monitor list
   value?: string;

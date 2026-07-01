@@ -5,6 +5,7 @@ import { db } from "../db";
 import { IGroup, ILC, ILog, IProject, IProjectDetail } from "../helper/types";
 import { LC_Serials, LC_SerialsType } from "../helper/constants";
 import { normalizeProjectId } from "../helper/functions";
+import { normalizeLcLinkType } from "../helper/lcLinkType";
 import { formatGroupOverloadStringForUnit, formatThresholdStringForLc } from "../helper/weightResolution";
 import { format, getTime, subDays } from "date-fns";
 import { useEffect, useRef } from "react";
@@ -12,6 +13,7 @@ import { logEvent } from "../services/LogService";
 import { playAlarmBeep } from "../services/alarmFeedback";
 import { Device } from "@capacitor/device";
 import { Capacitor } from "@capacitor/core";
+import { requestCrrLcListSync } from "../helper/crrUsbService";
 
 
 export default function useFunctions() {
@@ -349,6 +351,7 @@ export default function useFunctions() {
       total_sum,
       groups,
       project_id: projectIdNorm,
+      link_type: normalizeLcLinkType(lc.link_type),
       tare: '',
       zero: '',
       capacity
@@ -393,6 +396,7 @@ export default function useFunctions() {
       total_sum: lc.total_sum,
       groups: lc.groups ?? '',
       project_id: normalizeProjectId(lc.project_id ?? ''),
+      link_type: normalizeLcLinkType(lc.link_type),
       tare: '',
       zero: '',
       capacity: lc.capacity ?? {},
@@ -406,6 +410,7 @@ export default function useFunctions() {
       })
       await f_load_cells()
       f_update_project_last_change()
+      await requestCrrLcListSync()
     } catch (error) {
       console.error('Error bulk-adding LCs: ' + error)
     }
@@ -426,7 +431,7 @@ export default function useFunctions() {
   }
 
   const f_edit_lc = async (lc: Partial<ILC>) => {
-    const { id: lcTableId, title = '', psw = '', underload = '', overload = '', total_sum = '', groups = '', project_id = '', value = '' } = lc
+    const { id: lcTableId, title = '', psw = '', underload = '', overload = '', total_sum = '', groups = '', project_id = '', value = '', link_type } = lc
     const lcIdNorm = lcTableId != null ? String(lcTableId) : ''
     const selectedLc = lcs.find(x => String(x.id) === lcIdNorm)
 
@@ -442,17 +447,19 @@ export default function useFunctions() {
       project_id: normalizeProjectId(project_id),
       value,
     }
+    if (link_type !== undefined) {
+      updatedData.link_type = normalizeLcLinkType(link_type)
+    }
     try {
       await db.lcs.update(selectedLc.lc_id, updatedData)
       updateLCs({ ...updatedData, lc_id: selectedLc.lc_id, id: lcTableId })
       console.log('Row updated successfully')
-      f_load_cells()
-      // $("#newproject").modal('hide');
-      // $("#navbarDropdown").click();
+      await f_load_cells()
+      f_update_project_last_change()
+      await requestCrrLcListSync()
     } catch (error) {
       console.error('Error updating row: ' + error)
     }
-    f_update_project_last_change()
   }
 
   const f_update_lcs = async (lcList: ILC[]) => {
@@ -508,7 +515,8 @@ export default function useFunctions() {
       const remainingLcs = lcs.filter(item => !(String(item.id) === idToDelete && normalizeProjectId(item.project_id) === pid))
       await f_reset_empty_groups_after_delete(lcsToDelete, remainingLcs)
       updateLCs(remainingLcs)
-      f_load_cells()
+      await f_load_cells()
+      await requestCrrLcListSync()
     } catch (error) {
       console.error('[f_delete_lc] Failed to delete records:', error)
       updateLCs(lcs.filter(item => !(String(item.id) === idToDelete && normalizeProjectId(item.project_id) === pid)))
@@ -1133,7 +1141,7 @@ export default function useFunctions() {
       });
       rows.push('');
       rows.push('[LoadCells]');
-      const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum', 'capacity'];
+      const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'link_type', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum', 'capacity'];
       rows.push(lcHeaders.map(escapeCsv).join(','));
       projectLcs.forEach((lc: any) => {
         const lcRow = lcHeaders.map((h) => {
@@ -1276,7 +1284,7 @@ export default function useFunctions() {
       };
       const projectHeaders = ['id', 'title', 'units', 'pre_overload', 'total_overload', 'cycle', 'report_interval_seconds', 'windmeter_units', 'stage_x', 'stage_y', 'show_graphs'];
       const groupHeaders = ['id', 'project_id', 'title', 'overload', 'tare'];
-      const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum'];
+      const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'link_type', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum'];
       const planIdMap = new Map<string, string>();
       const planNameMap = new Map<string, string>();
       const lcIdMap = new Map<string, string>();
@@ -1338,6 +1346,9 @@ export default function useFunctions() {
             } catch {
               row.capacity = {};
             }
+          }
+          if (row.link_type !== undefined && row.link_type !== '') {
+            row.link_type = normalizeLcLinkType(row.link_type);
           }
           const oldLcId = row.lc_id != null ? String(row.lc_id) : '';
           delete row.lc_id;

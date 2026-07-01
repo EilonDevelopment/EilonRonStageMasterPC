@@ -12,7 +12,7 @@ import {
   useIonViewDidEnter,
   useIonViewDidLeave,
 } from '@ionic/react';
-import React, { FC, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import React, { FC, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -21,7 +21,7 @@ import { useHistory, useLocation } from 'react-router-dom';
 import { App as CapApp } from '@capacitor/app';
 import { bluetoothOutline, checkmarkSharp, closeSharp, documentOutline, duplicateOutline, menuOutline, settingsOutline, trashOutline } from 'ionicons/icons';
 
-import { batteryBlackIcon, loadIcon, battIcon, maxIcon, maxActiveIcon, roundPictureIcon, tareIcon, tareActiveIcon, toolbarlistIcon, toolbarprogIcon, toolbarstopIcon, warningErrorIcon, bleConnectIcon, bleDisConnectIcon, batteryWhiteIcon } from '../assets/icons';
+import { batteryBlackIcon, loadIcon, battIcon, maxIcon, maxActiveIcon, roundPictureIcon, tareIcon, tareActiveIcon, toolbarlistIcon, toolbarprogIcon, toolbarstopIcon, warningErrorIcon, batteryWhiteIcon } from '../assets/icons';
 import NewProjectModal from '../components/Modals/NewProjectModal';
 import { IGroup, ILC, ILog, IProject, IProjectDetail, IProofTest } from '../helper/types';
 import ProjectSettingModal from '../components/Modals/ProjectSettingModal';
@@ -35,6 +35,10 @@ import ProjectListModal from '../components/Modals/ProjectListModal';
 import ProofTestModal from '../components/Modals/ProofTestModal';
 import BleDeviceListModal from '../components/Modals/BleDeviceListModal';
 import ComPortListModal from '../components/Modals/ComPortListModal';
+import CrrUsbConnectingModal, {
+  CRR_USB_CONNECT_STAGES,
+  CRR_USB_LIST_SYNC_STAGES,
+} from '../components/Modals/CrrUsbConnectingModal';
 import TotalizerModal from '../components/Modals/TotalizerModal';
 import DocumentModal from '../components/Modals/DocumentModal';
 import ProjectInformationModal from '../components/Modals/ProjectInformationModal';
@@ -50,7 +54,8 @@ import { db, dbReady } from '../db';
 import Swal from 'sweetalert2';
 import { useTheme } from '@emotion/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faBatteryEmpty, faBatteryQuarter, faBatteryHalf, faBatteryThreeQuarters, faBatteryFull, IconDefinition } from '@fortawesome/free-solid-svg-icons';
+import { faBatteryEmpty, faBatteryQuarter, faBatteryHalf, faBatteryThreeQuarters, faBatteryFull, faLink, faLinkSlash, IconDefinition } from '@fortawesome/free-solid-svg-icons';
+import { faUsb } from '@fortawesome/free-brands-svg-icons';
 import { format, getTime, getUnixTime } from 'date-fns';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -69,6 +74,7 @@ import { getPreOverloadThreshold } from '../helper/lcLoadStatus';
 import { toast } from 'react-toastify';
 import { getAppPlatform, isDesktopPc, isWebLikePlatform } from '../helper/appPlatform';
 import { computeCrrUsbLcDisplayPatch, type CrrUsbWeightSample } from '../helper/crrUsbDisplay';
+import { computeMonitorTotals } from '../helper/monitorTotals';
 import { crrUsbHandlerRefs } from '../helper/crrUsbHandlerRefs';
 import { dropCrrUsbFramer, ensureCrrUsbPipeline, resetCrrUsbFramer } from '../helper/crrUsbPipeline';
 import { bindCrrUsbRuntime, beginCrrUsbLinkSession, crrUsbLastRxAtMs, crrUsbRuntime, installCrrUsbDebugConsole, isCrrUsbLinkGraceActive, logCrrUsbDrop } from '../helper/crrUsbRuntime';
@@ -84,8 +90,9 @@ import {
   getVerifiedCrrPort,
   identifyCrrDevice,
   isFtdiSerialPort,
-  lcsToS2sCells,
+  lcsToS2sPartition,
   registerCrrLcListSync,
+  requestCrrLcListSync,
   sendCrrS2sList,
   setVerifiedCrrPort,
 } from '../helper/crrUsbService';
@@ -168,20 +175,14 @@ const getLcDisplayBatchMs = (platformType: string | undefined, lcCount: number):
 };
 
 /**
- * PRR + many LCs: per-LC "no fresh sample" before Tr.Err in ifConnection (must exceed slowest expected inter-sample gap).
- * Global silence below must be greater than a full slow reporting round (e.g. 75× @ ~1 Hz + jitter).
+ * Per-LC: no fresh sample for this long → Tr.Err (RF, RS485, BLE, USB — same rule).
  */
-const PRR_STALE_LC_MS = 2000;
+const LC_NO_DATA_TRERR_MS = 3000;
 /** If no BLE-driven updates hit dataTimeById for this long, declare full link loss and set all LCs to Tr.Err. */
 const PRR_SILENCE_ALL_TRERR_MS = 4000;
 const PRR_SILENCE_USB_TRERR_MS = USB_CRR_LINK_DEAD_MS;
 
-const getPrrStaleLcMs = (lcCount: number): number => {
-  if (isDesktopPc()) {
-    return USB_CRR_LINK_DEAD_MS;
-  }
-  return PRR_STALE_LC_MS;
-};
+const getPrrStaleLcMs = (_lcCount?: number): number => LC_NO_DATA_TRERR_MS;
 
 const getPrrSilenceAllTrerrMs = (): number =>
   isDesktopPc() ? PRR_SILENCE_USB_TRERR_MS : PRR_SILENCE_ALL_TRERR_MS;
@@ -406,6 +407,14 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const [comPickerOpen, setComPickerOpen] = useState(false);
   const [comPickerLoading, setComPickerLoading] = useState(false);
   const [comPorts, setComPorts] = useState<SerialPortInfo[]>([]);
+  const [crrUsbConnectingOpen, setCrrUsbConnectingOpen] = useState(false);
+  const [crrUsbConnectProgress, setCrrUsbConnectProgress] = useState(0);
+  const [crrUsbConnectMessageKey, setCrrUsbConnectMessageKey] = useState('CrrOpeningPort');
+  const [crrUsbModalTitleKey, setCrrUsbModalTitleKey] = useState('CrrConnectingTitle');
+  const [crrUsbModalStages, setCrrUsbModalStages] = useState<readonly string[]>(CRR_USB_CONNECT_STAGES);
+  const crrListSyncUiInProgressRef = useRef(false);
+  const crrUsbConnectDoneRef = useRef<(() => void) | null>(null);
+  const crrUsbConnectProgressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const resolveCrrLcIdRef = useRef<(idLow: number) => number | null>(() => null);
   const applyCrrUsbWeightRef = useRef<(sample: CrrUsbWeightSample, portPath?: string) => void>(() => undefined);
   const btParseRef = useRef<(a: Uint8Array, sourceDeviceId?: string) => Promise<void>>(async () => undefined);
@@ -652,10 +661,13 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     const projectId = curProject?.id;
     const projectChanged = prevCurProjectIdRef.current !== projectId;
     prevCurProjectIdRef.current = projectId;
-    load_lcs();
-    if (projectChanged) {
-      load_groups();
-    }
+    void (async () => {
+      await load_lcs();
+      if (projectChanged && projectId) {
+        await load_groups();
+        await requestCrrLcListSync();
+      }
+    })();
   }, [curProject])
 
   useEffect(() => {
@@ -1381,6 +1393,26 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   };
   resolveCrrLcIdRef.current = resolveCrrLcId;
 
+  const refreshMonitorTotals = useCallback(() => {
+    const liveProject = curProjectRef.current;
+    if (!liveProject?.id) return;
+    const pid = normalizeProjectId(liveProject.id);
+    const projectLcs = (lcsRef?.current ?? currentLcs.current ?? []).filter(
+      (item: ILC) => normalizeProjectId(item.project_id) === pid,
+    );
+    const totals = computeMonitorTotals(
+      projectLcs,
+      groupsRef.current,
+      liveProject.id,
+      currentUnitsRef.current ?? liveProject.units,
+      !!tareStatusRef.current,
+    );
+    if (totals.groupsChanged) {
+      updateGroups([...totals.groups].sort((a, b) => parseInt(a.id || '0', 10) - parseInt(b.id || '0', 10)));
+    }
+    updateTotalWeightHtml(totals.totalDisplayHtml);
+  }, [lcsRef, updateGroups, updateTotalWeightHtml]);
+
   /** Desktop USB: COM frame → decode → patch one LC → Monitor (no bt_parse / display buffer). */
   const applyCrrUsbWeight = (sample: CrrUsbWeightSample, _portPath?: string) => {
     const liveProject = curProjectRef.current;
@@ -1413,7 +1445,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       lcId,
       liveProject.id,
       patch.value,
-      patch.realval,
+      patch.grossMton,
       lcItem.overload,
       lcItem.underload,
       sample.battery,
@@ -1424,7 +1456,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
         ...lcItem,
         value: patch.value,
         weightnotare: patch.weightnotare,
-        realval: patch.realval,
+        realval: String(patch.grossMton),
         battery: patch.battery,
         max: patch.max,
       });
@@ -1433,23 +1465,134 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     crrUsbRuntime.stats.weightAccepted += 1;
     crrUsbRuntime.stats.lastUiValue = patch.value;
     crrUsbRuntime.stats.lastDropReason = '';
+    if (crrUsbConnectDoneRef.current) {
+      const done = crrUsbConnectDoneRef.current;
+      crrUsbConnectDoneRef.current = null;
+      done();
+    }
     setNoChange(false);
     lastBleRxAtRef.current = Date.now();
+    refreshMonitorTotals();
   };
   applyCrrUsbWeightRef.current = applyCrrUsbWeight;
 
   const syncCrrLcList = async (portPath: string) => {
     const liveProject = curProjectRef.current;
     if (!liveProject?.id) return;
-    const cells = lcsToS2sCells(lcsRef?.current ?? lcs, liveProject.id);
-    if (cells.length === 0) return;
-    const result = await sendCrrS2sList(portPath, cells);
+    const { allCells, wiredCells } = lcsToS2sPartition(lcsRef?.current ?? lcs, liveProject.id);
+    const cellCount = allCells.length;
+    if (cellCount === 0) return;
+    const result = await sendCrrS2sList(portPath, allCells, wiredCells);
     if (!result.ok) {
-      void logEvent('ERROR', 'CRR S2S list send failed', { portPath, error: result.error, cellCount: cells.length }, 'USB');
+      void logEvent('ERROR', 'CRR S2S list send failed', { portPath, error: result.error, cellCount, allCount: allCells.length, wiredCount: wiredCells.length }, 'USB');
       return;
     }
-    void logEvent('INFO', 'CRR S2S list sent', { portPath, cellCount: cells.length }, 'USB');
+    void logEvent('INFO', 'CRR S2S list sent', { portPath, cellCount, allCount: allCells.length, wiredCount: wiredCells.length }, 'USB');
   };
+
+  const estimateCrrPostListWaitMs = (cellCount: number) =>
+    Math.max(6000, Math.min(90000, 3500 + Math.max(1, cellCount) * USB_CRR_BURST_INTERVAL_MS));
+
+  const waitForCrrLiveDataAfterList = async (weightBaseline: number, cellCount: number) => {
+    const estimatedWaitMs = estimateCrrPostListWaitMs(cellCount);
+    paintCrrUsbConnectStage(0.55, 'CrrWaitingForData');
+    startCrrUsbProgressRamp(0.55, 0.92, estimatedWaitMs);
+    await waitForFirstCrrUsbWeight(weightBaseline, estimatedWaitMs);
+    clearCrrUsbConnectProgressTimer();
+  };
+
+  const runCrrLcListSyncWithUi = async (portPath: string) => {
+    if (!portPath || !isDesktopPc() || crrListSyncUiInProgressRef.current) return;
+    const liveProject = curProjectRef.current;
+    if (!liveProject?.id) return;
+    const { allCells } = lcsToS2sPartition(lcsRef?.current ?? lcs, liveProject.id);
+    if (allCells.length === 0) return;
+
+    crrListSyncUiInProgressRef.current = true;
+    setCrrUsbModalTitleKey('CrrListSyncTitle');
+    setCrrUsbModalStages(CRR_USB_LIST_SYNC_STAGES);
+    const weightBaseline = crrUsbRuntime.stats.weightAccepted;
+
+    try {
+      paintCrrUsbConnectStage(0.12, 'CrrSyncingList');
+      startCrrUsbProgressRamp(0.12, 0.45, 1200);
+      await yieldToConnectUi();
+      await syncCrrLcList(portPath);
+      clearCrrUsbConnectProgressTimer();
+
+      await waitForCrrLiveDataAfterList(weightBaseline, allCells.length);
+
+      paintCrrUsbConnectStage(1, 'CrrListSyncDone');
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 450);
+      });
+      refreshMonitorTotals();
+    } finally {
+      closeCrrUsbConnecting();
+      crrListSyncUiInProgressRef.current = false;
+      setCrrUsbModalTitleKey('CrrConnectingTitle');
+      setCrrUsbModalStages(CRR_USB_CONNECT_STAGES);
+    }
+  };
+
+  const clearCrrUsbConnectProgressTimer = () => {
+    if (crrUsbConnectProgressTimerRef.current) {
+      clearInterval(crrUsbConnectProgressTimerRef.current);
+      crrUsbConnectProgressTimerRef.current = null;
+    }
+  };
+
+  const closeCrrUsbConnecting = () => {
+    clearCrrUsbConnectProgressTimer();
+    crrUsbConnectDoneRef.current = null;
+    setCrrUsbConnectingOpen(false);
+    setCrrUsbConnectProgress(0);
+  };
+
+  const paintCrrUsbConnectStage = (progress: number, messageKey: string) => {
+    flushSync(() => {
+      setCrrUsbConnectingOpen(true);
+      setCrrUsbConnectProgress(progress);
+      setCrrUsbConnectMessageKey(messageKey);
+    });
+  };
+
+  const yieldToConnectUi = () =>
+    new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+
+  const startCrrUsbProgressRamp = (from: number, to: number, durationMs: number) => {
+    clearCrrUsbConnectProgressTimer();
+    const startedAt = Date.now();
+    crrUsbConnectProgressTimerRef.current = setInterval(() => {
+      const t = Math.min(1, (Date.now() - startedAt) / durationMs);
+      setCrrUsbConnectProgress(from + (to - from) * t);
+      if (t >= 1) {
+        clearCrrUsbConnectProgressTimer();
+      }
+    }, 80);
+  };
+
+  const waitForFirstCrrUsbWeight = (baselineAccepted: number, maxWaitMs: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      if (crrUsbRuntime.stats.weightAccepted > baselineAccepted) {
+        resolve(true);
+        return;
+      }
+      let settled = false;
+      const finish = (gotData: boolean) => {
+        if (settled) return;
+        settled = true;
+        crrUsbConnectDoneRef.current = null;
+        clearTimeout(timeoutId);
+        resolve(gotData);
+      };
+      crrUsbConnectDoneRef.current = () => finish(true);
+      const timeoutId = setTimeout(() => finish(false), maxWaitMs);
+    });
 
   const usbConnect = async (portPath: string) => {
     if (!portPath) return;
@@ -1459,55 +1602,83 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       return;
     }
 
-    const result = await connectUsbSerial(portPath);
-    if (!result.ok) {
-      updateErrStr(result.error || t('ConnectDevice.UsbConnectFailed'));
-      void logEvent('ERROR', 'USB serial connect failed', { portPath, error: result.error }, 'USB');
-      return;
-    }
-
-    resetCrrUsbFramer(portPath);
-    beginCrrUsbLinkSession();
-    dataTimeByIdRef.current = [];
-    setDataTimeById([]);
-    timeoutHandledRef.current = false;
-    lastUpdatedRef.current = Date.now();
-    lastBleRxAtRef.current = Date.now();
-    setNoChange(false);
-
     const trimmedName = portPath;
-    prrDisplayNameByDeviceRef.current[portPath] = trimmedName;
-    if (!prrBleDeviceIdRef.current) {
-      prrBleDeviceIdRef.current = portPath;
-      prrBleDisplayNameRef.current = trimmedName;
-    }
-
-    setConnectedPrrDevices((prev) => {
-      if (prev.some((d) => String(d.deviceId) === String(portPath))) {
-        return prev;
-      }
-      return [...prev, { deviceId: portPath, displayName: trimmedName }];
-    });
-
-    updateBleConnected(true);
-
-    const isCrr = await identifyCrrDevice(portPath);
-    if (!isCrr) {
-      updateBleConnected(false);
-      await disconnectUsbSerial(portPath);
-      updateErrStr(t('ConnectDevice.NotCrrDevice'));
-      void logEvent('ERROR', 'CRR identify failed', { portPath }, 'USB');
-      return;
-    }
-
-    setVerifiedCrrPort(portPath);
-    prrManualDisconnectRef.current[portPath] = false;
-    void syncCrrLcList(portPath);
-    setPrrConnectedListName(trimmedName);
-    logPrrLinkEventSafely('connected', trimmedName);
-    void logEvent('INFO', 'CRR USB connected', { portPath }, 'USB');
+    const weightBaseline = crrUsbRuntime.stats.weightAccepted;
     setComPickerOpen(false);
-    handleCloseModal();
+    setCrrUsbModalTitleKey('CrrConnectingTitle');
+    setCrrUsbModalStages(CRR_USB_CONNECT_STAGES);
+    paintCrrUsbConnectStage(0.08, 'CrrOpeningPort');
+    await yieldToConnectUi();
+
+    try {
+      const result = await connectUsbSerial(portPath);
+      if (!result.ok) {
+        updateErrStr(result.error || t('ConnectDevice.UsbConnectFailed'));
+        void logEvent('ERROR', 'USB serial connect failed', { portPath, error: result.error }, 'USB');
+        return;
+      }
+
+      resetCrrUsbFramer(portPath);
+      beginCrrUsbLinkSession();
+      dataTimeByIdRef.current = [];
+      setDataTimeById([]);
+      timeoutHandledRef.current = false;
+      lastUpdatedRef.current = Date.now();
+      lastBleRxAtRef.current = Date.now();
+      setNoChange(false);
+
+      prrDisplayNameByDeviceRef.current[portPath] = trimmedName;
+      if (!prrBleDeviceIdRef.current) {
+        prrBleDeviceIdRef.current = portPath;
+        prrBleDisplayNameRef.current = trimmedName;
+      }
+
+      setConnectedPrrDevices((prev) => {
+        if (prev.some((d) => String(d.deviceId) === String(portPath))) {
+          return prev;
+        }
+        return [...prev, { deviceId: portPath, displayName: trimmedName }];
+      });
+
+      updateBleConnected(true);
+      paintCrrUsbConnectStage(0.22, 'CrrIdentifying');
+      startCrrUsbProgressRamp(0.22, 0.42, 3000);
+
+      const isCrr = await identifyCrrDevice(portPath);
+      clearCrrUsbConnectProgressTimer();
+      if (!isCrr) {
+        updateBleConnected(false);
+        await disconnectUsbSerial(portPath);
+        updateErrStr(t('ConnectDevice.NotCrrDevice'));
+        void logEvent('ERROR', 'CRR identify failed', { portPath }, 'USB');
+        return;
+      }
+
+      setVerifiedCrrPort(portPath);
+      prrManualDisconnectRef.current[portPath] = false;
+      paintCrrUsbConnectStage(0.5, 'CrrSyncingList');
+      await syncCrrLcList(portPath);
+
+      const liveProject = curProjectRef.current;
+      const cellCount = liveProject?.id
+        ? lcsToS2sPartition(lcsRef?.current ?? lcs, liveProject.id).allCells.length
+        : 0;
+
+      await waitForCrrLiveDataAfterList(weightBaseline, cellCount);
+
+      paintCrrUsbConnectStage(1, 'CrrConnected');
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 450);
+      });
+
+      setPrrConnectedListName(trimmedName);
+      logPrrLinkEventSafely('connected', trimmedName);
+      void logEvent('INFO', 'CRR USB connected', { portPath }, 'USB');
+      refreshMonitorTotals();
+      handleCloseModal();
+    } finally {
+      closeCrrUsbConnecting();
+    }
   };
 
   const handleComPickerConnect = (portPath: string) => {
@@ -1865,7 +2036,7 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
     }    
     intervalRef.current = setInterval(() => {
       evaluateTransmissionFreshnessRef.current();
-    }, 1000);
+    }, 500);
 
     return () => {
       if (intervalRef.current) {
@@ -2135,29 +2306,24 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
       timeoutHandledRef.current = false;
     }
 
-    if (currentDataTimeById.length === 0) return;
-
-    // Desktop USB: while COM is alive, do not mark per-LC Tr.Err between simulator bursts.
-    if (isDesktopPc() && isCrrUsbBusRecentlyActive(now)) {
+    if (isDesktopPc() && isCrrUsbLinkGraceActive()) {
       return;
     }
 
-    const idsWithStaleData = new Set<string>();
-    for (const item of currentDataTimeById) {
-      if (now - item.realTime > staleLcMs) idsWithStaleData.add(String(item.id));
-    }
-    if (idsWithStaleData.size === 0) return;
+    const freshnessById = new Map(
+      currentDataTimeById.map((item) => [String(item.id), item.realTime || 0])
+    );
 
     const curLcs = currentLcs.current || [];
     const projId = curProjectRef.current?.id;
     let changed = false;
     const updatedLcs = curLcs.map((lcItem) => {
-      if (!idsWithStaleData.has(String(lcItem.id))) return lcItem;
+      if (!projId || normalizeProjectId(lcItem.project_id) !== pid) return lcItem;
+      const lastRx = freshnessById.get(String(lcItem.id));
+      if (lastRx != null && now - lastRx <= staleLcMs) return lcItem;
       if (lcItem.value === 'Tr.Err') return lcItem;
       changed = true;
-      if (projId) {
-        maybeLogLcValue(lcItem.id, projId, 'Tr.Err', -99999999, lcItem.overload, lcItem.underload);
-      }
+      maybeLogLcValue(lcItem.id, projId, 'Tr.Err', -99999999, lcItem.overload, lcItem.underload);
       return { ...lcItem, value: 'Tr.Err' };
     });
     if (changed) {
@@ -3393,7 +3559,7 @@ const lastSoundTimeRef = useRef<number>(0);
     return registerCrrLcListSync(async () => {
       const portPath = getVerifiedCrrPort();
       if (!portPath) return;
-      await syncCrrLcList(portPath);
+      await runCrrLcListSyncWithUi(portPath);
     });
   }, []);
 
@@ -3715,8 +3881,18 @@ const lastSoundTimeRef = useRef<number>(0);
                   </button>
                 ) : null}
                 <div className='flex flex-row items-center gap-1.5 shrink-0'>
-                  <div className='relative flex items-center justify-center'>
-                    <IonImg src={connected ? bleConnectIcon : bleDisConnectIcon} alt='ble' className='w-10' />
+                  <div className='relative flex items-center justify-center w-10 h-10'>
+                    <FontAwesomeIcon
+                      icon={connected ? faLink : faLinkSlash}
+                      size='lg'
+                      color={connected ? (isDark ? '#4ade80' : '#16a34a') : (isDark ? '#6b7280' : '#9ca3af')}
+                      style={{ transform: 'scale(1.65)' }}
+                      title={
+                        connected
+                          ? (isDesktopPc() ? 'CRR USB connected' : 'PRR connected')
+                          : (isDesktopPc() ? 'CRR USB disconnected' : 'PRR disconnected')
+                      }
+                    />
                   </div>
                   {connected && connectedPrrDevices.length > 0 ? (
                     <div className='flex flex-row items-start gap-2'>
@@ -3724,6 +3900,7 @@ const lastSoundTimeRef = useRef<number>(0);
                         const label = (d.displayName && d.displayName.trim()) || d.deviceId;
                         const batteryPct = Math.max(0, Math.min(100, Number(prrBatteryByDevice[d.deviceId] ?? 0)));
                         const batteryIcon = getBatteryIconForPercent(batteryPct);
+                        const isUsbCrrLink = isDesktopPc();
                         return (
                           <div key={d.deviceId} className='flex flex-col items-center min-w-[4.5rem] max-w-[6.5rem]'>
                             <span
@@ -3745,7 +3922,7 @@ const lastSoundTimeRef = useRef<number>(0);
                               className='relative mt-0.5 flex items-center justify-center cursor-pointer'
                               role="button"
                               tabIndex={0}
-                              title={`Disconnect PRR ${label}`}
+                              title={isUsbCrrLink ? `Disconnect CRR ${label}` : `Disconnect PRR ${label}`}
                               onClick={() => { void disconnectPrrWithConfirm(d.deviceId, label); }}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter' || e.key === ' ') {
@@ -3754,10 +3931,21 @@ const lastSoundTimeRef = useRef<number>(0);
                                 }
                               }}
                             >
-                              <FontAwesomeIcon icon={batteryIcon} size='lg' color={`${isDark ? 'grey' : 'black'}`} style={{ transform: 'scale(1.73)' }} />
-                              <span className='absolute z-10 text-[9px] font-semibold leading-none text-white pointer-events-none'>
-                                {`${batteryPct}%`}
-                              </span>
+                              {isUsbCrrLink ? (
+                                <FontAwesomeIcon
+                                  icon={faUsb}
+                                  size='lg'
+                                  color={isDark ? '#60a5fa' : '#2563eb'}
+                                  style={{ transform: 'scale(1.55)' }}
+                                />
+                              ) : (
+                                <>
+                                  <FontAwesomeIcon icon={batteryIcon} size='lg' color={`${isDark ? 'grey' : 'black'}`} style={{ transform: 'scale(1.73)' }} />
+                                  <span className='absolute z-10 text-[9px] font-semibold leading-none text-white pointer-events-none'>
+                                    {`${batteryPct}%`}
+                                  </span>
+                                </>
+                              )}
                             </div>
                           </div>
                         );
@@ -4083,6 +4271,14 @@ const lastSoundTimeRef = useRef<number>(0);
         onClose={handleComPickerClose}
         onConnect={handleComPickerConnect}
         onRefresh={() => { void refreshComPorts(); }}
+      />
+
+      <CrrUsbConnectingModal
+        isOpen={crrUsbConnectingOpen}
+        progress={crrUsbConnectProgress}
+        messageKey={crrUsbConnectMessageKey}
+        titleKey={crrUsbModalTitleKey}
+        stages={crrUsbModalStages}
       />
 
       <IonAlert

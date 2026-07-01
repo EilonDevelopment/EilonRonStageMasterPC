@@ -4,6 +4,7 @@ import {
   getResolutionForLcId,
   quantizeByResolution,
 } from './weightResolution';
+import { computeZeroOffsetMton } from './lcLoadStatus';
 
 export type CrrUsbWeightSample = {
   lcId: number;
@@ -15,7 +16,10 @@ export type CrrUsbWeightSample = {
 export type CrrUsbLcDisplayPatch = {
   value: string;
   weightnotare: string;
+  /** Gross load in project display units (liveLC / ZERO guard). */
   realval: number;
+  /** Gross load in M.TON (persist on LC row — same as BLE `bt_parse`). */
+  grossMton: number;
   battery: string;
   max: number;
 };
@@ -44,8 +48,9 @@ export function computeCrrUsbLcDisplayPatch(
 
   const { u, fx } = normalizeUnits(unitsRaw);
 
-  let weight = grossMton / calibrationOffset;
-  let realval = grossMton / calibrationOffset;
+  const grossMtonCalibrated = grossMton / calibrationOffset;
+  let weight = grossMtonCalibrated;
+  let realval = grossMtonCalibrated;
 
   if (u === 'lbs') {
     weight = Number((weight * 2204.62).toFixed(0));
@@ -97,7 +102,29 @@ export function computeCrrUsbLcDisplayPatch(
     value: w,
     weightnotare: wn,
     realval,
+    grossMton: grossMtonCalibrated,
     battery: String(Math.min(100, Math.max(0, Math.round(battery)))),
     max: maxVal,
+  };
+}
+
+/** Apply ZERO on an LC row (M.TON) and refresh display fields immediately. */
+export function applyLcZeroWithDisplay(lc: ILC, unitsRaw: string | undefined): ILC {
+  const realvalMton = Number(lc.realval) || 0;
+  const zeroed: ILC = {
+    ...lc,
+    zero: computeZeroOffsetMton(realvalMton),
+    realval: String(realvalMton),
+    psw: '0',
+  };
+  const battery = Number.parseInt(String(zeroed.battery ?? '100'), 10) || 100;
+  const patch = computeCrrUsbLcDisplayPatch(zeroed, realvalMton, battery, unitsRaw);
+  if (!patch) return zeroed;
+  return {
+    ...zeroed,
+    value: patch.value,
+    weightnotare: patch.weightnotare,
+    battery: patch.battery,
+    max: String(patch.max),
   };
 }

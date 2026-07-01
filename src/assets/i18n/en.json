@@ -170,6 +170,9 @@
     "Units": "ID's (for example: 10-15,18,0,25-46)",
     "Group": "Group",
     "Groups": "Groups",
+    "LinkType": "Link",
+    "LinkTypeRf": "RF",
+    "LinkTypeRs485": "RS485",
     "LcListTotal": "Total load cells: {{count}}",
     "Check": "Check",
     "GroupName": "Group Name",
@@ -212,7 +215,16 @@
     "ComPortsEmpty": "No FTDI COM ports found. Connect the CRR via USB and click Refresh.",
     "UsbConnectFailed": "Could not open COM port.",
     "NotFtdiPort": "Selected port is not an FTDI USB serial device.",
-    "NotCrrDevice": "Device did not respond as a CRR (expected IDN_ 4)."
+    "NotCrrDevice": "Device did not respond as a CRR (expected IDN_ 4).",
+    "CrrConnectingTitle": "Connecting to CRR",
+    "CrrConnectingStep": "Step {{current}} of {{total}}",
+    "CrrOpeningPort": "Opening COM port…",
+    "CrrIdentifying": "Detecting CRR…",
+    "CrrSyncingList": "Sending project load cell list…",
+    "CrrWaitingForData": "Waiting for live data from load cells…",
+    "CrrConnected": "Connected — receiving data",
+    "CrrListSyncTitle": "Syncing load cells with CRR",
+    "CrrListSyncDone": "Load cell list updated"
   },
   "SerialDebug": {
     "Title": "Serial debug (CRR / USB)",
@@ -243,7 +255,16 @@
     "AppendCr": "Append CR (\\r)",
     "AppendLf": "Append LF (\\n)",
     "Send": "Send",
-    "ClearLog": "Clear log"
+    "ClearLog": "Clear log",
+    "QuickTests": "CRR quick tests",
+    "Rs485LcId": "RS485 LC ID",
+    "InvalidLcId": "Invalid RS485 LC ID — enter a positive number (1–16777215).",
+    "S2sRfOnly": "S2S RF only — LC {{id}}",
+    "S2sRfOnlyHint": "Sent Set-LC-List (0x32) with ALL×1 (ID {{id}}) and RS485×0. Watch RX for weight frames.",
+    "S2sRfRs485": "S2S RF {{rfId}} + RS485 {{rs485Id}}",
+    "S2sRfRs485Hint": "Sent Set-LC-List (0x32) with ALL×2 (IDs {{rfId}}, {{rs485Id}}) and RS485×1 (ID {{rs485Id}}). Watch RX for weight frames.",
+    "S2sRs485Only": "S2S RS485 only — LC {{id}}",
+    "S2sRs485OnlyHint": "Sent Set-LC-List (0x32) with ALL×1 and RS485×1 (ID {{id}}). Watch RX for weight frames."
   },
   "ProofTest": {
     "Title": "Proof Test",

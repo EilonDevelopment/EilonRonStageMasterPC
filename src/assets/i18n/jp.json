@@ -154,6 +154,9 @@
     "Units": "ID's (for example: 10-15,18,0,25-46)",
     "Group": "Group",
     "Groups": "グループ",
+    "LinkType": "接続",
+    "LinkTypeRf": "RF",
+    "LinkTypeRs485": "RS485",
     "LcListTotal": "ロードセル合計: {{count}}",
     "Check": "Check",
     "GroupName": "Group Name",
@@ -189,7 +192,16 @@
     "ComPortsTitle": "COMポートを選択（USB）",
     "ComPortsLoading": "シリアルポートを検索中…",
     "ComPortsEmpty": "COMポートが見つかりません。USBで接続して更新してください。",
-    "UsbConnectFailed": "COMポートを開けませんでした。"
+    "UsbConnectFailed": "COMポートを開けませんでした。",
+    "CrrConnectingTitle": "CRRに接続中",
+    "CrrConnectingStep": "ステップ {{current}} / {{total}}",
+    "CrrOpeningPort": "COMポートを開いています…",
+    "CrrIdentifying": "CRRを検出中…",
+    "CrrSyncingList": "プロジェクトのロードセルリストを送信中…",
+    "CrrWaitingForData": "ロードセルからのデータを待機中…",
+    "CrrConnected": "接続完了 — データ受信中",
+    "CrrListSyncTitle": "CRRとロードセルリストを同期中",
+    "CrrListSyncDone": "ロードセルリストを更新しました"
   },
   "ProofTest": {
     "Title": "Proof Test",
