@@ -1,0 +1,26 @@
+Ron Stage Master PC — instalación en otra computadora
+======================================================
+
+1) Descomprima todo el ZIP en una carpeta (ej. C:\RonStageMasterPC).
+
+2) Drivers USB (FTDI / CP210x) — solo la primera vez en esa PC:
+   - Clic derecho en PowerShell -> Ejecutar como administrador
+   - Set-ExecutionPolicy -Scope Process Bypass -Force
+   - cd "C:\RonStageMasterPC"   (su carpeta real)
+   - .\install-usb-com-drivers.ps1
+   - Reconecte el cable USB del CRR
+
+3) Abrir la aplicación:
+   - Doble clic en "Ron Stage Master PC.exe"
+
+4) Serial Debug (pruebas CRR / LabVIEW):
+   - Menú lateral -> "Serial debug (temp)"
+   - O doble clic en "Abrir-Serial-Debug.bat"
+
+5) Monitor normal:
+   - Connect Device -> elegir puerto COM -> conectar CRR
+
+Notas:
+- No hace falta Node.js ni LabVIEW para usar esta app.
+- Si el puerto COM no aparece, repita el paso 2 (drivers).
+- Versión empaquetada: sin consola de desarrollador (F12).

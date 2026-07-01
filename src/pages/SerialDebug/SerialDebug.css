@@ -102,6 +102,20 @@ body.dark .serial-debug-banner {
   border-color: var(--ion-color-danger);
 }
 
+.serial-debug-save-tests {
+  padding-top: 4px;
+  border-top: 1px dashed var(--ion-color-medium);
+}
+
+.serial-debug-save-tests ion-button[color='warning'] {
+  --color: #1a1a1a;
+  font-weight: 600;
+}
+
+body.dark .serial-debug-save-tests {
+  border-top-color: rgba(255, 255, 255, 0.2);
+}
+
 .serial-debug-log {
   flex: 1;
   min-height: 160px;

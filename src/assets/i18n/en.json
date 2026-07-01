@@ -264,7 +264,17 @@
     "S2sRfRs485": "S2S RF {{rfId}} + RS485 {{rs485Id}}",
     "S2sRfRs485Hint": "Sent Set-LC-List (0x32) with ALL×2 (IDs {{rfId}}, {{rs485Id}}) and RS485×1 (ID {{rs485Id}}). Watch RX for weight frames.",
     "S2sRs485Only": "S2S RS485 only — LC {{id}}",
-    "S2sRs485OnlyHint": "Sent Set-LC-List (0x32) with ALL×1 and RS485×1 (ID {{id}}). Watch RX for weight frames."
+    "S2sRs485OnlyHint": "Sent Set-LC-List (0x32) with ALL×1 and RS485×1 (ID {{id}}). Watch RX for weight frames.",
+    "SaveLabview": "LabVIEW Save to CRR (replay)",
+    "SaveP1": "Save P1 — config blob",
+    "SaveP2": "Save P2 — commit",
+    "SaveFull": "Save P1 + P2 (full)",
+    "SaveP1Hint": "Sent LabVIEW save packet 1 (config ~4 KB, no 0xAA). Follow with P2 commit.",
+    "SaveP2Hint": "Sent LabVIEW save packet 2 (commit 0x9505 + checksum + 0xAA). Expect RX \"IDN_ 1\".",
+    "SaveFullStart": "Sending LabVIEW save sequence: identify → P1 config → pause → P2 commit…",
+    "SaveIdentifyFirst": "TX identify 0x34 before save (same as runtime handshake).",
+    "SaveP1Wait": "Waiting {{ms}} ms for CRR to absorb config blob before commit…",
+    "SaveFullWaitIdn": "Both packets sent. Watch RX / RX-IDN for save OK (\"IDN_ 1\") or any raw bytes."
   },
   "ProofTest": {
     "Title": "Proof Test",

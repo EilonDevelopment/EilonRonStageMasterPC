@@ -6,6 +6,9 @@ dist/
 build/
 www/
 .vite/
+release/
+electron/build/
+electron/usb-drivers-pack/
 
 # Logs and runtime files
 *.log

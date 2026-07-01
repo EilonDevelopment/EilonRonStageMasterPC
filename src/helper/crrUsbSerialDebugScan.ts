@@ -1,7 +1,7 @@
 /**
  * Serial Debug: surface IDN_ identify strings and non-valid FF A5 windows.
  */
-import { CRR_IDENTITY_RESPONSE, bytesToAscii } from './crrProtocol';
+import { CRR_IDENTITY_RESPONSE, bytesToAscii, formatCrrIdnScanLabel } from './crrProtocol';
 import { CRR_USB_FRAME_LENGTH, isCrrG4UsbWeightFrame } from './prrPacketFramer';
 import {
   g4ChecksumValid,
@@ -91,10 +91,8 @@ export class SerialDebugRxScanner {
         const hexEnd = Math.min(merged.length, idx + 32);
         const snippet = merged.slice(hexStart, hexEnd);
         const asciiSnippet = bytesToAscii(snippet).replace(/\./g, '·');
-        const label =
-          ascii.slice(idx, idx + CRR_IDENTITY_RESPONSE.length) === CRR_IDENTITY_RESPONSE
-            ? `identify OK ("${CRR_IDENTITY_RESPONSE.trim()}")`
-            : `IDN_ fragment "${ascii.slice(idx, Math.min(ascii.length, idx + 16)).trim()}"`;
+        const idnSlice = ascii.slice(idx, Math.min(ascii.length, idx + 8));
+        const label = formatCrrIdnScanLabel(idnSlice);
         events.push({
           kind: 'idn',
           text: `[${portPath}] ${label} | context HEX ${frameBytesToHex(snippet)} | ${asciiSnippet}`,

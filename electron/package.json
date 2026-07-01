@@ -2,16 +2,71 @@
   "name": "eilon-ron-stage-pc-electron",
   "version": "0.1.0",
   "private": true,
+  "description": "Ron Stage Master PC desktop shell (USB serial)",
+  "author": "Eilon",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "rebuild": "electron-rebuild -f -w serialport"
+    "rebuild": "electron-rebuild -f -w serialport",
+    "package": "electron-builder --win portable zip"
   },
   "dependencies": {
     "serialport": "^12.0.0"
   },
   "devDependencies": {
     "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
     "electron-rebuild": "^3.2.9"
+  },
+  "build": {
+    "appId": "com.eilon.ronstagemaster.pc",
+    "productName": "Ron Stage Master PC",
+    "copyright": "Copyright © Eilon",
+    "directories": {
+      "output": "../release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "build/**/*"
+    ],
+    "extraFiles": [
+      {
+        "from": "install-usb-com-drivers.ps1",
+        "to": "install-usb-com-drivers.ps1"
+      },
+      {
+        "from": "LEEME-INSTALACION.txt",
+        "to": "LEEME-INSTALACION.txt"
+      },
+      {
+        "from": "Abrir-Serial-Debug.bat",
+        "to": "Abrir-Serial-Debug.bat"
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "usb-drivers-pack",
+        "to": "usb-drivers"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/serialport/**",
+      "node_modules/@serialport/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "RonStageMasterPC-${version}-${os}-${arch}.${ext}"
+    }
   }
 }

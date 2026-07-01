@@ -14,7 +14,14 @@ import CommonLayout from '../../Layout/CommonLayout';
 import { isDesktopPc } from '../../helper/appPlatform';
 import { formatCrrUsbFrameRxLog } from '../../helper/crrUsbSerialDebug';
 import { SerialDebugRxScanner } from '../../helper/crrUsbSerialDebugScan';
-import { buildCrrS2sPacket, formatCrrS2sPacketSummary, type CrrS2sCell } from '../../helper/crrProtocol';
+import { buildCrrS2sPacket, buildCrrReturnCodePacket, formatCrrS2sPacketSummary, type CrrS2sCell } from '../../helper/crrProtocol';
+import {
+  buildLabviewSaveCommitPacketP2,
+  buildLabviewSaveConfigPacketP1,
+  formatLabviewSavePacketSummary,
+  formatLabviewSaveTxHex,
+  LABVIEW_SAVE_INTER_PACKET_DELAY_MS,
+} from '../../helper/crrSaveParameters';
 import { CrrPacketFramer } from '../../helper/prrPacketFramer';
 import {
   SERIAL_BAUD_OPTIONS,
@@ -56,6 +63,12 @@ function parseLcIdInput(text: string): number | null {
 function formatTs(d = new Date()): string {
   const pad = (n: number, w = 2) => String(n).padStart(w, '0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function bytesToHex(data: Uint8Array): string {
@@ -130,12 +143,14 @@ const SerialDebug: React.FC = () => {
   const [rs485LcIdInput, setRs485LcIdInput] = useState(String(DEFAULT_DEBUG_RS485_LC_ID));
   const [lines, setLines] = useState<LogLine[]>([]);
   const [statusText, setStatusText] = useState('');
+  const [saveInFlight, setSaveInFlight] = useState(false);
   const logIdRef = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
   const activePortRef = useRef('');
   const framerRef = useRef<CrrPacketFramer | null>(null);
   const framerPortRef = useRef('');
   const rxScannerRef = useRef<SerialDebugRxScanner | null>(null);
+  const saveRxWatchUntilRef = useRef(0);
 
   const rs485LcId = useMemo(() => parseLcIdInput(rs485LcIdInput), [rs485LcIdInput]);
 
@@ -203,6 +218,11 @@ const SerialDebug: React.FC = () => {
         if (ev.kind === 'idn') pushLine('RX-IDN', ev.text);
         else pushLine('RX-CAND', ev.text);
       });
+      if (Date.now() < saveRxWatchUntilRef.current && chunk.length > 0) {
+        const hex = bytesToHex(chunk.length > 128 ? chunk.subarray(0, 128) : chunk);
+        const suffix = chunk.length > 128 ? ` … +${chunk.length - 128} B` : '';
+        pushLine('RX', `[${portPath}] raw ${chunk.length} B | HEX ${hex}${suffix}`);
+      }
       framerRef.current?.push(chunk);
     });
     const unsubDisc = subscribeUsbSerialDisconnected((portPath) => {
@@ -292,6 +312,69 @@ const SerialDebug: React.FC = () => {
       `[${port}] ${payload.length} B | HEX ${bytesToHex(payload)} | ${sendAsHex ? 'HEX in' : 'ASCII'} ${inputLabel}${suffix ? ` (${suffix})` : ''}`,
     );
     setCommand('');
+  };
+
+  const handleSendBytes = async (
+    payload: Uint8Array,
+    summary: string,
+    sysHintKey?: string,
+    sysHintParams?: Record<string, string | number>,
+  ) => {
+    const port = activePortRef.current || selectedPort;
+    if (!port || !connected) {
+      pushLine('SYS', t('SerialDebug.SendNeedsConnection'));
+      return false;
+    }
+    const result = await writeUsbSerial(port, payload);
+    if (!result.ok) {
+      pushLine('SYS', result.error || t('SerialDebug.SendFailed'));
+      return false;
+    }
+    pushLine('TX', `[${port}] ${payload.length} B | ${summary} | HEX ${payload.length > 96 ? formatLabviewSaveTxHex(payload) : bytesToHex(payload)}`);
+    if (sysHintKey) {
+      pushLine('SYS', t(sysHintKey, sysHintParams));
+    }
+    return true;
+  };
+
+  const handleSendSaveP1 = async () => {
+    const p1 = buildLabviewSaveConfigPacketP1();
+    await handleSendBytes(p1, formatLabviewSavePacketSummary('P1', p1), 'SerialDebug.SaveP1Hint');
+  };
+
+  const handleSendSaveP2 = async () => {
+    const p1 = buildLabviewSaveConfigPacketP1();
+    const p2 = buildLabviewSaveCommitPacketP2(p1);
+    await handleSendBytes(p2, formatLabviewSavePacketSummary('P2', p2), 'SerialDebug.SaveP2Hint');
+  };
+
+  const handleSendSaveFull = async () => {
+    const port = activePortRef.current || selectedPort;
+    if (!port || !connected || saveInFlight) {
+      if (!port || !connected) pushLine('SYS', t('SerialDebug.SendNeedsConnection'));
+      return;
+    }
+    setSaveInFlight(true);
+    saveRxWatchUntilRef.current = Date.now() + 8000;
+    try {
+      const p1 = buildLabviewSaveConfigPacketP1();
+      const p2 = buildLabviewSaveCommitPacketP2(p1);
+      pushLine('SYS', t('SerialDebug.SaveFullStart'));
+      pushLine('SYS', t('SerialDebug.SaveIdentifyFirst'));
+      const idPkt = buildCrrReturnCodePacket();
+      await handleSendBytes(idPkt, 'Identify 0x34 (pre-save)');
+      await sleep(400);
+      const ok1 = await handleSendBytes(p1, formatLabviewSavePacketSummary('P1', p1), 'SerialDebug.SaveP1Hint');
+      if (!ok1) return;
+      pushLine('SYS', t('SerialDebug.SaveP1Wait', { ms: LABVIEW_SAVE_INTER_PACKET_DELAY_MS }));
+      await sleep(LABVIEW_SAVE_INTER_PACKET_DELAY_MS);
+      const ok2 = await handleSendBytes(p2, formatLabviewSavePacketSummary('P2', p2), 'SerialDebug.SaveP2Hint');
+      if (ok2) {
+        pushLine('SYS', t('SerialDebug.SaveFullWaitIdn'));
+      }
+    } finally {
+      setSaveInFlight(false);
+    }
   };
 
   const handleSendS2sTest = async (
@@ -491,6 +574,36 @@ const SerialDebug: React.FC = () => {
             }}
           >
             {t('SerialDebug.S2sRs485Only', { id: rs485LcId ?? DEFAULT_DEBUG_RS485_LC_ID })}
+          </IonButton>
+        </div>
+
+        <div className="serial-debug-quick-tests serial-debug-save-tests">
+          <span className="serial-debug-quick-label">{t('SerialDebug.SaveLabview')}</span>
+          <IonButton
+            size="small"
+            fill="solid"
+            color="warning"
+            disabled={!connected || saveInFlight}
+            onClick={() => { void handleSendSaveP1(); }}
+          >
+            {t('SerialDebug.SaveP1')}
+          </IonButton>
+          <IonButton
+            size="small"
+            fill="solid"
+            color="warning"
+            disabled={!connected || saveInFlight}
+            onClick={() => { void handleSendSaveP2(); }}
+          >
+            {t('SerialDebug.SaveP2')}
+          </IonButton>
+          <IonButton
+            size="small"
+            color="warning"
+            disabled={!connected || saveInFlight}
+            onClick={() => { void handleSendSaveFull(); }}
+          >
+            {t('SerialDebug.SaveFull')}
           </IonButton>
         </div>
 

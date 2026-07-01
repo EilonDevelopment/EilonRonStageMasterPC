@@ -15,7 +15,20 @@ let staticServer = null;
 const DEFAULT_BAUD = 115200;
 /** Fixed port so IndexedDB origin stays stable between Electron launches. */
 const ELECTRON_STATIC_PORT = 47891;
-const BUILD_DIR = path.join(__dirname, '..', 'build');
+const BUILD_DIR = (() => {
+  const localBuild = path.join(__dirname, 'build');
+  const parentBuild = path.join(__dirname, '..', 'build');
+  const parentIndex = path.join(parentBuild, 'index.html');
+  const localIndex = path.join(localBuild, 'index.html');
+  // Dev: use fresh root build after "npm run build". Packaged app uses staged electron/build.
+  if (!app.isPackaged && fs.existsSync(parentIndex)) {
+    return parentBuild;
+  }
+  if (fs.existsSync(localIndex)) return localBuild;
+  return parentBuild;
+})();
+
+const START_PATH = process.argv.includes('--serial-debug') ? '/serial-debug' : '/';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -110,7 +123,8 @@ async function createWindow() {
   });
 
   mainWindow.once('ready-to-show', () => mainWindow.show());
-  await mainWindow.loadURL(staticServer.url);
+  const baseUrl = staticServer.url.replace(/\/$/, '');
+  await mainWindow.loadURL(`${baseUrl}${START_PATH}`);
 
   if (!app.isPackaged) {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -166,7 +180,17 @@ ipcMain.handle('serial:connect', async (_event, { path: portPath, baudRate }) =>
   const baud = Number(baudRate) || DEFAULT_BAUD;
 
   return new Promise((resolve) => {
-    const port = new SerialPort({ path: portPath, baudRate: baud, autoOpen: false });
+    const port = new SerialPort({
+      path: portPath,
+      baudRate: baud,
+      autoOpen: false,
+      dataBits: 8,
+      stopBits: 1,
+      parity: 'none',
+      rtscts: false,
+      dtr: true,
+      rts: true,
+    });
 
     port.open((err) => {
       if (err) {
@@ -213,27 +237,68 @@ ipcMain.handle('serial:disconnect', async (_event, { path: portPath }) => {
   });
 });
 
+const SERIAL_WRITE_CHUNK_SIZE = 512;
+const SERIAL_WRITE_CHUNK_DELAY_MS = 5;
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function writeSerialBuffer(port, buffer) {
+  if (buffer.length <= SERIAL_WRITE_CHUNK_SIZE) {
+    return new Promise((resolve) => {
+      port.write(buffer, (err) => {
+        if (err) {
+          resolve({ ok: false, error: err.message });
+          return;
+        }
+        port.drain((drainErr) => {
+          if (drainErr) {
+            resolve({ ok: false, error: drainErr.message });
+            return;
+          }
+          resolve({ ok: true, bytes: buffer.length });
+        });
+      });
+    });
+  }
+
+  let written = 0;
+  for (let offset = 0; offset < buffer.length; offset += SERIAL_WRITE_CHUNK_SIZE) {
+    const slice = buffer.subarray(offset, Math.min(buffer.length, offset + SERIAL_WRITE_CHUNK_SIZE));
+    // eslint-disable-next-line no-await-in-loop
+    const result = await new Promise((resolve) => {
+      port.write(slice, (err) => {
+        if (err) {
+          resolve({ ok: false, error: err.message });
+          return;
+        }
+        port.drain((drainErr) => {
+          if (drainErr) {
+            resolve({ ok: false, error: drainErr.message });
+            return;
+          }
+          resolve({ ok: true, bytes: slice.length });
+        });
+      });
+    });
+    if (!result.ok) return result;
+    written += result.bytes;
+    if (offset + SERIAL_WRITE_CHUNK_SIZE < buffer.length) {
+      // eslint-disable-next-line no-await-in-loop
+      await sleepMs(SERIAL_WRITE_CHUNK_DELAY_MS);
+    }
+  }
+  return { ok: true, bytes: written };
+}
+
 ipcMain.handle('serial:write', async (_event, { path: portPath, data }) => {
   const port = openPorts.get(portPath);
   if (!port || !port.isOpen) {
     return { ok: false, error: 'Port not open' };
   }
   const buffer = Buffer.from(Array.isArray(data) ? data : []);
-  return new Promise((resolve) => {
-    port.write(buffer, (err) => {
-      if (err) {
-        resolve({ ok: false, error: err.message });
-        return;
-      }
-      port.drain((drainErr) => {
-        if (drainErr) {
-          resolve({ ok: false, error: drainErr.message });
-          return;
-        }
-        resolve({ ok: true, bytes: buffer.length });
-      });
-    });
-  });
+  return writeSerialBuffer(port, buffer);
 });
 
 ipcMain.handle('serial:setBaud', async (_event, { path: portPath, baudRate }) => {

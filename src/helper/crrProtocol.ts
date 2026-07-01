@@ -5,6 +5,19 @@ export const CRR_PACKET_TERMINATOR = 0xaa;
 export const CRR_CMD_RETURN_CODE = 0x34;
 export const CRR_CMD_SET_LC_LIST = 0x32;
 export const CRR_IDENTITY_RESPONSE = ' IDN_ 4';
+/** LabVIEW Save Parameters commit (packet 2) — CRR ack. */
+export const CRR_IDENTITY_SAVE_RESPONSE = ' IDN_ 1';
+
+export function formatCrrIdnScanLabel(asciiSlice: string): string {
+  const trimmed = asciiSlice.trim();
+  if (asciiSlice === CRR_IDENTITY_RESPONSE || trimmed === 'IDN_ 4') {
+    return `identify OK ("${CRR_IDENTITY_RESPONSE.trim()}")`;
+  }
+  if (asciiSlice === CRR_IDENTITY_SAVE_RESPONSE || trimmed === 'IDN_ 1') {
+    return `save parameters OK ("${CRR_IDENTITY_SAVE_RESPONSE.trim()}")`;
+  }
+  return `IDN_ fragment "${trimmed.slice(0, 16)}"`;
+}
 
 export type CrrS2sCell = {
   /** Hardware export socket on the CRR (0 = default RF path). */

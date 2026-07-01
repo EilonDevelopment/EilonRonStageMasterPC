@@ -101,7 +101,8 @@
     "lint": "eslint --ext .ts,.tsx src",
     "electron:install": "cd electron && npm install && npm run rebuild",
     "electron:dev": "npm run build && cd electron && npm start",
-    "electron:build": "npm run build && cd electron && npm run rebuild"
+    "electron:build": "npm run build && cd electron && npm run rebuild",
+    "electron:package": "powershell -ExecutionPolicy Bypass -File tools/package-desktop-release.ps1"
   },
   "browserslist": [
     "Chrome >=79",
