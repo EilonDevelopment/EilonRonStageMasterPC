@@ -102,6 +102,24 @@ body.dark .serial-debug-banner {
   border-color: var(--ion-color-danger);
 }
 
+.serial-debug-lv-session-field {
+  flex: 1 1 100%;
+  min-width: 280px;
+  --background: transparent;
+  --padding-start: 0;
+  --inner-padding-end: 0;
+  margin: 0;
+}
+
+.serial-debug-lv-session-field ion-input {
+  --padding-start: 8px;
+  border: 1px solid var(--ion-color-medium);
+  border-radius: 6px;
+  min-height: 36px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 11px;
+}
+
 .serial-debug-save-tests {
   padding-top: 4px;
   border-top: 1px dashed var(--ion-color-medium);
@@ -114,6 +132,31 @@ body.dark .serial-debug-banner {
 
 body.dark .serial-debug-save-tests {
   border-top-color: rgba(255, 255, 255, 0.2);
+}
+
+.serial-debug-raw-save {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--ion-color-medium);
+}
+
+.serial-debug-raw-field {
+  --background: transparent;
+  --padding-start: 0;
+  --inner-padding-end: 0;
+  margin: 0;
+}
+
+.serial-debug-raw-field ion-textarea {
+  --padding-start: 8px;
+  border: 1px solid var(--ion-color-medium);
+  border-radius: 6px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 11px;
 }
 
 .serial-debug-log {

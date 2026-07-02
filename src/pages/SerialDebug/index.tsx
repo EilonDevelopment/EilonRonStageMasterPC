@@ -16,12 +16,24 @@ import { formatCrrUsbFrameRxLog } from '../../helper/crrUsbSerialDebug';
 import { SerialDebugRxScanner } from '../../helper/crrUsbSerialDebugScan';
 import { buildCrrS2sPacket, buildCrrReturnCodePacket, formatCrrS2sPacketSummary, type CrrS2sCell } from '../../helper/crrProtocol';
 import {
-  buildLabviewSaveCommitPacketP2,
-  buildLabviewSaveConfigPacketP1,
+  buildLabviewSavePackets,
   formatLabviewSavePacketSummary,
   formatLabviewSaveTxHex,
+  formatLabviewSessionPrefix,
+  getLabviewSaveTemplateSessionPrefix,
+  isCustomLabviewSessionPrefix,
+  LABVIEW_SAVE_DEFAULT_SESSION_HEX,
   LABVIEW_SAVE_INTER_PACKET_DELAY_MS,
+  LABVIEW_SAVE_P1_SIZE,
+  LABVIEW_SAVE_P2_SIZE,
+  LABVIEW_SAVE_P1_WIRE_SIZE,
+  LABVIEW_SAVE_P2_WIRE_SIZE,
+  parseCapturedHexDump,
+  parseLabviewSessionPrefixHex,
+  toCrrWireSavePacket,
+  type LabviewSaveConfigPatch,
 } from '../../helper/crrSaveParameters';
+import { waitForCrrSaveAck } from '../../helper/crrUsbService';
 import { CrrPacketFramer } from '../../helper/prrPacketFramer';
 import {
   SERIAL_BAUD_OPTIONS,
@@ -51,6 +63,8 @@ const MAX_LOG_LINES = 500;
 /** Debug-only LC IDs for quick-test buttons. */
 const DEBUG_RF_LC_ID = 600;
 const DEFAULT_DEBUG_RS485_LC_ID = 4321;
+const LV_SESSION_STORAGE_KEY = 'serialDebug.labviewSessionPrefix';
+const DEFAULT_LV_SESSION_HEX = LABVIEW_SAVE_DEFAULT_SESSION_HEX;
 
 function parseLcIdInput(text: string): number | null {
   const trimmed = text.trim();
@@ -144,6 +158,16 @@ const SerialDebug: React.FC = () => {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [statusText, setStatusText] = useState('');
   const [saveInFlight, setSaveInFlight] = useState(false);
+  const [lvSessionInput, setLvSessionInput] = useState(() => {
+    try {
+      return localStorage.getItem(LV_SESSION_STORAGE_KEY) ?? DEFAULT_LV_SESSION_HEX;
+    } catch {
+      return DEFAULT_LV_SESSION_HEX;
+    }
+  });
+  const [skipIdentifyBeforeSave, setSkipIdentifyBeforeSave] = useState(true);
+  const [rawP1Hex, setRawP1Hex] = useState('');
+  const [rawP2Hex, setRawP2Hex] = useState('');
   const logIdRef = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
   const activePortRef = useRef('');
@@ -153,6 +177,25 @@ const SerialDebug: React.FC = () => {
   const saveRxWatchUntilRef = useRef(0);
 
   const rs485LcId = useMemo(() => parseLcIdInput(rs485LcIdInput), [rs485LcIdInput]);
+
+  const lvSessionPrefix = useMemo(() => parseLabviewSessionPrefixHex(lvSessionInput), [lvSessionInput]);
+
+  const buildSavePatch = useCallback((): LabviewSaveConfigPatch => {
+    const trimmed = lvSessionInput.trim();
+    if (!trimmed) return {};
+    if (!lvSessionPrefix) return {};
+    return { sessionPrefix16: lvSessionPrefix };
+  }, [lvSessionInput, lvSessionPrefix]);
+
+  const usesCustomSession = useMemo(
+    () => isCustomLabviewSessionPrefix(lvSessionPrefix),
+    [lvSessionPrefix],
+  );
+
+  const buildSavePackets = useCallback(() => {
+    const patch = buildSavePatch();
+    return buildLabviewSavePackets(patch);
+  }, [buildSavePatch]);
 
   const pushLine = useCallback((dir: LogLine['dir'], text: string) => {
     logIdRef.current += 1;
@@ -338,13 +381,26 @@ const SerialDebug: React.FC = () => {
   };
 
   const handleSendSaveP1 = async () => {
-    const p1 = buildLabviewSaveConfigPacketP1();
+    if (lvSessionInput.trim() && !lvSessionPrefix) {
+      pushLine('SYS', t('SerialDebug.SaveSessionInvalid'));
+      return;
+    }
+    if (usesCustomSession) {
+      pushLine('SYS', t('SerialDebug.SaveSessionTemplateWarn'));
+    }
+    const { p1 } = buildSavePackets();
     await handleSendBytes(p1, formatLabviewSavePacketSummary('P1', p1), 'SerialDebug.SaveP1Hint');
   };
 
   const handleSendSaveP2 = async () => {
-    const p1 = buildLabviewSaveConfigPacketP1();
-    const p2 = buildLabviewSaveCommitPacketP2(p1);
+    if (lvSessionInput.trim() && !lvSessionPrefix) {
+      pushLine('SYS', t('SerialDebug.SaveSessionInvalid'));
+      return;
+    }
+    if (usesCustomSession) {
+      pushLine('SYS', t('SerialDebug.SaveSessionTemplateWarn'));
+    }
+    const { p2 } = buildSavePackets();
     await handleSendBytes(p2, formatLabviewSavePacketSummary('P2', p2), 'SerialDebug.SaveP2Hint');
   };
 
@@ -354,16 +410,51 @@ const SerialDebug: React.FC = () => {
       if (!port || !connected) pushLine('SYS', t('SerialDebug.SendNeedsConnection'));
       return;
     }
+    if (lvSessionInput.trim() && !lvSessionPrefix) {
+      pushLine('SYS', t('SerialDebug.SaveSessionInvalid'));
+      return;
+    }
     setSaveInFlight(true);
     saveRxWatchUntilRef.current = Date.now() + 8000;
     try {
-      const p1 = buildLabviewSaveConfigPacketP1();
-      const p2 = buildLabviewSaveCommitPacketP2(p1);
-      pushLine('SYS', t('SerialDebug.SaveFullStart'));
+      pushLine('SYS', skipIdentifyBeforeSave ? t('SerialDebug.SaveFullStartNoIdn') : t('SerialDebug.SaveFullStart'));
+      const sessionHex = lvSessionPrefix
+        ? formatLabviewSessionPrefix(lvSessionPrefix)
+        : formatLabviewSessionPrefix(getLabviewSaveTemplateSessionPrefix());
+      pushLine('SYS', t('SerialDebug.SaveSessionUsing', { hex: sessionHex }));
+      if (usesCustomSession) {
+        pushLine('SYS', t('SerialDebug.SaveSessionTemplateWarn'));
+      }
+      try {
+        localStorage.setItem(LV_SESSION_STORAGE_KEY, lvSessionInput.trim());
+      } catch {
+        /* ignore */
+      }
+
+      if (skipIdentifyBeforeSave) {
+        const { p1, p2 } = buildSavePackets();
+        const ok1 = await handleSendBytes(p1, formatLabviewSavePacketSummary('P1', p1), 'SerialDebug.SaveP1Hint');
+        if (!ok1) return;
+        pushLine('SYS', t('SerialDebug.SaveP1Wait', { ms: LABVIEW_SAVE_INTER_PACKET_DELAY_MS }));
+        await sleep(LABVIEW_SAVE_INTER_PACKET_DELAY_MS);
+        const ok2 = await handleSendBytes(p2, formatLabviewSavePacketSummary('P2', p2), 'SerialDebug.SaveP2Hint');
+        if (!ok2) return;
+        pushLine('SYS', t('SerialDebug.SaveFullWaitIdn'));
+        const ack = await waitForCrrSaveAck(port);
+        if (ack) {
+          pushLine('SYS', t('SerialDebug.SaveAckReceived'));
+        } else {
+          pushLine('SYS', t('SerialDebug.SaveNoAck'));
+        }
+        return;
+      }
+
+      pushLine('SYS', t('SerialDebug.SaveIdentifyWarn'));
       pushLine('SYS', t('SerialDebug.SaveIdentifyFirst'));
       const idPkt = buildCrrReturnCodePacket();
       await handleSendBytes(idPkt, 'Identify 0x34 (pre-save)');
       await sleep(400);
+      const { p1, p2 } = buildSavePackets();
       const ok1 = await handleSendBytes(p1, formatLabviewSavePacketSummary('P1', p1), 'SerialDebug.SaveP1Hint');
       if (!ok1) return;
       pushLine('SYS', t('SerialDebug.SaveP1Wait', { ms: LABVIEW_SAVE_INTER_PACKET_DELAY_MS }));
@@ -371,6 +462,64 @@ const SerialDebug: React.FC = () => {
       const ok2 = await handleSendBytes(p2, formatLabviewSavePacketSummary('P2', p2), 'SerialDebug.SaveP2Hint');
       if (ok2) {
         pushLine('SYS', t('SerialDebug.SaveFullWaitIdn'));
+      }
+    } finally {
+      setSaveInFlight(false);
+    }
+  };
+
+  const handleReplayRawSave = async () => {
+    const port = activePortRef.current || selectedPort;
+    if (!port || !connected || saveInFlight) {
+      if (!port || !connected) pushLine('SYS', t('SerialDebug.SendNeedsConnection'));
+      return;
+    }
+    if (!rawP1Hex.trim() || !rawP2Hex.trim()) {
+      pushLine('SYS', t('SerialDebug.SaveRawEmpty'));
+      return;
+    }
+    const rawP1 = parseCapturedHexDump(rawP1Hex);
+    if (!rawP1) {
+      pushLine('SYS', t('SerialDebug.SaveRawInvalid', { which: 'P1' }));
+      return;
+    }
+    const rawP2 = parseCapturedHexDump(rawP2Hex);
+    if (!rawP2) {
+      pushLine('SYS', t('SerialDebug.SaveRawInvalid', { which: 'P2' }));
+      return;
+    }
+    // Auto-strip the USB transport header when a full LabVIEW capture is pasted.
+    const p1Bytes = rawP1.length >= LABVIEW_SAVE_P1_SIZE ? toCrrWireSavePacket(rawP1) : rawP1;
+    const p2Bytes = rawP2.length >= LABVIEW_SAVE_P2_SIZE ? toCrrWireSavePacket(rawP2) : rawP2;
+    if (p1Bytes.length !== rawP1.length) {
+      pushLine('SYS', t('SerialDebug.SaveRawStripped', { which: 'P1', from: rawP1.length, to: p1Bytes.length }));
+    }
+    if (p2Bytes.length !== rawP2.length) {
+      pushLine('SYS', t('SerialDebug.SaveRawStripped', { which: 'P2', from: rawP2.length, to: p2Bytes.length }));
+    }
+    if (p1Bytes.length !== LABVIEW_SAVE_P1_WIRE_SIZE) {
+      pushLine('SYS', t('SerialDebug.SaveRawSizeWarn', { which: 'P1', got: p1Bytes.length, expected: LABVIEW_SAVE_P1_WIRE_SIZE }));
+    }
+    if (p2Bytes.length !== LABVIEW_SAVE_P2_WIRE_SIZE) {
+      pushLine('SYS', t('SerialDebug.SaveRawSizeWarn', { which: 'P2', got: p2Bytes.length, expected: LABVIEW_SAVE_P2_WIRE_SIZE }));
+    }
+    setSaveInFlight(true);
+    saveRxWatchUntilRef.current = Date.now() + 8000;
+    try {
+      pushLine('SYS', t('SerialDebug.SaveRawStart', { p1: p1Bytes.length, p2: p2Bytes.length }));
+      const ok1 = await handleSendBytes(p1Bytes, `Raw P1 (${p1Bytes.length} B)`, 'SerialDebug.SaveRawP1Sent');
+      if (!ok1) return;
+      pushLine('SYS', t('SerialDebug.SaveP1Wait', { ms: LABVIEW_SAVE_INTER_PACKET_DELAY_MS }));
+      await sleep(LABVIEW_SAVE_INTER_PACKET_DELAY_MS);
+      const ok2 = await handleSendBytes(p2Bytes, `Raw P2 (${p2Bytes.length} B)`, 'SerialDebug.SaveRawP2Sent');
+      if (ok2) {
+        pushLine('SYS', t('SerialDebug.SaveFullWaitIdn'));
+        const ack = await waitForCrrSaveAck(port);
+        if (ack) {
+          pushLine('SYS', t('SerialDebug.SaveAckReceived'));
+        } else {
+          pushLine('SYS', t('SerialDebug.SaveNoAck'));
+        }
       }
     } finally {
       setSaveInFlight(false);
@@ -605,6 +754,68 @@ const SerialDebug: React.FC = () => {
           >
             {t('SerialDebug.SaveFull')}
           </IonButton>
+          <IonItem lines="none" className="serial-debug-lv-session-field">
+            <IonLabel position="stacked">{t('SerialDebug.SaveSessionLabel')}</IonLabel>
+            <IonInput
+              legacy
+              value={lvSessionInput}
+              placeholder={t('SerialDebug.SaveSessionPlaceholder')}
+              onIonInput={(e) => setLvSessionInput(String(e.detail.value ?? ''))}
+            />
+          </IonItem>
+          <IonButton
+            size="small"
+            fill="outline"
+            color="medium"
+            onClick={() => {
+              setLvSessionInput('');
+              pushLine('SYS', t('SerialDebug.SaveSessionUsing', {
+                hex: formatLabviewSessionPrefix(getLabviewSaveTemplateSessionPrefix()),
+              }));
+            }}
+          >
+            {t('SerialDebug.SaveSessionReset')}
+          </IonButton>
+          <IonItem lines="none">
+            <IonCheckbox
+              legacy
+              checked={skipIdentifyBeforeSave}
+              onIonChange={(e) => setSkipIdentifyBeforeSave(!!e.detail.checked)}
+            />
+            <IonLabel className="ion-padding-start">{t('SerialDebug.SaveSkipIdentify')}</IonLabel>
+          </IonItem>
+
+          <div className="serial-debug-raw-save">
+            <span className="serial-debug-quick-label">{t('SerialDebug.SaveRawLabel')}</span>
+            <IonItem lines="none" className="serial-debug-raw-field">
+              <IonLabel position="stacked">{t('SerialDebug.SaveRawP1Label')}</IonLabel>
+              <IonTextarea
+                legacy
+                value={rawP1Hex}
+                rows={3}
+                placeholder={t('SerialDebug.SaveRawP1Placeholder')}
+                onIonInput={(e) => setRawP1Hex(String(e.detail.value ?? ''))}
+              />
+            </IonItem>
+            <IonItem lines="none" className="serial-debug-raw-field">
+              <IonLabel position="stacked">{t('SerialDebug.SaveRawP2Label')}</IonLabel>
+              <IonTextarea
+                legacy
+                value={rawP2Hex}
+                rows={3}
+                placeholder={t('SerialDebug.SaveRawP2Placeholder')}
+                onIonInput={(e) => setRawP2Hex(String(e.detail.value ?? ''))}
+              />
+            </IonItem>
+            <IonButton
+              size="small"
+              color="danger"
+              disabled={!connected || saveInFlight || !rawP1Hex.trim() || !rawP2Hex.trim()}
+              onClick={() => { void handleReplayRawSave(); }}
+            >
+              {t('SerialDebug.SaveRawReplay')}
+            </IonButton>
+          </div>
         </div>
 
         <div className="serial-debug-log" aria-label="serial log">

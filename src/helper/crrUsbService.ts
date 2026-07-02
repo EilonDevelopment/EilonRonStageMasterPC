@@ -4,10 +4,16 @@ import { isRs485Lc } from './lcLinkType';
 import type { ILC } from './types';
 import {
   bufferContainsCrrIdentity,
+  bufferContainsCrrSaveAck,
   buildCrrReturnCodePacket,
   buildCrrS2sPacket,
   CrrS2sCell,
 } from './crrProtocol';
+import {
+  buildLabviewSavePackets,
+  LABVIEW_SAVE_INTER_PACKET_DELAY_MS,
+  type LabviewSaveConfigPatch,
+} from './crrSaveParameters';
 import type { SerialPortInfo } from './usbSerialBridge';
 import {
   disconnectUsbSerial,
@@ -17,6 +23,8 @@ import {
 
 const CRR_IDENTIFY_TIMEOUT_MS = 3000;
 const CRR_IDENTIFY_POLL_MS = 40;
+const CRR_SAVE_ACK_TIMEOUT_MS = 8000;
+const CRR_SAVE_ACK_POLL_MS = 40;
 
 let verifiedCrrPort: string | null = null;
 let syncHandler: (() => Promise<void>) | null = null;
@@ -168,6 +176,71 @@ export async function sendCrrS2sList(
   const wired = wiredCells.filter((c) => Number.isFinite(c.id) && c.id > 0);
   const packet = buildCrrS2sPacket(primary, wired);
   return writeUsbSerial(portPath, packet);
+}
+
+export type LabviewSaveResult = {
+  ok: boolean;
+  ack: boolean;
+  error?: string;
+};
+
+/**
+ * LabVIEW Save Parameters to CRR — P1 config then P2 commit.
+ * Do NOT send identify 0x34 before save (CRR ignores commit after identify).
+ */
+export async function sendLabviewSaveToCrr(
+  portPath: string,
+  patch?: LabviewSaveConfigPatch,
+  options?: { waitForAckMs?: number },
+): Promise<LabviewSaveResult> {
+  ensureRxListener();
+  clearRx(portPath);
+
+  const { p1, p2 } = buildLabviewSavePackets(patch);
+  const p1Result = await writeUsbSerial(portPath, p1);
+  if (!p1Result.ok) {
+    return { ok: false, ack: false, error: p1Result.error };
+  }
+
+  await sleep(LABVIEW_SAVE_INTER_PACKET_DELAY_MS);
+
+  const p2Result = await writeUsbSerial(portPath, p2);
+  if (!p2Result.ok) {
+    return { ok: false, ack: false, error: p2Result.error };
+  }
+
+  const waitMs = options?.waitForAckMs ?? CRR_SAVE_ACK_TIMEOUT_MS;
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    const merged = mergedRx(portPath);
+    if (merged.length > 0 && bufferContainsCrrSaveAck(merged)) {
+      clearRx(portPath);
+      return { ok: true, ack: true };
+    }
+    await sleep(CRR_SAVE_ACK_POLL_MS);
+  }
+
+  clearRx(portPath);
+  return { ok: true, ack: false };
+}
+
+/** Wait for LabVIEW save commit ack (` IDN_ 1`) after P2 has been sent. */
+export async function waitForCrrSaveAck(
+  portPath: string,
+  timeoutMs = CRR_SAVE_ACK_TIMEOUT_MS,
+): Promise<boolean> {
+  ensureRxListener();
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const merged = mergedRx(portPath);
+    if (merged.length > 0 && bufferContainsCrrSaveAck(merged)) {
+      clearRx(portPath);
+      return true;
+    }
+    await sleep(CRR_SAVE_ACK_POLL_MS);
+  }
+  clearRx(portPath);
+  return false;
 }
 
 export async function disconnectCrrUsb(portPath: string): Promise<void> {

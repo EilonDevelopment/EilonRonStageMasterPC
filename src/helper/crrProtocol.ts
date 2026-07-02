@@ -84,3 +84,7 @@ export function bytesToAscii(data: Uint8Array): string {
 export function bufferContainsCrrIdentity(data: Uint8Array): boolean {
   return bytesToAscii(data).includes(CRR_IDENTITY_RESPONSE);
 }
+
+export function bufferContainsCrrSaveAck(data: Uint8Array): boolean {
+  return bytesToAscii(data).includes(CRR_IDENTITY_SAVE_RESPONSE);
+}
