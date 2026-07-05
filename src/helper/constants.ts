@@ -12,6 +12,7 @@ const ROUTES = {
   Totalizer: '/totalizer',
   Document: '/document',
   SerialDebug: '/serial-debug',
+  CrrSettings: '/crr-settings',
   // StressTest: '/stress-test',
 };
 
@@ -29,6 +30,7 @@ const MENUS = {
   Totalizer: "Totalizer",
   Document: "Document",
   SerialDebug: "SerialDebug",
+  CrrSettings: "CrrSettings",
 }
 
 const ModalMenus = [

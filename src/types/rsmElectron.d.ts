@@ -30,7 +30,11 @@ interface RsmElectronApi {
   >;
   connectSerial(path: string, baudRate?: number): Promise<{ ok: boolean; error?: string; baudRate?: number }>;
   disconnectSerial(path: string): Promise<{ ok: boolean }>;
-  writeSerial(path: string, data: number[]): Promise<{ ok: boolean; error?: string; bytes?: number }>;
+  writeSerial(
+    path: string,
+    data: number[],
+    options?: { atomic?: boolean },
+  ): Promise<{ ok: boolean; error?: string; bytes?: number }>;
   setSerialBaud(path: string, baudRate: number): Promise<{ ok: boolean; error?: string; baudRate?: number }>;
   getSerialStatus(): Promise<{ open: SerialOpenPortStatus[] }>;
   onSerialData(callback: (payload: SerialDataPayload) => void): () => void;

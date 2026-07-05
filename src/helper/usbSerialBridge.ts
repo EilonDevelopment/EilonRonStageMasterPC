@@ -121,10 +121,19 @@ export function subscribeUsbSerialError(handler: SerialErrorHandler): () => void
   };
 }
 
-export async function writeUsbSerial(portPath: string, data: Uint8Array): Promise<{ ok: boolean; error?: string }> {
+export type UsbSerialWriteOptions = {
+  /** One contiguous FTDI write+drain (required for CRR save ~5.5 kB blobs). */
+  atomic?: boolean;
+};
+
+export async function writeUsbSerial(
+  portPath: string,
+  data: Uint8Array,
+  options?: UsbSerialWriteOptions,
+): Promise<{ ok: boolean; error?: string; bytes?: number }> {
   const bridge = api();
   if (!bridge) return { ok: false, error: 'USB serial is only available in the desktop app.' };
-  return bridge.writeSerial(portPath, Array.from(data));
+  return bridge.writeSerial(portPath, Array.from(data), options);
 }
 
 export async function setUsbSerialBaud(

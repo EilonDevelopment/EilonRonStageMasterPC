@@ -86,5 +86,10 @@ export function bufferContainsCrrIdentity(data: Uint8Array): boolean {
 }
 
 export function bufferContainsCrrSaveAck(data: Uint8Array): boolean {
-  return bytesToAscii(data).includes(CRR_IDENTITY_SAVE_RESPONSE);
+  if (bytesToAscii(data).includes(CRR_IDENTITY_SAVE_RESPONSE)) return true;
+  const pattern = [0x20, 0x49, 0x44, 0x4e, 0x5f, 0x20, 0x31];
+  for (let i = 0; i <= data.length - pattern.length; i += 1) {
+    if (pattern.every((b, j) => data[i + j] === b)) return true;
+  }
+  return false;
 }

@@ -12,6 +12,8 @@
  *     reaches the CRR, which is why overriding it never changed the result.
  */
 import { CRR_PACKET_TERMINATOR } from './crrProtocol';
+import type { CrrSettingsConfig } from './crrSettingsModel';
+import { buildCrrLogicalConfigPacket, buildCrrSettingsWirePackets } from './crrSettingsModel';
 import { LABVIEW_SAVE_CAPTURE3_P1 } from './labviewSaveCapture3';
 
 /** Full LabVIEW/USB capture sizes (transport header + CRR packet). */
@@ -151,15 +153,16 @@ function applyChannelPatch(pkt: Uint8Array, channel: number): void {
 
 /** Build P1 from Wireshark CAP3 template with optional session/channel/power patches. */
 export function buildLabviewSaveConfigPacketP1(patch?: LabviewSaveConfigPatch): Uint8Array {
+  const simplePatch = patch;
   const pkt = new Uint8Array(LABVIEW_SAVE_CAPTURE3_P1);
 
-  if (patch?.channel != null) {
-    applyChannelPatch(pkt, patch.channel);
+  if (simplePatch?.channel != null) {
+    applyChannelPatch(pkt, simplePatch.channel);
   }
-  if (patch?.powerIndex != null) {
-    pkt[0x38] = patch.powerIndex & 0xff;
+  if (simplePatch?.powerIndex != null) {
+    pkt[0x38] = simplePatch.powerIndex & 0xff;
   }
-  applySessionPrefix(pkt, patch?.sessionPrefix16);
+  applySessionPrefix(pkt, simplePatch?.sessionPrefix16);
 
   return pkt;
 }
@@ -202,17 +205,40 @@ export function toCrrWireSavePacket(fullCapture: Uint8Array): Uint8Array {
 }
 
 /** Build both save packets as FULL captures (with transport header) — for inspection. */
-export function buildLabviewSaveFullPackets(patch?: LabviewSaveConfigPatch): LabviewSavePackets {
+export function buildLabviewSaveFullPackets(patch?: LabviewSaveConfigPatch | CrrSettingsConfig): LabviewSavePackets {
+  if (patch && 'slots' in patch) {
+    const { p1, p2 } = buildCrrSettingsWirePackets(patch);
+    return { p1, p2 };
+  }
   const p1 = buildLabviewSaveConfigPacketP1(patch);
-  const p2 = buildLabviewSaveCommitPacketP2(p1, patch?.sessionPrefix16);
+  const sessionPrefix = patch && 'sessionPrefix16' in patch ? patch.sessionPrefix16 : undefined;
+  const p2 = buildLabviewSaveCommitPacketP2(p1, sessionPrefix);
   return { p1, p2 };
 }
 
 /**
- * Build the CRR wire packets actually sent over the serial port (transport header
- * stripped). This is the form the CRR acknowledges with " IDN_ 1".
+ * Single contiguous CRR save blob for the serial port (5525 B = P1 wire + P2 wire).
+ * LabVIEW sends this as one USB transfer; the CRR expects one continuous stream.
  */
-export function buildLabviewSavePackets(patch?: LabviewSaveConfigPatch): LabviewSavePackets {
+export function buildLabviewSaveWireBlob(patch?: LabviewSaveConfigPatch | CrrSettingsConfig): Uint8Array {
+  if (patch && 'slots' in patch) {
+    return buildCrrLogicalConfigPacket(patch);
+  }
+  const { p1, p2 } = buildLabviewSavePackets(patch);
+  const blob = new Uint8Array(p1.length + p2.length);
+  blob.set(p1, 0);
+  blob.set(p2, p1.length);
+  return blob;
+}
+
+/**
+ * Build the CRR wire packets actually sent over the serial port (transport header
+ * stripped). Prefer {@link buildLabviewSaveWireBlob} for TX — send as one atomic write.
+ */
+export function buildLabviewSavePackets(patch?: LabviewSaveConfigPatch | CrrSettingsConfig): LabviewSavePackets {
+  if (patch && 'slots' in patch) {
+    return buildCrrSettingsWirePackets(patch);
+  }
   const { p1, p2 } = buildLabviewSaveFullPackets(patch);
   return {
     p1: toCrrWireSavePacket(p1),

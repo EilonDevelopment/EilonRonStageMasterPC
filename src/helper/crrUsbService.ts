@@ -10,10 +10,10 @@ import {
   CrrS2sCell,
 } from './crrProtocol';
 import {
-  buildLabviewSavePackets,
-  LABVIEW_SAVE_INTER_PACKET_DELAY_MS,
+  buildLabviewSaveWireBlob,
   type LabviewSaveConfigPatch,
 } from './crrSaveParameters';
+import type { CrrSettingsConfig } from './crrSettingsModel';
 import type { SerialPortInfo } from './usbSerialBridge';
 import {
   disconnectUsbSerial,
@@ -40,7 +40,7 @@ function sleep(ms: number): Promise<void> {
 function appendRx(portPath: string, chunk: Uint8Array): void {
   const list = rxByPort.get(portPath) ?? [];
   list.push(chunk);
-  while (list.length > 32) {
+  while (list.length > 128) {
     list.shift();
   }
   rxByPort.set(portPath, list);
@@ -185,28 +185,21 @@ export type LabviewSaveResult = {
 };
 
 /**
- * LabVIEW Save Parameters to CRR — P1 config then P2 commit.
+ * LabVIEW Save Parameters to CRR — one contiguous ~5525 B wire blob (P1+P2).
  * Do NOT send identify 0x34 before save (CRR ignores commit after identify).
  */
 export async function sendLabviewSaveToCrr(
   portPath: string,
-  patch?: LabviewSaveConfigPatch,
+  patch?: LabviewSaveConfigPatch | CrrSettingsConfig,
   options?: { waitForAckMs?: number },
 ): Promise<LabviewSaveResult> {
   ensureRxListener();
   clearRx(portPath);
 
-  const { p1, p2 } = buildLabviewSavePackets(patch);
-  const p1Result = await writeUsbSerial(portPath, p1);
-  if (!p1Result.ok) {
-    return { ok: false, ack: false, error: p1Result.error };
-  }
-
-  await sleep(LABVIEW_SAVE_INTER_PACKET_DELAY_MS);
-
-  const p2Result = await writeUsbSerial(portPath, p2);
-  if (!p2Result.ok) {
-    return { ok: false, ack: false, error: p2Result.error };
+  const blob = buildLabviewSaveWireBlob(patch);
+  const writeResult = await writeUsbSerial(portPath, blob, { atomic: true });
+  if (!writeResult.ok) {
+    return { ok: false, ack: false, error: writeResult.error };
   }
 
   const waitMs = options?.waitForAckMs ?? CRR_SAVE_ACK_TIMEOUT_MS;

@@ -244,23 +244,28 @@ function sleepMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function writeSerialBuffer(port, buffer) {
-  if (buffer.length <= SERIAL_WRITE_CHUNK_SIZE) {
-    return new Promise((resolve) => {
-      port.write(buffer, (err) => {
-        if (err) {
-          resolve({ ok: false, error: err.message });
+async function writeSerialBufferOnce(port, buffer) {
+  return new Promise((resolve) => {
+    port.write(buffer, (err) => {
+      if (err) {
+        resolve({ ok: false, error: err.message });
+        return;
+      }
+      port.drain((drainErr) => {
+        if (drainErr) {
+          resolve({ ok: false, error: drainErr.message });
           return;
         }
-        port.drain((drainErr) => {
-          if (drainErr) {
-            resolve({ ok: false, error: drainErr.message });
-            return;
-          }
-          resolve({ ok: true, bytes: buffer.length });
-        });
+        resolve({ ok: true, bytes: buffer.length });
       });
     });
+  });
+}
+
+async function writeSerialBuffer(port, buffer, options = {}) {
+  const atomic = options.atomic === true;
+  if (atomic || buffer.length <= SERIAL_WRITE_CHUNK_SIZE) {
+    return writeSerialBufferOnce(port, buffer);
   }
 
   let written = 0;
@@ -292,13 +297,13 @@ async function writeSerialBuffer(port, buffer) {
   return { ok: true, bytes: written };
 }
 
-ipcMain.handle('serial:write', async (_event, { path: portPath, data }) => {
+ipcMain.handle('serial:write', async (_event, { path: portPath, data, atomic }) => {
   const port = openPorts.get(portPath);
   if (!port || !port.isOpen) {
     return { ok: false, error: 'Port not open' };
   }
   const buffer = Buffer.from(Array.isArray(data) ? data : []);
-  return writeSerialBuffer(port, buffer);
+  return writeSerialBuffer(port, buffer, { atomic: atomic === true });
 });
 
 ipcMain.handle('serial:setBaud', async (_event, { path: portPath, baudRate }) => {

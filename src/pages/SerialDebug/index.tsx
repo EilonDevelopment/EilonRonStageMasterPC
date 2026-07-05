@@ -17,6 +17,7 @@ import { SerialDebugRxScanner } from '../../helper/crrUsbSerialDebugScan';
 import { buildCrrS2sPacket, buildCrrReturnCodePacket, formatCrrS2sPacketSummary, type CrrS2sCell } from '../../helper/crrProtocol';
 import {
   buildLabviewSavePackets,
+  buildLabviewSaveWireBlob,
   formatLabviewSavePacketSummary,
   formatLabviewSaveTxHex,
   formatLabviewSessionPrefix,
@@ -362,13 +363,14 @@ const SerialDebug: React.FC = () => {
     summary: string,
     sysHintKey?: string,
     sysHintParams?: Record<string, string | number>,
+    atomic = false,
   ) => {
     const port = activePortRef.current || selectedPort;
     if (!port || !connected) {
       pushLine('SYS', t('SerialDebug.SendNeedsConnection'));
       return false;
     }
-    const result = await writeUsbSerial(port, payload);
+    const result = await writeUsbSerial(port, payload, { atomic });
     if (!result.ok) {
       pushLine('SYS', result.error || t('SerialDebug.SendFailed'));
       return false;
@@ -432,13 +434,15 @@ const SerialDebug: React.FC = () => {
       }
 
       if (skipIdentifyBeforeSave) {
-        const { p1, p2 } = buildSavePackets();
-        const ok1 = await handleSendBytes(p1, formatLabviewSavePacketSummary('P1', p1), 'SerialDebug.SaveP1Hint');
-        if (!ok1) return;
-        pushLine('SYS', t('SerialDebug.SaveP1Wait', { ms: LABVIEW_SAVE_INTER_PACKET_DELAY_MS }));
-        await sleep(LABVIEW_SAVE_INTER_PACKET_DELAY_MS);
-        const ok2 = await handleSendBytes(p2, formatLabviewSavePacketSummary('P2', p2), 'SerialDebug.SaveP2Hint');
-        if (!ok2) return;
+        const blob = buildLabviewSaveWireBlob(buildSavePatch());
+        const ok = await handleSendBytes(
+          blob,
+          `Save full blob (${blob.length} B, atomic)`,
+          'SerialDebug.SaveFullStartNoIdn',
+          undefined,
+          true,
+        );
+        if (!ok) return;
         pushLine('SYS', t('SerialDebug.SaveFullWaitIdn'));
         const ack = await waitForCrrSaveAck(port);
         if (ack) {
@@ -454,13 +458,15 @@ const SerialDebug: React.FC = () => {
       const idPkt = buildCrrReturnCodePacket();
       await handleSendBytes(idPkt, 'Identify 0x34 (pre-save)');
       await sleep(400);
-      const { p1, p2 } = buildSavePackets();
-      const ok1 = await handleSendBytes(p1, formatLabviewSavePacketSummary('P1', p1), 'SerialDebug.SaveP1Hint');
-      if (!ok1) return;
-      pushLine('SYS', t('SerialDebug.SaveP1Wait', { ms: LABVIEW_SAVE_INTER_PACKET_DELAY_MS }));
-      await sleep(LABVIEW_SAVE_INTER_PACKET_DELAY_MS);
-      const ok2 = await handleSendBytes(p2, formatLabviewSavePacketSummary('P2', p2), 'SerialDebug.SaveP2Hint');
-      if (ok2) {
+      const blob = buildLabviewSaveWireBlob(buildSavePatch());
+      const ok = await handleSendBytes(
+        blob,
+        `Save full blob (${blob.length} B, atomic)`,
+        undefined,
+        undefined,
+        true,
+      );
+      if (ok) {
         pushLine('SYS', t('SerialDebug.SaveFullWaitIdn'));
       }
     } finally {
@@ -507,19 +513,23 @@ const SerialDebug: React.FC = () => {
     saveRxWatchUntilRef.current = Date.now() + 8000;
     try {
       pushLine('SYS', t('SerialDebug.SaveRawStart', { p1: p1Bytes.length, p2: p2Bytes.length }));
-      const ok1 = await handleSendBytes(p1Bytes, `Raw P1 (${p1Bytes.length} B)`, 'SerialDebug.SaveRawP1Sent');
-      if (!ok1) return;
-      pushLine('SYS', t('SerialDebug.SaveP1Wait', { ms: LABVIEW_SAVE_INTER_PACKET_DELAY_MS }));
-      await sleep(LABVIEW_SAVE_INTER_PACKET_DELAY_MS);
-      const ok2 = await handleSendBytes(p2Bytes, `Raw P2 (${p2Bytes.length} B)`, 'SerialDebug.SaveRawP2Sent');
-      if (ok2) {
-        pushLine('SYS', t('SerialDebug.SaveFullWaitIdn'));
-        const ack = await waitForCrrSaveAck(port);
-        if (ack) {
-          pushLine('SYS', t('SerialDebug.SaveAckReceived'));
-        } else {
-          pushLine('SYS', t('SerialDebug.SaveNoAck'));
-        }
+      const blob = new Uint8Array(p1Bytes.length + p2Bytes.length);
+      blob.set(p1Bytes, 0);
+      blob.set(p2Bytes, p1Bytes.length);
+      const ok = await handleSendBytes(
+        blob,
+        `Raw save blob (${blob.length} B, atomic)`,
+        'SerialDebug.SaveRawP2Sent',
+        undefined,
+        true,
+      );
+      if (!ok) return;
+      pushLine('SYS', t('SerialDebug.SaveFullWaitIdn'));
+      const ack = await waitForCrrSaveAck(port);
+      if (ack) {
+        pushLine('SYS', t('SerialDebug.SaveAckReceived'));
+      } else {
+        pushLine('SYS', t('SerialDebug.SaveNoAck'));
       }
     } finally {
       setSaveInFlight(false);

@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld('rsmElectron', {
   listSerialPorts: () => ipcRenderer.invoke('serial:list'),
   connectSerial: (path, baudRate) => ipcRenderer.invoke('serial:connect', { path, baudRate }),
   disconnectSerial: (path) => ipcRenderer.invoke('serial:disconnect', { path }),
-  writeSerial: (path, data) => ipcRenderer.invoke('serial:write', { path, data }),
+  writeSerial: (path, data, options) => ipcRenderer.invoke('serial:write', { path, data, atomic: options?.atomic === true }),
   setSerialBaud: (path, baudRate) => ipcRenderer.invoke('serial:setBaud', { path, baudRate }),
   getSerialStatus: () => ipcRenderer.invoke('serial:status'),
   onSerialData: (callback) => {

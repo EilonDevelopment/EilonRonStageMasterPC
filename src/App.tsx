@@ -29,6 +29,7 @@ import Settings from "./pages/Settings";
 import Monitor from "./pages/Monitor";
 import Report from "./pages/Reports";
 import SerialDebug from "./pages/SerialDebug";
+import CrrSettings from "./pages/CrrSettings";
 import { db, dbReady } from "./db";
 import { ensureCrrUsbPipeline } from "./helper/crrUsbPipeline";
 import { installCrrUsbDebugConsole } from "./helper/crrUsbRuntime";
@@ -227,6 +228,7 @@ const App: React.FC = () => {
             <Route path={ROUTES.Settings} exact={true} render={() => <Settings />} />
             <Route path={ROUTES.Reports} exact={true} render={() => <Report />} />
             <Route path={ROUTES.SerialDebug} exact={true} render={() => <SerialDebug />} />
+            <Route path={ROUTES.CrrSettings} exact={true} render={() => <CrrSettings />} />
             <Route path={ROUTES.ConnectDevice} exact={true} render={() => <Empty />} />
             <Route path={ROUTES.Totalizer} exact={true} render={() => <Empty />} />
             <Route path={ROUTES.Document} exact={true} render={() => <Empty />} />

@@ -27,6 +27,7 @@ import {
   tvOutline,
   mailOutline,
   codeSlashOutline,
+  hardwareChipOutline,
 } from 'ionicons/icons';
 import { MENUS, ModalMenus, ModalNames, ROUTES } from '../helper/constants';
 
@@ -96,6 +97,14 @@ const appPages: AppPage[] = [
     iosIcon: bluetoothOutline,
     mdIcon: bluetoothOutline,
     imgIcon: connectMenuIcon,
+  },
+  {
+    title: MENUS.CrrSettings,
+    url: ROUTES.CrrSettings,
+    iosIcon: hardwareChipOutline,
+    mdIcon: hardwareChipOutline,
+    imgIcon: settingsMenuIcon,
+    desktopOnly: true,
   },
   {
     title: MENUS.SerialDebug,
