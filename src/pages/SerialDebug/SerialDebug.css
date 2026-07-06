@@ -1,18 +1,12 @@
 .serial-debug-layout {
-  flex: 1;
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-  padding: 12px 16px;
+  padding: 12px 16px 24px;
 }
 
 .serial-debug-page {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
+  gap: 8px;
+  min-height: min-content;
 }
 
 .serial-debug-banner {
@@ -160,9 +154,9 @@ body.dark .serial-debug-save-tests {
 }
 
 .serial-debug-log {
-  flex: 1;
   min-height: 160px;
-  overflow: auto;
+  max-height: 42vh;
+  overflow-y: auto;
   border: 1px solid var(--ion-color-medium);
   border-radius: 8px;
   background: #111;

@@ -16,6 +16,7 @@ import {
   LABVIEW_SAVE_P1_WIRE_SIZE,
   LABVIEW_SAVE_P2_WIRE_SIZE,
 } from './crrSaveParameters';
+import { calcCrrNibbleChecksum } from './crrProtocol';
 
 /** Dropdown index written as the first byte of each Addr slot (Example explained). */
 export const CRR_MODULE_TYPE_INDEX = {
@@ -175,17 +176,21 @@ function writeHeader(pkt: Uint8Array, config: CrrSettingsConfig): void {
 function cc24ConfigBlock(slot: RfSlotConfig): Uint8Array {
   const block = new Uint8Array(CRR_SLOT_CONFIG_SIZE);
   const template = CRR_CC24_TEMPLATES_BY_BAUD[slot.baudRate] ?? CRR_CC24_TEMPLATES_BY_BAUD['10'];
-  const regs = slot.registers.some((r) => (r & 0xff) !== 0) ? slot.registers : Array.from(template);
-  const copyLen = Math.min(regs.length, CC1101_REGISTER_COUNT);
-  for (let i = 0; i < copyLen; i += 1) {
-    block[i] = regs[i] & 0xff;
-  }
-  if (copyLen < CC1101_REGISTER_COUNT) {
-    block.set(template.subarray(copyLen), copyLen);
+  for (let i = 0; i < CC1101_REGISTER_COUNT; i += 1) {
+    block[i] = (template[i] ?? 0) & 0xff;
   }
   const ch = slot.channel & 0xff;
   block[10] = ch;
   block[47] = 0xff;
+  // Register-tab overrides only (non-zero values that differ from this baud template).
+  for (let i = 0; i < CC1101_REGISTER_COUNT; i += 1) {
+    if (i === 10 || i === 47) continue;
+    const manual = slot.registers[i] & 0xff;
+    const base = (template[i] ?? 0) & 0xff;
+    if (manual !== 0 && manual !== base) {
+      block[i] = manual;
+    }
+  }
   return block;
 }
 
@@ -208,8 +213,12 @@ function si900ConfigBlock(slot: RfSlotConfig): Uint8Array {
 }
 
 function rs485ConfigBlock(slot: RfSlotConfig): Uint8Array {
+  // LabVIEW writes CHANNR (config byte 11) when the UI channel combo is non-zero.
   const block = new Uint8Array(CRR_SLOT_CONFIG_SIZE);
-  block[10] = slot.channel & 0xff;
+  const ch = slot.channel & 0xff;
+  if (ch !== 0) {
+    block[10] = ch;
+  }
   return block;
 }
 
@@ -238,23 +247,25 @@ function writeSlot(pkt: Uint8Array, slotIndex: number, slot: RfSlotConfig): void
 
   out.set(config.subarray(0, CRR_SLOT_CONFIG_SIZE), 1);
   const ch = slot.channel & 0xff;
-  out[CRR_SLOT_SIZE - 2] = ch;
-  out[CRR_SLOT_SIZE - 1] = ch;
+  if (isRs485Family(slot.moduleType)) {
+    if (ch !== 0) {
+      out[CRR_SLOT_SIZE - 2] = ch;
+      out[CRR_SLOT_SIZE - 1] = ch;
+    }
+  } else {
+    out[CRR_SLOT_SIZE - 2] = ch;
+    out[CRR_SLOT_SIZE - 1] = ch;
+  }
 }
 
-/** Sum bytes from 0x158C (index 7) through byte before checksum (LabVIEW wire rule). */
+/** Ch.Sum = 0xFF − Σ(high_nibble + low_nibble), bytes from index 7 through byte before checksum. */
 export function calcCrrConfigChecksum(pkt: Uint8Array): number {
-  let sum = 0;
   const end = pkt.length - 3;
+  const bytes: number[] = [];
   for (let i = 7; i < end; i += 1) {
-    sum += pkt[i] & 0xff;
+    bytes.push(pkt[i] & 0xff);
   }
-  const low = sum & 0xff;
-  // Example (low=0x37): low−0x10 → 0x27. Sparse config (low≥0x80): low−0x80 → 0x3E.
-  if (low >= 0x80) {
-    return (low - 0x80) & 0xff;
-  }
-  return (low - 0x10) & 0xff;
+  return calcCrrNibbleChecksum(bytes);
 }
 
 /** Build the full 5525-byte logical CRR config (P1 + P2 wire concatenated). */
@@ -297,7 +308,7 @@ export function defaultSlotFromScreenshot(index: number): RfSlotConfig {
     1: { moduleType: 'CC24', channel: 205, baudRate: '100', registers: Array.from(CRR_CC24_TEMPLATES_BY_BAUD['100']) },
     2: { moduleType: 'SI900', channel: 235, baudRate: '10', registers: emptyRegisters() },
     3: { moduleType: 'SI900', channel: 205, baudRate: '250', registers: emptyRegisters() },
-    4: { moduleType: 'RS485', channel: 203, baudRate: '10', registers: emptyRegisters() },
+    4: { moduleType: 'RS485', channel: 0, baudRate: '10', registers: emptyRegisters() },
     5: { moduleType: 'SP_CC24', channel: 235, baudRate: '10', registers: Array.from(CRR_CC24_TEMPLATES_BY_BAUD['10']) },
     14: { moduleType: 'SP_SI900', channel: 205, baudRate: '100', registers: emptyRegisters() },
   };

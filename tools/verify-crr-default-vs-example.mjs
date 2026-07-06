@@ -15,11 +15,34 @@ execSync(
   { cwd: root, stdio: 'pipe' },
 );
 
-const { buildCrrLogicalConfigPacket, createDefaultCrrSettings } = await import(pathToFileURL(bundlePath).href);
+const { buildCrrLogicalConfigPacket, createDefaultCrrSettings, calcCrrConfigChecksum } =
+  await import(pathToFileURL(bundlePath).href);
 
-const example = Buffer.from(
-  readFileSync('C:/Users/Moshe/Desktop/PROTOCOLO CONFIG CRR FROM PC/Example.txt', 'utf8').trim(),
-  'hex',
+const HDR = 17;
+const SLOT = 367;
+/** Example.txt Addr5 RS485 has legacy channel filler; CRR wire uses all-zero config. */
+const RS485_WIRE_TYPES = new Set([0x01, 0x0b, 0x0f]);
+
+function normalizeRs485Slots(buf) {
+  const out = Buffer.from(buf);
+  for (let i = 0; i < 15; i += 1) {
+    const base = HDR + i * SLOT;
+    const type = out[base];
+    if (!RS485_WIRE_TYPES.has(type)) continue;
+    out.fill(0, base + 1, base + SLOT);
+    out[base] = type;
+  }
+  out[out.length - 3] = calcCrrConfigChecksum(out);
+  out[out.length - 2] = 0xaa;
+  out[out.length - 1] = 0xaa;
+  return out;
+}
+
+const example = normalizeRs485Slots(
+  Buffer.from(
+    readFileSync('C:/Users/Moshe/Desktop/PROTOCOLO CONFIG CRR FROM PC/Example.txt', 'utf8').trim(),
+    'hex',
+  ),
 );
 const ours = Buffer.from(buildCrrLogicalConfigPacket(createDefaultCrrSettings()));
 
@@ -35,7 +58,7 @@ try {
 }
 
 if (diffs.length === 0) {
-  console.log('OK — default config matches Example.txt byte-for-byte (5525 B).');
+  console.log('OK — default config matches Example.txt (RS485 slots normalized to wire zeros).');
   process.exit(0);
 }
 

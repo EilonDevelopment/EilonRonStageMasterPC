@@ -89,6 +89,13 @@ const CrrSettings: React.FC = () => {
       const prevSlot = slots[index];
       const next = { ...prevSlot, ...patch };
 
+      if (patch.moduleType != null) {
+        if (patch.moduleType === 'RS485' || patch.moduleType === 'BLE121LR' || patch.moduleType === 'SP_RS485') {
+          next.channel = 0;
+          next.baudRate = '10';
+        }
+      }
+
       const activating =
         patch.moduleType != null &&
         patch.moduleType !== 'OFF' &&
@@ -97,18 +104,21 @@ const CrrSettings: React.FC = () => {
         const baud: CrrBaudRate = next.baudRate ?? '10';
         if (CC24_TYPES.has(next.moduleType)) {
           next.registers = Array.from(CRR_CC24_TEMPLATES_BY_BAUD[baud]);
+          next.registers[10] = next.channel & 0xff;
+          next.registers[47] = 0xff;
         }
       }
 
       if (patch.baudRate != null && CC24_TYPES.has(next.moduleType)) {
         next.registers = Array.from(CRR_CC24_TEMPLATES_BY_BAUD[patch.baudRate]);
         next.registers[10] = next.channel & 0xff;
+        next.registers[47] = 0xff;
       }
 
       if (patch.channel != null && CC24_TYPES.has(next.moduleType)) {
-        const registers = [...next.registers];
-        registers[10] = patch.channel & 0xff;
-        next.registers = registers;
+        next.registers = Array.from(CRR_CC24_TEMPLATES_BY_BAUD[next.baudRate]);
+        next.registers[10] = patch.channel & 0xff;
+        next.registers[47] = 0xff;
       }
       slots[index] = next;
       return { ...prev, slots };
@@ -145,7 +155,10 @@ const CrrSettings: React.FC = () => {
   };
 
   const handleSaveLocal = () => {
-    saveCrrSettingsToStorage(config);
+    const serial = parseCrrSerialHex(serialInput);
+    const payload = serial != null ? { ...config, crrSerial: serial } : config;
+    saveCrrSettingsToStorage(payload);
+    setConfig(payload);
     toast.success(t('CrrSettings.SavedLocal'));
   };
 
@@ -178,15 +191,6 @@ const CrrSettings: React.FC = () => {
 
   const rfGrid = useMemo(() => (
     <div className="crr-settings-rf-grid">
-      <IonItem lines="none" className="crr-settings-field crr-settings-serial-field">
-        <IonLabel position="stacked">{t('CrrSettings.CrrSerial')}</IonLabel>
-        <IonInput
-          legacy
-          value={serialInput}
-          placeholder="0008A534"
-          onIonInput={(e) => setSerialInput(String(e.detail.value ?? '').toUpperCase())}
-        />
-      </IonItem>
       {config.slots.map((slot, index) => (
         <IonCard key={`addr-${index + 1}`} className="crr-settings-rf-card">
           <IonCardHeader>
@@ -215,8 +219,8 @@ const CrrSettings: React.FC = () => {
                 type="number"
                 min={0}
                 max={255}
-                value={slot.channel}
-                disabled={slot.moduleType === 'OFF'}
+                value={slot.moduleType === 'RS485' || slot.moduleType === 'BLE121LR' || slot.moduleType === 'SP_RS485' ? 0 : slot.channel}
+                disabled={slot.moduleType === 'OFF' || slot.moduleType === 'RS485' || slot.moduleType === 'BLE121LR' || slot.moduleType === 'SP_RS485'}
                 onIonInput={(e) => updateSlot(index, { channel: clampByte(Number(e.detail.value)) })}
               />
             </IonItem>
@@ -226,7 +230,7 @@ const CrrSettings: React.FC = () => {
                 legacy
                 value={slot.baudRate}
                 interface="popover"
-                disabled={slot.moduleType === 'OFF'}
+                disabled={slot.moduleType === 'OFF' || slot.moduleType === 'RS485' || slot.moduleType === 'BLE121LR' || slot.moduleType === 'SP_RS485'}
                 onIonChange={(e) => updateSlot(index, { baudRate: String(e.detail.value) as CrrBaudRate })}
               >
                 {RF_BAUD_RATE_OPTIONS.map((b) => (
@@ -245,7 +249,7 @@ const CrrSettings: React.FC = () => {
         </IonCard>
       ))}
     </div>
-  ), [config.slots, serialInput, t, updateSlot]);
+  ), [config.slots, t, updateSlot]);
 
   const registerTable = useMemo(() => (
     <div className="crr-settings-registers-wrap">
@@ -343,17 +347,28 @@ const CrrSettings: React.FC = () => {
             <IonCardHeader>
               <IonCardTitle>{t('CrrSettings.CrrOptions')}</IonCardTitle>
             </IonCardHeader>
-            <IonCardContent className="crr-settings-options-grid">
-              {(Object.keys(config.options) as (keyof CrrSettingsConfig['options'])[]).map((key) => (
-                <IonItem key={key} lines="none">
-                  <IonCheckbox
-                    legacy
-                    checked={config.options[key]}
-                    onIonChange={(e) => updateOption(key, !!e.detail.checked)}
-                  />
-                  <IonLabel className="ion-padding-start">{t(`CrrSettings.Option_${key}`)}</IonLabel>
-                </IonItem>
-              ))}
+            <IonCardContent>
+              <IonItem lines="none" className="crr-settings-field crr-settings-serial-field">
+                <IonLabel position="stacked">{t('CrrSettings.CrrSerial')}</IonLabel>
+                <IonInput
+                  legacy
+                  value={serialInput}
+                  placeholder="0008A534"
+                  onIonInput={(e) => setSerialInput(String(e.detail.value ?? '').toUpperCase())}
+                />
+              </IonItem>
+              <div className="crr-settings-options-grid">
+                {(Object.keys(config.options) as (keyof CrrSettingsConfig['options'])[]).map((key) => (
+                  <IonItem key={key} lines="none">
+                    <IonCheckbox
+                      legacy
+                      checked={config.options[key]}
+                      onIonChange={(e) => updateOption(key, !!e.detail.checked)}
+                    />
+                    <IonLabel className="ion-padding-start">{t(`CrrSettings.Option_${key}`)}</IonLabel>
+                  </IonItem>
+                ))}
+              </div>
             </IonCardContent>
           </IonCard>
         )}

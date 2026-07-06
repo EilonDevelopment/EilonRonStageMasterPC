@@ -48,7 +48,7 @@
 
 .crr-settings-rf-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 12px;
 }
 
@@ -56,6 +56,13 @@
   margin: 0;
   border-radius: 10px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  background: rgba(56, 128, 255, 0.08);
+  border: 1px solid rgba(56, 128, 255, 0.22);
+}
+
+.crr-settings-rf-card ion-card-header {
+  background: rgba(56, 128, 255, 0.12);
+  border-bottom: 1px solid rgba(56, 128, 255, 0.15);
 }
 
 .crr-settings-rf-card ion-card-title {
@@ -148,6 +155,22 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 4px;
+  margin-top: 8px;
+}
+
+.crr-settings-serial-field {
+  max-width: 280px;
+  margin-bottom: 4px;
+}
+
+body.dark .crr-settings-rf-card {
+  background: rgba(56, 128, 255, 0.14);
+  border-color: rgba(96, 165, 250, 0.28);
+}
+
+body.dark .crr-settings-rf-card ion-card-header {
+  background: rgba(56, 128, 255, 0.18);
+  border-bottom-color: rgba(96, 165, 250, 0.2);
 }
 
 body.dark .crr-settings-toolbar,

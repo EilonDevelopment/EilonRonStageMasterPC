@@ -170,7 +170,7 @@ const SerialDebug: React.FC = () => {
   const [rawP1Hex, setRawP1Hex] = useState('');
   const [rawP2Hex, setRawP2Hex] = useState('');
   const logIdRef = useRef(0);
-  const logEndRef = useRef<HTMLDivElement>(null);
+  const logContainerRef = useRef<HTMLDivElement>(null);
   const activePortRef = useRef('');
   const framerRef = useRef<CrrPacketFramer | null>(null);
   const framerPortRef = useRef('');
@@ -288,7 +288,9 @@ const SerialDebug: React.FC = () => {
   }, [pushLine, resetRxFramer, t]);
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const log = logContainerRef.current;
+    if (!log) return;
+    log.scrollTop = log.scrollHeight;
   }, [lines]);
 
   const handleConnect = async () => {
@@ -591,7 +593,6 @@ const SerialDebug: React.FC = () => {
   return (
     <CommonLayout
       title={t('SerialDebug.Title')}
-      contentScrollDisabled
       classes="serial-debug-layout"
     >
       <div className="serial-debug-page">
@@ -828,7 +829,7 @@ const SerialDebug: React.FC = () => {
           </div>
         </div>
 
-        <div className="serial-debug-log" aria-label="serial log">
+        <div className="serial-debug-log" ref={logContainerRef} aria-label="serial log">
           {lines.map((line) => (
             <div key={line.id} className={`serial-debug-line serial-debug-line-${line.dir.toLowerCase()}`}>
               <span className="serial-debug-ts">{line.ts}</span>
@@ -836,7 +837,6 @@ const SerialDebug: React.FC = () => {
               <span className="serial-debug-text">{line.text}</span>
             </div>
           ))}
-          <div ref={logEndRef} />
         </div>
 
         <div className="serial-debug-send">
