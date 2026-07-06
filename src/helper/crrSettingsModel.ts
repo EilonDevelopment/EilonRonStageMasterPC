@@ -161,11 +161,12 @@ function writeHeader(pkt: Uint8Array, config: CrrSettingsConfig): void {
   pkt[7] = 0x15;
   pkt[8] = 0x8c;
   pkt[9] = 0x31;
+  // Wire order matches Example.txt / LabVIEW: MSB first (e.g. 0x0008A534 → 00 08 A5 34).
   const serial = config.crrSerial >>> 0;
-  pkt[10] = serial & 0xff;
-  pkt[11] = (serial >> 8) & 0xff;
-  pkt[12] = (serial >> 16) & 0xff;
-  pkt[13] = (serial >> 24) & 0xff;
+  pkt[10] = (serial >> 24) & 0xff;
+  pkt[11] = (serial >> 16) & 0xff;
+  pkt[12] = (serial >> 8) & 0xff;
+  pkt[13] = serial & 0xff;
   pkt[14] = 0x03;
   pkt[15] = 0xfc;
   pkt[16] = encodeCrrOptionsByte(config.options);
@@ -184,22 +185,31 @@ function cc24ConfigBlock(slot: RfSlotConfig): Uint8Array {
   }
   const ch = slot.channel & 0xff;
   block[10] = ch;
+  block[47] = 0xff;
   return block;
+}
+
+/** UI baud "10" maps to the 9.6 kbaud SI-900 template (see Example Addr 3). */
+function si900TemplateKey(baud: CrrBaudRate): keyof typeof CRR_SI900_TEMPLATES_BY_BAUD {
+  if (baud === '10') return '9.6';
+  return baud;
 }
 
 function si900ConfigBlock(slot: RfSlotConfig): Uint8Array {
   const block = new Uint8Array(CRR_SLOT_CONFIG_SIZE);
-  const template = CRR_SI900_TEMPLATES_BY_BAUD[slot.baudRate] ?? CRR_SI900_TEMPLATES_BY_BAUD['100'];
+  const key = si900TemplateKey(slot.baudRate);
+  const template =
+    CRR_SI900_TEMPLATES_BY_BAUD[key] ?? CRR_SI900_TEMPLATES_BY_BAUD['100'];
   block.set(template.subarray(0, Math.min(template.length, CRR_SLOT_CONFIG_SIZE)));
   if (slot.moduleType === 'SP_SI900') {
-    block[11] = slot.channel & 0xff;
+    block[10] = slot.channel & 0xff;
   }
   return block;
 }
 
 function rs485ConfigBlock(slot: RfSlotConfig): Uint8Array {
   const block = new Uint8Array(CRR_SLOT_CONFIG_SIZE);
-  block[11] = slot.channel & 0xff;
+  block[10] = slot.channel & 0xff;
   return block;
 }
 
@@ -280,7 +290,7 @@ export function defaultSlotFromScreenshot(index: number): RfSlotConfig {
   const defaults: Partial<Record<number, RfSlotConfig>> = {
     0: { moduleType: 'CC24', channel: 0, baudRate: '10', registers: cc24Regs },
     1: { moduleType: 'CC24', channel: 205, baudRate: '100', registers: Array.from(CRR_CC24_TEMPLATES_BY_BAUD['100']) },
-    2: { moduleType: 'SI900', channel: 235, baudRate: '100', registers: emptyRegisters() },
+    2: { moduleType: 'SI900', channel: 235, baudRate: '10', registers: emptyRegisters() },
     3: { moduleType: 'SI900', channel: 205, baudRate: '250', registers: emptyRegisters() },
     4: { moduleType: 'RS485', channel: 203, baudRate: '10', registers: emptyRegisters() },
     5: { moduleType: 'SP_CC24', channel: 235, baudRate: '10', registers: Array.from(CRR_CC24_TEMPLATES_BY_BAUD['10']) },

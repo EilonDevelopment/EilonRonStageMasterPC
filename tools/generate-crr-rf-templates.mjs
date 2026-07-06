@@ -57,6 +57,26 @@ function toTsBytes(name, map) {
 const cc24 = parse24File(readFileSync(join(DESKTOP, '2.4 Configurations according to baudRates.txt'), 'utf8'));
 const si900raw = parse900File(readFileSync(join(DESKTOP, '900 Configurations according to baudRates.txt'), 'utf8'));
 
+/** LabVIEW wire capture — golden CC24 register blocks (first 47 B per slot). */
+function exampleSlotRegBlock(addrIndex) {
+  const example = Buffer.from(
+    readFileSync(join(DESKTOP, 'Example.txt'), 'utf8').trim(),
+    'hex',
+  );
+  const HDR = 17;
+  const SLOT = 367;
+  const base = HDR + addrIndex * SLOT + 1;
+  return Array.from(example.subarray(base, base + 47));
+}
+
+// Example uses PKTCTRL1=0x07 on wire; reference file lists 0x04. Prefer live capture bytes.
+for (const bytes of Object.values(cc24)) {
+  if (bytes[7] === 0x04) bytes[7] = 0x07;
+  if (bytes[9] === 0xeb) bytes[9] = 0x00;
+}
+cc24['10'] = exampleSlotRegBlock(0);
+cc24['100'] = exampleSlotRegBlock(1);
+
 // Prefer tx templates; fall back to rx. Normalize keys to match UI baud labels.
 const si900 = {};
 for (const [k, v] of Object.entries(si900raw)) {
