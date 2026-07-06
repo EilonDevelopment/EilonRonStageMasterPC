@@ -242,14 +242,19 @@ function writeSlot(pkt: Uint8Array, slotIndex: number, slot: RfSlotConfig): void
   out[CRR_SLOT_SIZE - 1] = ch;
 }
 
-/** Sum bytes from 0x158C (index 7) through byte before checksum; matches Example (sum − 0x10). */
+/** Sum bytes from 0x158C (index 7) through byte before checksum (LabVIEW wire rule). */
 export function calcCrrConfigChecksum(pkt: Uint8Array): number {
   let sum = 0;
   const end = pkt.length - 3;
   for (let i = 7; i < end; i += 1) {
     sum += pkt[i] & 0xff;
   }
-  return (sum - 0x10) & 0xff;
+  const low = sum & 0xff;
+  // Example (low=0x37): low−0x10 → 0x27. Sparse config (low≥0x80): low−0x80 → 0x3E.
+  if (low >= 0x80) {
+    return (low - 0x80) & 0xff;
+  }
+  return (low - 0x10) & 0xff;
 }
 
 /** Build the full 5525-byte logical CRR config (P1 + P2 wire concatenated). */
