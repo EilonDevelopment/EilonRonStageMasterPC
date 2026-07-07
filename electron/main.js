@@ -28,7 +28,10 @@ const BUILD_DIR = (() => {
   return parentBuild;
 })();
 
-const START_PATH = process.argv.includes('--serial-debug') ? '/serial-debug' : '/';
+/** Keep in sync with src/helper/constants.ts → SERIAL_DEBUG_UI_ENABLED */
+const SERIAL_DEBUG_UI_ENABLED = false;
+const START_PATH =
+  SERIAL_DEBUG_UI_ENABLED && process.argv.includes('--serial-debug') ? '/serial-debug' : '/';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',

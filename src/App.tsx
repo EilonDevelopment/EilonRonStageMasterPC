@@ -16,7 +16,7 @@ import "@ionic/react/css/text-transformation.css";
 import "@ionic/react/css/flex-utils.css";
 import "@ionic/react/css/display.css";
 
-import { ROUTES } from "./helper/constants";
+import { ROUTES, SERIAL_DEBUG_UI_ENABLED } from "./helper/constants";
 import Empty from "./pages/Empty";
 import "./i18n";
 import "./theme/variables.css";
@@ -227,7 +227,11 @@ const App: React.FC = () => {
             <Route path={ROUTES.Monitor} exact={true} render={() => <Monitor />} />
             <Route path={ROUTES.Settings} exact={true} render={() => <Settings />} />
             <Route path={ROUTES.Reports} exact={true} render={() => <Report />} />
-            <Route path={ROUTES.SerialDebug} exact={true} render={() => <SerialDebug />} />
+            <Route
+              path={ROUTES.SerialDebug}
+              exact={true}
+              render={() => (SERIAL_DEBUG_UI_ENABLED ? <SerialDebug /> : <Redirect to={ROUTES.Monitor} />)}
+            />
             <Route path={ROUTES.CrrSettings} exact={true} render={() => <CrrSettings />} />
             <Route path={ROUTES.ConnectDevice} exact={true} render={() => <Empty />} />
             <Route path={ROUTES.Totalizer} exact={true} render={() => <Empty />} />

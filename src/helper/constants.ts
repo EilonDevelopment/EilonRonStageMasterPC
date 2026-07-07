@@ -33,6 +33,9 @@ const MENUS = {
   CrrSettings: "CrrSettings",
 }
 
+/** Set true to show Serial Debug in menu/routes (page code remains in repo). */
+const SERIAL_DEBUG_UI_ENABLED = false;
+
 const ModalMenus = [
   MENUS.Monitor,
   MENUS.Projects,
@@ -222,4 +225,5 @@ export {
   Windmeter_Unit_List,
   Colors,
   LC_Serials,
+  SERIAL_DEBUG_UI_ENABLED,
 }

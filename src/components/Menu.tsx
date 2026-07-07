@@ -29,7 +29,7 @@ import {
   codeSlashOutline,
   hardwareChipOutline,
 } from 'ionicons/icons';
-import { MENUS, ModalMenus, ModalNames, ROUTES } from '../helper/constants';
+import { MENUS, ModalMenus, ModalNames, ROUTES, SERIAL_DEBUG_UI_ENABLED } from '../helper/constants';
 
 import { useTranslation } from 'react-i18next';
 import { Preferences } from '@capacitor/preferences';
@@ -113,6 +113,7 @@ const appPages: AppPage[] = [
     mdIcon: codeSlashOutline,
     imgIcon: connectMenuIcon,
     desktopOnly: true,
+    hidden: !SERIAL_DEBUG_UI_ENABLED,
   },
   {
     title: MENUS.ProofTest,
