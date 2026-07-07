@@ -96,6 +96,7 @@ import {
   sendCrrS2sList,
   setVerifiedCrrPort,
 } from '../helper/crrUsbService';
+import { applyCrrExportSanitization } from '../helper/crrExport';
 import useFunctions from '../hooks/useFunctions';
 
 // Añade esto arriba con los demás imports
@@ -1479,7 +1480,26 @@ const CommonLayout: FC<CommonLayoutProps> = props => {
   const syncCrrLcList = async (portPath: string) => {
     const liveProject = curProjectRef.current;
     if (!liveProject?.id) return;
-    const { allCells, wiredCells } = lcsToS2sPartition(lcsRef?.current ?? lcs, liveProject.id);
+    const currentLcs = (lcsRef?.current ?? lcs) as ILC[];
+    const { lcs: sanitizedLcs, adjustments } = applyCrrExportSanitization(currentLcs, liveProject.id);
+    if (adjustments.length > 0) {
+      const pid = normalizeProjectId(liveProject.id);
+      await Promise.all(
+        adjustments.map(async (adj) => {
+          const lc = sanitizedLcs.find(
+            (item) => String(item.id) === adj.lcId && normalizeProjectId(item.project_id) === pid,
+          );
+          if (lc?.lc_id) {
+            await db.lcs.update(lc.lc_id, { crr_export: adj.to });
+          }
+          if (lc) {
+            updateLCs({ ...lc, crr_export: adj.to });
+          }
+          toast.warning(t('Setting.CrrExportAdjusted', { id: adj.lcId, from: adj.from, to: adj.to }));
+        }),
+      );
+    }
+    const { allCells, wiredCells } = lcsToS2sPartition(sanitizedLcs, liveProject.id);
     const cellCount = allCells.length;
     if (cellCount === 0) return;
     const result = await sendCrrS2sList(portPath, allCells, wiredCells);

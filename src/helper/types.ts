@@ -79,6 +79,11 @@ export type ILC = {
   groups?: string;
   /** CRR path: RF (wireless) or RS485 (wired). Defaults to RF when unset. */
   link_type?: 'rf' | 'rs485' | string;
+  /**
+   * CRR S2S export byte (0x32): 0 = none, 1..N = Nth export-capable Addr (slave / BLE / S.P.),
+   * 0xFF = all export paths. See crrExport.ts.
+   */
+  crr_export?: number;
 
   // for monitor list
   value?: string;

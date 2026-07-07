@@ -9,6 +9,7 @@ import {
   buildCrrS2sPacket,
   CrrS2sCell,
 } from './crrProtocol';
+import { getLcCrrExportWireByte } from './crrExport';
 import {
   buildLabviewSaveWireBlob,
   type LabviewSaveConfigPatch,
@@ -89,7 +90,7 @@ export type CrrS2sPartition = {
 function lcToS2sCell(lc: ILC): CrrS2sCell | null {
   const id = Number.parseInt(String(lc.id), 10);
   if (!Number.isFinite(id) || id <= 0) return null;
-  return { export: 0, id };
+  return { export: getLcCrrExportWireByte(lc), id };
 }
 
 /**

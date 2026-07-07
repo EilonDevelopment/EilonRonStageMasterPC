@@ -20,7 +20,7 @@ export function formatCrrIdnScanLabel(asciiSlice: string): string {
 }
 
 export type CrrS2sCell = {
-  /** Hardware export socket on the CRR (0 = default RF path). */
+  /** Export index on wire: 0=none, 1..N=Nth export-capable Addr, 0xFF=all. */
   export: number;
   id: number;
 };

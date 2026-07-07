@@ -6,6 +6,7 @@ import { IGroup, ILC, ILog, IProject, IProjectDetail } from "../helper/types";
 import { LC_Serials, LC_SerialsType } from "../helper/constants";
 import { normalizeProjectId } from "../helper/functions";
 import { normalizeLcLinkType } from "../helper/lcLinkType";
+import { normalizeCrrExportStored } from "../helper/crrExport";
 import { formatGroupOverloadStringForUnit, formatThresholdStringForLc } from "../helper/weightResolution";
 import { format, getTime, subDays } from "date-fns";
 import { useEffect, useRef } from "react";
@@ -352,6 +353,7 @@ export default function useFunctions() {
       groups,
       project_id: projectIdNorm,
       link_type: normalizeLcLinkType(lc.link_type),
+      crr_export: normalizeCrrExportStored(lc.crr_export),
       tare: '',
       zero: '',
       capacity
@@ -397,6 +399,7 @@ export default function useFunctions() {
       groups: lc.groups ?? '',
       project_id: normalizeProjectId(lc.project_id ?? ''),
       link_type: normalizeLcLinkType(lc.link_type),
+      crr_export: normalizeCrrExportStored(lc.crr_export),
       tare: '',
       zero: '',
       capacity: lc.capacity ?? {},
@@ -431,7 +434,7 @@ export default function useFunctions() {
   }
 
   const f_edit_lc = async (lc: Partial<ILC>) => {
-    const { id: lcTableId, title = '', psw = '', underload = '', overload = '', total_sum = '', groups = '', project_id = '', value = '', link_type } = lc
+    const { id: lcTableId, title = '', psw = '', underload = '', overload = '', total_sum = '', groups = '', project_id = '', value = '', link_type, crr_export } = lc
     const lcIdNorm = lcTableId != null ? String(lcTableId) : ''
     const selectedLc = lcs.find(x => String(x.id) === lcIdNorm)
 
@@ -449,6 +452,9 @@ export default function useFunctions() {
     }
     if (link_type !== undefined) {
       updatedData.link_type = normalizeLcLinkType(link_type)
+    }
+    if (crr_export !== undefined) {
+      updatedData.crr_export = normalizeCrrExportStored(crr_export)
     }
     try {
       await db.lcs.update(selectedLc.lc_id, updatedData)
@@ -1141,7 +1147,7 @@ export default function useFunctions() {
       });
       rows.push('');
       rows.push('[LoadCells]');
-      const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'link_type', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum', 'capacity'];
+      const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'link_type', 'crr_export', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum', 'capacity'];
       rows.push(lcHeaders.map(escapeCsv).join(','));
       projectLcs.forEach((lc: any) => {
         const lcRow = lcHeaders.map((h) => {
@@ -1284,7 +1290,7 @@ export default function useFunctions() {
       };
       const projectHeaders = ['id', 'title', 'units', 'pre_overload', 'total_overload', 'cycle', 'report_interval_seconds', 'windmeter_units', 'stage_x', 'stage_y', 'show_graphs'];
       const groupHeaders = ['id', 'project_id', 'title', 'overload', 'tare'];
-      const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'link_type', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum'];
+      const lcHeaders = ['lc_id', 'id', 'project_id', 'title', 'psw', 'underload', 'overload', 'groups', 'link_type', 'crr_export', 'view_x', 'view_y', 'calibration_offset', 'zero', 'tare', 'total_sum'];
       const planIdMap = new Map<string, string>();
       const planNameMap = new Map<string, string>();
       const lcIdMap = new Map<string, string>();
@@ -1349,6 +1355,9 @@ export default function useFunctions() {
           }
           if (row.link_type !== undefined && row.link_type !== '') {
             row.link_type = normalizeLcLinkType(row.link_type);
+          }
+          if (row.crr_export !== undefined && row.crr_export !== '') {
+            row.crr_export = normalizeCrrExportStored(row.crr_export);
           }
           const oldLcId = row.lc_id != null ? String(row.lc_id) : '';
           delete row.lc_id;

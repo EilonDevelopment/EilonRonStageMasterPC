@@ -1,4 +1,4 @@
-import React, { FC, useEffect, useRef, useState } from 'react';
+import React, { FC, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Capacitor } from '@capacitor/core';
 import { Keyboard } from '@capacitor/keyboard';
@@ -7,6 +7,16 @@ import { useTranslation } from 'react-i18next';
 import Text from '../Text';
 import { ILC } from '../../helper/types';
 import { normalizeLcLinkType, type LcLinkType } from '../../helper/lcLinkType';
+import {
+  buildCrrExportSelectOptions,
+  CRR_EXPORT_NONE,
+  formatCrrExportLabel,
+  listCrrExportDestinations,
+  normalizeCrrExportStored,
+  sanitizeCrrExportValue,
+} from '../../helper/crrExport';
+import { isDesktopPc } from '../../helper/appPlatform';
+import { loadCrrSettingsFromStorage } from '../../helper/crrSettingsModel';
 import TextInput from '../TextInput';
 import { IonIcon, IonSelect, IonSelectOption, IonToggle } from '@ionic/react';
 import Button from '../Buttons/Button';
@@ -89,6 +99,7 @@ const NewLCModal: FC<NewLCModalProps> = (props) => {
   const [lc, setLC] = useState<Partial<ILC>>({
     underload: '-10',
     total_sum: false,
+    crr_export: CRR_EXPORT_NONE,
     ...data,
   });
   const [groups, setGroups] = useState<string>('');
@@ -127,6 +138,7 @@ const NewLCModal: FC<NewLCModalProps> = (props) => {
       calibration_offset: '1',
       ...data,
       link_type: normalizeLcLinkType(data?.link_type),
+      crr_export: normalizeCrrExportStored(data?.crr_export ?? CRR_EXPORT_NONE),
       total_sum: data?.total_sum ?? false,
     }));
     if (data?.groups) {
@@ -185,7 +197,7 @@ const NewLCModal: FC<NewLCModalProps> = (props) => {
     setNumericPad(null);
   };
 
-  const handleChangeProject = (field: string, value: string | boolean) => {
+  const handleChangeProject = (field: string, value: string | boolean | number) => {
     let id_cap: any;
     if (lc.lc_id && field === 'unitList') {
       setLC((v) => ({ ...v, lc_id: value.toString() }));
@@ -213,9 +225,33 @@ const NewLCModal: FC<NewLCModalProps> = (props) => {
     }
   };
 
+  const crrExportDestCount = useMemo(
+    () => listCrrExportDestinations(loadCrrSettingsFromStorage()).length,
+    [visible],
+  );
+  const crrExportOptions = useMemo(
+    () => buildCrrExportSelectOptions(loadCrrSettingsFromStorage(), t),
+    [t, visible],
+  );
+
+  const crrExportValue = useMemo(
+    () => sanitizeCrrExportValue(lc.crr_export ?? CRR_EXPORT_NONE, crrExportDestCount).value,
+    [crrExportDestCount, lc.crr_export],
+  );
+
   const handleDupllicate = () => {
-    const { groups: g, overload, underload, project_id, psw, title, total_sum, link_type } = lc;
-    setLC({ groups: g, overload, underload, project_id, psw, title, total_sum, link_type: normalizeLcLinkType(link_type) });
+    const { groups: g, overload, underload, project_id, psw, title, total_sum, link_type, crr_export } = lc;
+    setLC({
+      groups: g,
+      overload,
+      underload,
+      project_id,
+      psw,
+      title,
+      total_sum,
+      link_type: normalizeLcLinkType(link_type),
+      crr_export: normalizeCrrExportStored(crr_export),
+    });
     refIDInput.current?.focus();
   };
 
@@ -445,6 +481,23 @@ const NewLCModal: FC<NewLCModalProps> = (props) => {
           <IonSelectOption value="rs485">{t('Setting.LinkTypeRs485')}</IonSelectOption>
         </IonSelect>
       </div>
+      {isDesktopPc() ? (
+        <div>
+          <Text label={t('Setting.CrrExport')} />
+          <IonSelect
+            interface="popover"
+            className={`w-full ${TEXT_FIELD_ROW_CHROME} border border-medium border-gray2 rounded-none`}
+            value={crrExportValue}
+            onIonChange={(e) => handleChangeProject('crr_export', Number(e.detail.value))}
+          >
+            {crrExportOptions.map((opt) => (
+              <IonSelectOption key={`crr-export-${opt.value}`} value={opt.value}>
+                {opt.label}
+              </IonSelectOption>
+            ))}
+          </IonSelect>
+        </div>
+      ) : null}
       <div className="col-span-1 sm:col-span-2 flex flex-row items-center gap-3 py-1">
         <IonToggle enableOnOffLabels={true} checked={lc.total_sum || false} onIonChange={(e) => handleChangeProject('total_sum', e.detail.checked)} />
         <Text label={t('Setting.TotalSum')} />

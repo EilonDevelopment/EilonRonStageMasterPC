@@ -26,6 +26,9 @@ import type { GridColDef, GridValueGetterParams } from '@mui/x-data-grid';
 import { gridNumberComparator } from '@mui/x-data-grid';
 import { formatWeightByLcResolution } from '../../helper/weightResolution';
 import { lcLinkTypeLabel, normalizeLcLinkType } from '../../helper/lcLinkType';
+import { isDesktopPc } from '../../helper/appPlatform';
+import { formatCrrExportLabel, normalizeCrrExportStored } from '../../helper/crrExport';
+import { loadCrrSettingsFromStorage } from '../../helper/crrSettingsModel';
 
 type SettingsLcGridRow = ILC & { __stableIndex: number };
 
@@ -217,6 +220,21 @@ const Settings: FC = () => {
         </span>
       ),
     },
+    ...(isDesktopPc()
+      ? [{
+          flex: 0.14,
+          minWidth: 120,
+          field: 'crr_export',
+          headerName: t('Setting.CrrExport'),
+          valueGetter: (params: GridValueGetterParams<SettingsLcGridRow>) =>
+            normalizeCrrExportStored(params.row.crr_export),
+          renderCell: ({ row }: { row: SettingsLcGridRow }) => (
+            <span className="text-dark dark:text-light col-item text-xs" onClick={() => handleEditLC(row)}>
+              {formatCrrExportLabel(row.crr_export, loadCrrSettingsFromStorage(), t)}
+            </span>
+          ),
+        } as GridColDef<SettingsLcGridRow>]
+      : []),
     {
       flex: 0.118,
       minWidth: 90,
@@ -634,6 +652,7 @@ const Settings: FC = () => {
             lc_id: lc.lc_id,
             capacity,
             link_type: normalizeLcLinkType(lc.link_type),
+            crr_export: normalizeCrrExportStored(lc.crr_export),
           }));
 
           if (lc.id) {
