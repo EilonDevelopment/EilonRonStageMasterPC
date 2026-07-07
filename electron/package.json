@@ -1,6 +1,6 @@
 {
   "name": "eilon-ron-stage-pc-electron",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Ron Stage Master PC desktop shell (USB serial)",
   "author": "Eilon",
@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron .",
     "rebuild": "electron-rebuild -f -w serialport",
-    "package": "electron-builder --win portable zip"
+    "package": "electron-builder --win nsis portable zip"
   },
   "dependencies": {
     "serialport": "^12.0.0"
@@ -55,8 +55,28 @@
       "node_modules/serialport/**",
       "node_modules/@serialport/**"
     ],
+    "nsis": {
+      "oneClick": true,
+      "perMachine": true,
+      "allowElevation": true,
+      "runAfterFinish": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Ron Stage Master PC",
+      "include": "installer.nsh",
+      "installerLanguages": ["en_US", "es_ES"],
+      "language": "1034",
+      "artifactName": "RonStageMasterPC-${version}-PC-Setup-${os}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "RonStageMasterPC-${version}-PC-Portable-${os}-${arch}.${ext}"
+    },
     "win": {
       "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
         {
           "target": "portable",
           "arch": ["x64"]
@@ -66,7 +86,7 @@
           "arch": ["x64"]
         }
       ],
-      "artifactName": "RonStageMasterPC-${version}-${os}-${arch}.${ext}"
+      "artifactName": "RonStageMasterPC-${version}-PC-${os}-${arch}.${ext}"
     }
   }
 }

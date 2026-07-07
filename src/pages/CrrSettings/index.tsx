@@ -32,6 +32,9 @@ import {
   loadCrrSettingsFromStorage,
   resetCrrSettingsToTemplate,
   saveCrrSettingsToStorage,
+  formatCrrSerialDecimal,
+  parseCrrSerialDecimal,
+  CRR_DEFAULT_SERIAL,
   type CrrBaudRate,
   type CrrModuleType,
   type CrrSettingsConfig,
@@ -62,23 +65,13 @@ function formatHexByte(n: number): string {
   return (n & 0xff).toString(16).toUpperCase().padStart(2, '0');
 }
 
-function parseCrrSerialHex(text: string): number | null {
-  const compact = text.trim().replace(/^0x/i, '').replace(/\s+/g, '');
-  if (!compact || !/^[0-9A-Fa-f]{1,8}$/.test(compact)) return null;
-  return Number.parseInt(compact, 16) >>> 0;
-}
-
-function formatCrrSerialHex(n: number): string {
-  return (n >>> 0).toString(16).toUpperCase().padStart(8, '0');
-}
-
 const CrrSettings: React.FC = () => {
   const { t } = useTranslation();
   const { bleConnected } = useAppData();
   const [tab, setTab] = useState<TabId>('rf');
   const [config, setConfig] = useState<CrrSettingsConfig>(() => loadCrrSettingsFromStorage());
   const [saving, setSaving] = useState(false);
-  const [serialInput, setSerialInput] = useState(() => formatCrrSerialHex(loadCrrSettingsFromStorage().crrSerial));
+  const [serialInput, setSerialInput] = useState(() => formatCrrSerialDecimal(loadCrrSettingsFromStorage().crrSerial));
 
   const verifiedPort = getVerifiedCrrPort();
   const canSave = Boolean(verifiedPort && bleConnected && !saving);
@@ -150,12 +143,12 @@ const CrrSettings: React.FC = () => {
   const handleReset = () => {
     const defaults = resetCrrSettingsToTemplate();
     setConfig(defaults);
-    setSerialInput(formatCrrSerialHex(defaults.crrSerial));
+    setSerialInput(formatCrrSerialDecimal(defaults.crrSerial));
     toast.info(t('CrrSettings.ResetDone'));
   };
 
   const handleSaveLocal = () => {
-    const serial = parseCrrSerialHex(serialInput);
+    const serial = parseCrrSerialDecimal(serialInput);
     const payload = serial != null ? { ...config, crrSerial: serial } : config;
     saveCrrSettingsToStorage(payload);
     setConfig(payload);
@@ -168,7 +161,7 @@ const CrrSettings: React.FC = () => {
       toast.error(t('CrrSettings.NotConnected'));
       return;
     }
-    const serial = parseCrrSerialHex(serialInput);
+    const serial = parseCrrSerialDecimal(serialInput);
     const payload = serial != null ? { ...config, crrSerial: serial } : config;
     setSaving(true);
     saveCrrSettingsToStorage(payload);
@@ -307,7 +300,6 @@ const CrrSettings: React.FC = () => {
                 ? t('CrrSettings.Connected', { port: verifiedPort })
                 : t('CrrSettings.Disconnected')}
             </IonBadge>
-            <span className="crr-settings-hint">{t('CrrSettings.SaveHint')}</span>
           </div>
           <div className="crr-settings-actions">
             <IonButton fill="outline" color="medium" onClick={handleReset}>
@@ -352,9 +344,11 @@ const CrrSettings: React.FC = () => {
                 <IonLabel position="stacked">{t('CrrSettings.CrrSerial')}</IonLabel>
                 <IonInput
                   legacy
+                  type="text"
+                  inputMode="numeric"
                   value={serialInput}
-                  placeholder="0008A534"
-                  onIonInput={(e) => setSerialInput(String(e.detail.value ?? '').toUpperCase())}
+                  placeholder={formatCrrSerialDecimal(CRR_DEFAULT_SERIAL)}
+                  onIonInput={(e) => setSerialInput(String(e.detail.value ?? '').replace(/\D/g, ''))}
                 />
               </IonItem>
               <div className="crr-settings-options-grid">

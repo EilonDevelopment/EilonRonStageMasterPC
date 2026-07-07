@@ -26,11 +26,28 @@ if (-not (Test-Path (Join-Path $cpDir 'silabser.sys'))) {
   Expand-Archive -Path $cpZip -DestinationPath $cpDir -Force
 }
 
+$ftdiZip = Join-Path $Drivers 'CDM21228_Setup.zip'
+$ftdiDir = Join-Path $Drivers 'FTDI'
 $ftdiExe = Get-ChildItem -Path $Drivers -Recurse -Filter 'CDM*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $ftdiExe) {
-  Write-Host 'FTDI: no local CDM*.exe; install script will show manual download steps.' -ForegroundColor Yellow
-} else {
+  Write-Host 'Downloading FTDI VCP driver (CDM21228)...' -ForegroundColor Yellow
+  try {
+    if (-not (Test-Path $ftdiZip)) {
+      Invoke-WebRequest -Uri 'https://www.ftdichip.com/Drivers/CDM/CDM21228_Setup.zip' `
+        -OutFile $ftdiZip -UseBasicParsing
+    }
+    if (-not (Test-Path $ftdiDir)) { New-Item -ItemType Directory -Path $ftdiDir | Out-Null }
+    Expand-Archive -Path $ftdiZip -DestinationPath $ftdiDir -Force
+    $ftdiExe = Get-ChildItem -Path $ftdiDir -Recurse -Filter 'CDM*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+  } catch {
+    Write-Host ('FTDI download failed: ' + $_.Exception.Message) -ForegroundColor Yellow
+    Write-Host 'Place CDM*.exe under tools\usb-drivers\FTDI\ and rebuild.' -ForegroundColor Yellow
+  }
+}
+if ($ftdiExe) {
   Write-Host ('FTDI included: ' + $ftdiExe.Name) -ForegroundColor Green
+} else {
+  Write-Host 'FTDI: not bundled — CP210x only; user may need manual FTDI install.' -ForegroundColor Yellow
 }
 
 Write-Host 'Build React...' -ForegroundColor Cyan
@@ -58,12 +75,15 @@ if ($LASTEXITCODE -ne 0) { throw 'electron npm install failed' }
 npm run rebuild
 if ($LASTEXITCODE -ne 0) { throw 'electron-rebuild failed' }
 
-Write-Host 'electron-builder (portable + zip)...' -ForegroundColor Cyan
+Write-Host 'electron-builder (NSIS installer + portable + zip)...' -ForegroundColor Cyan
 npm run package
 if ($LASTEXITCODE -ne 0) { throw 'electron-builder failed' }
 Pop-Location
 
 $releaseDir = Join-Path $RepoRoot 'release'
+$installerExe = Get-ChildItem -Path $releaseDir -Filter 'RonStageMasterPC-*-PC-Setup-win-x64.exe' -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
 $zipFile = Get-ChildItem -Path $releaseDir -Filter '*.zip' -ErrorAction SilentlyContinue |
   Sort-Object LastWriteTime -Descending |
   Select-Object -First 1
@@ -71,7 +91,10 @@ $zipFile = Get-ChildItem -Path $releaseDir -Filter '*.zip' -ErrorAction Silently
 Write-Host ''
 Write-Host 'Done.' -ForegroundColor Green
 Write-Host ('Output folder: ' + $releaseDir) -ForegroundColor White
+if ($installerExe) {
+  Write-Host ('Windows installer (give this to users): ' + $installerExe.FullName) -ForegroundColor Green
+}
 if ($zipFile) {
-  Write-Host ('ZIP for other PC: ' + $zipFile.FullName) -ForegroundColor Green
+  Write-Host ('ZIP portable: ' + $zipFile.FullName) -ForegroundColor White
 }
 Get-ChildItem $releaseDir -ErrorAction SilentlyContinue | Format-Table Name, Length, LastWriteTime

@@ -42,7 +42,24 @@ Write-Host "Instalando CP210x (silabser.inf)..." -ForegroundColor Green
 pnputil /add-driver (Join-Path $cpDir 'silabser.inf') /install
 
 # --- FTDI VCP ---
+$ftdiZip = Join-Path $Drivers 'CDM21228_Setup.zip'
+$ftdiDir = Join-Path $Drivers 'FTDI'
 $ftdiExe = Get-ChildItem -Path $Drivers -Recurse -Filter 'CDM*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+
+if (-not $ftdiExe) {
+  try {
+    if (-not (Test-Path $ftdiZip)) {
+      Write-Host 'Descargando driver FTDI (CDM21228)...' -ForegroundColor Yellow
+      Invoke-WebRequest -Uri 'https://www.ftdichip.com/Drivers/CDM/CDM21228_Setup.zip' `
+        -OutFile $ftdiZip -UseBasicParsing
+    }
+    if (-not (Test-Path $ftdiDir)) { New-Item -ItemType Directory -Path $ftdiDir | Out-Null }
+    Expand-Archive -Path $ftdiZip -DestinationPath $ftdiDir -Force
+    $ftdiExe = Get-ChildItem -Path $ftdiDir -Recurse -Filter 'CDM*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+  } catch {
+    Write-Host ('No se pudo descargar FTDI: ' + $_.Exception.Message) -ForegroundColor Yellow
+  }
+}
 
 if (-not $ftdiExe) {
   Write-Host ""

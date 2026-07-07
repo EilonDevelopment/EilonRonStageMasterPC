@@ -81,6 +81,19 @@ export const CRR_CONFIG_LOGICAL_SIZE =
 
 export const CRR_DEFAULT_SERIAL = 0x0008a534;
 
+/** UI: decimal string for CRR electronic serial (32-bit unsigned). */
+export function formatCrrSerialDecimal(n: number): string {
+  return String(n >>> 0);
+}
+
+export function parseCrrSerialDecimal(text: string): number | null {
+  const trimmed = text.trim().replace(/,/g, '');
+  if (!trimmed || !/^\d+$/.test(trimmed)) return null;
+  const n = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(n) || n < 0 || n > 0xffffffff) return null;
+  return n >>> 0;
+}
+
 export const RF_MODULE_TYPE_OPTIONS: { value: CrrModuleType; labelKey: string }[] = [
   { value: 'OFF', labelKey: 'ModuleOff' },
   { value: 'RS485', labelKey: 'ModuleRs485' },
@@ -133,12 +146,21 @@ function emptyRegisters(): number[] {
   return new Array(CC1101_REGISTER_COUNT).fill(0);
 }
 
+/** CC-2.4 GHz: channel 0 = 2433.000 MHz, +0.2 MHz (200 kHz) per channel step. */
+const CC24_BASE_MHZ = 2433;
+const CC24_CHANNEL_STEP_MHZ = 0.2;
+
+/** SI-900 MHz: channel 0 = 900.000 MHz, +0.250 MHz (250 kHz) per channel step. */
+const SI900_BASE_MHZ = 900;
+const SI900_CHANNEL_STEP_MHZ = 0.25;
+
 export function channelToFrequencyMhz(channel: number, moduleType: CrrModuleType): number {
-  if (moduleType === 'SI900' || moduleType === 'SLAVE_SI900' || moduleType === 'SP_SI900') {
-    return 902 + (channel & 0xff) * 0.25;
+  const ch = Number.isFinite(channel) ? Math.max(0, Math.floor(channel)) : 0;
+  if (isSi900Family(moduleType)) {
+    return SI900_BASE_MHZ + ch * SI900_CHANNEL_STEP_MHZ;
   }
   if (isCc24Family(moduleType)) {
-    return 2400 + (channel & 0xff) * 0.1;
+    return CC24_BASE_MHZ + ch * CC24_CHANNEL_STEP_MHZ;
   }
   return 0;
 }
